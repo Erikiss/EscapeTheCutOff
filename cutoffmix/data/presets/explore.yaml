@@ -10,7 +10,8 @@
 
 relay:
   segment_tokens: 192             # was 128
-  hard_cut_chars: 1000            # ~192-220 tokens; 'Where we stand:' must survive the client-side cut
+  hard_cut_chars: 1500            # 192 tokens of German run to ~1100-1300 chars; at 1000 the cut removed the trailing
+                                  # 'Where we stand:' line in the first live run (relay closes a stream at 1.5x = 2250)
   max_segments: 16                # hard ceiling (16 x 192 ~ 3k note tokens, under the 4096 cap)
   answer_mode: routed
   # window_segments stays 3; lens segments are excluded from the routing window by the relay

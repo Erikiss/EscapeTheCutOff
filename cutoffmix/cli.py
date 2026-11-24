@@ -300,6 +300,11 @@ def explore_summary(explore: Mapping[str, Any]) -> list[str]:
     forced = _count(explore.get("forced_continuations"))
     if forced is not None:
         parts.append(f"forced {forced}")
+    wws = explore.get("wws")  # notes without 'Where we stand:' (skipped / cut) and gate waivers; only when non-zero
+    if isinstance(wws, Mapping):
+        bits = [f"{n} {word}" for word in ("missing", "cut", "waived") if (n := _count(wws.get(word)))]
+        if bits:
+            parts.append("wws " + ", ".join(bits))
     return parts
 
 

@@ -237,7 +237,7 @@ def test_run_preset_is_merged_before_the_config_file(monkeypatch, tmp_path):
     assert main(["run", "--mock", "--preset", "explore", "--seed", "5", "--config", str(cfg_file), "q?"]) == 0
     assert seen["path"] == str(cfg_file) and seen["preset"] == "explore" and seen["overrides"] == {"router": {"seed": 5}}
     cfg = seen["cfg"]
-    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1000 and cfg.router.seed == 5
+    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1500 and cfg.router.seed == 5
     assert cfg.relay.segment_tokens == 150  # the user's file wins over the preset
     assert cfg.router.policy == "softmax"  # the preset does not change the routing policy
 
@@ -387,6 +387,11 @@ def test_explore_tag_shapes(data, tag):
     ({"topics_visited": {"all": 3, "main_line": 1}, "premature_finals": [{}, {}]}, ["topics 3"]),
     ({"topics_visited": 4.0, "labels": "n/a", "lens": "none"}, ["topics 4"]),
     ({"lens": {"kept": True}}, []),
+    ({"forced_continuations": 1, "wws": {"missing": 0, "cut": 2, "waived": 1, "waived_at": [8]}},
+     ["forced 1", "wws 2 cut, 1 waived"]),
+    ({"wws": {"missing": 3, "cut": 0, "waived": 0}}, ["wws 3 missing"]),
+    ({"wws": {"missing": 0, "cut": 0, "waived": 0, "waived_at": []}}, []),  # nothing to report
+    ({"wws": "n/a"}, []),
 ])
 def test_explore_summary_is_defensive_about_shapes(explore, expected):
     assert cli.explore_summary(explore) == expected

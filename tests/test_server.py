@@ -474,7 +474,7 @@ async def test_api_relay_preset_runs_the_explore_configuration():
         r = await c.post("/api/relay", json={"question": "q?", "preset": "explore"})
         assert r.status_code == 200 and sse_payloads(r.text)[-1]["type"] == "done"
         cfg = app.state.runtime.seen_cfgs[-1]
-        assert cfg.explore.enabled and cfg.relay.segment_tokens == 192 and cfg.relay.hard_cut_chars == 1000
+        assert cfg.explore.enabled and cfg.relay.segment_tokens == 192 and cfg.relay.hard_cut_chars == 1500
         assert cfg.model("gpt-6.2-sol").supports_seed and cfg.router.policy == "softmax"
         assert {req.target_tokens for req in backend.requests if req.phase == "think"} == {192}
         r = await c.post("/api/relay", json={"question": "q?", "preset": "explore", "segment_tokens": 64,
@@ -503,7 +503,7 @@ async def test_api_relay_preset_is_layered_under_the_servers_config_file(tmp_pat
         r = await c.post("/api/relay", json={"question": "q?", "preset": "explore"})
     assert r.status_code == 200
     cfg = runtime.seen_cfgs[-1]
-    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1000  # from the preset
+    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1500  # from the preset
     assert cfg.relay.segment_tokens == 150 and cfg.app_title == "mine"  # the file still wins over the preset
     async with client(app) as c:
         presets = (await c.get("/api/config")).json()["presets"]

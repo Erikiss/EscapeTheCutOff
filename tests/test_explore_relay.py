@@ -229,7 +229,7 @@ async def test_requests_carry_the_explore_prompts_tail_and_seed():
     # note 1: the whole checklist is missing; note 2: one more main-line note; note 3: the record is complete
     missing_all = ["two more main-line notes", "an 'Evidence:' item that names its source",
                    "an 'Alternative set aside:' item", "an 'Open question:' item",
-                   "a 'Where we stand:' line in the latest note"]
+                   "a 'Where we stand:' line at the end of this note"]
     assert reqs[0].tail == relay_tail(1, record_status_text(missing_all, False))
     assert reqs[1].tail == relay_tail(2, record_status_text(["one more main-line note"], False))
     assert reqs[2].tail == relay_tail(3, record_status_text([], True))
@@ -448,9 +448,14 @@ async def test_gate_opens_only_when_the_checklist_passes():
     ends = committed(events)
     assert kinds_of(events) == ["main"] * 7 + ["continue", "main"]
     tails = [req.tail for req in think_requests(backend)]
-    wws_item = "a 'Where we stand:' line in the latest note"
-    assert wws_item not in tails[3]  # note 2 had none, but note 1 did (window of two notes)
-    assert wws_item in tails[4]  # neither note 2 nor note 3 had one
+    wws_item = "a 'Where we stand:' line at the end of this note"
+    assert wws_item in tails[0] and all(wws_item not in t for t in tails[1:3])
+    # note 2 had none, but note 1 did (window of two notes): the gate does not require the line yet, but the tail
+    # reminds of it because the previous note lacks it (listed once, with the gate's own items)
+    assert tails[3] == relay_tail(4, record_status_text(["three more main-line notes",
+                                                         "an 'Alternative set aside:' item"], False, remind_wws=True))
+    assert tails[3].count("Where we stand") == 1
+    assert wws_item in tails[4] and tails[4].count(wws_item) == 1  # neither note 2 nor note 3 had one: required
     assert wws_item not in tails[5]  # note 4 has one again
     assert all("an 'Alternative set aside:' item" in t for t in tails[:8])
     assert "more main-line note" not in tails[6]  # six main-line notes are in: only the alternative is missing
@@ -463,6 +468,9 @@ async def test_gate_opens_only_when_the_checklist_passes():
     assert ex["gate_open"] is True and ex["gate_missing_at_final"] is None and len(ex["premature_finals"]) == 1
     assert ex["premature_finals"][0]["missing"] == ["an 'Alternative set aside:' item"]
     assert ex["labels"]["counts"]["Alternative set aside"] == 2 and ex["labels"]["coverage"]["where_we_stand"] < 1
+    # the two notes without the line were not cut: skipped by the writer; the line was never the only missing item
+    assert ex["wws"] == {"missing": 2, "cut": 0, "waived": 0, "waived_at": []}
+    assert [e.data["explore"]["cut"] for e in ends] == [False] * 9
 
 
 async def test_premature_final_with_an_empty_note_is_dropped_and_the_retry_is_the_continuation():

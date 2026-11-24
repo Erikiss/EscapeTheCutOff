@@ -50,7 +50,7 @@ New file `configs/explore.yaml` (deep-merged over `cutoffmix/data/default.yaml`;
 ```yaml
 relay:
   segment_tokens: 192          # was 128
-  hard_cut_chars: 1000         # ~192-220 tokens; 'Where we stand:' must survive the client-side cut
+  hard_cut_chars: 1500         # 192 tokens of German = 1100-1300 chars (measured); 'Where we stand:' must survive the cut
   max_segments: 16             # hard ceiling (16 x 192 ~ 3k note tokens, under the 4096 cap)
   answer_mode: routed
 
@@ -334,6 +334,23 @@ part is discarded, the note part is committed if non-empty (Markovian Thinker: f
 partial work"; keep what was written), the attempt is logged as `premature_final`, and the next segment is a forced
 continuation. If the note part is empty, the attempt is dropped and not committed (append-only caching is unaffected).
 
+The `Where we stand:` line in practice (first live run, `tests/fixtures/live_sse/relay_trace_explore_round_robin.json`):
+only 1 of 10 notes ended with it. Two causes, two measures:
+
+- **Reminder.** Whenever the previous committed note has no `Where we stand:` line, whether the model skipped it or
+  the client-side hard cut removed it (the relay detects the cut by comparing the cleaned paragraph before and after
+  the cut, and also counts a `length` / `cut` / `overflow` finish without a sentinel; `ExploreFlags.cut`), the record
+  status says so: while the gate is closed "a 'Where we stand:' line at the end of this note" joins the missing items
+  (once, even when the two-note window already lists it), once the gate is open "If you write a note, end it with a
+  'Where we stand:' line." follows the permission to conclude. The metrics split the notes without the line into
+  `wws.missing` (skipped) and `wws.cut` (lost to the cut).
+- **Waiver.** The window rule stays, but a note the cut shortened must not hold the gate closed for good: after every
+  committed note the unwaived checklist is judged, and once the line has been its *only* entry for two consecutive
+  notes (so only after `min_segments` and with every required label in) the gate leaves it out (`wws.waived`,
+  `wws.waived_at`; the tail still reminds). The waiver lapses when a note has the line again or another item goes
+  missing; it is granted again after two further such notes. In the live run above the gate would have opened for
+  segment 9 instead of waiting until segment 10, at the cost of nothing the model had not been told.
+
 ### 6.2 Continuation when a model concludes early (s1-style, without "Wait")
 
 The next segment's tail block gets `CONTINUE_TEXT`, and the concluding model is excluded from `available` for that
@@ -362,14 +379,23 @@ first correct prefix +21%).
 
 ### 6.3 `segment_tokens`
 
-**192 visible tokens, `hard_cut_chars 1000`, sentence-boundary trim (existing `trim_to_sentence`).** 128 tokens is
+**192 visible tokens, `hard_cut_chars 1500`, sentence-boundary trim (existing `trim_to_sentence`).** 128 tokens is
 the "tight token limit" regime in which models drop the real drivers from their visible text (Zaman & Srivastava
 2026: larger budgets raise hint verbalization to ~90%); the sentences that carry causal weight are planning and
 uncertainty-management sentences, which a 128-token cut truncates first (Bogdan 2025); and every extra handoff costs
 a model-tier-sized drift (Khraishi 2026: -8 to +13 pp), so fewer, longer segments are better than more, shorter ones.
-192 fits 2-4 labelled items plus `Where we stand:`. The hard cut is raised to 1000 chars so the mandatory last line
-survives an overshoot; a note whose `Where we stand:` was cut is logged (`wws_missing`). Routing granularity stays
-per segment. Not 256 for everyone: cost grows with visible tokens and Neon's abort does not stop billing.
+192 fits 2-4 labelled items plus `Where we stand:`. The hard cut was first raised to 1000 chars so the mandatory last
+line survives an overshoot; the first live run showed that this is too tight for German: 192 tokens run to 1100-1300
+characters, every stream ended normally (`sentinel` / `stop`), the notes came out at 800-996 characters after the cut
+and its sentence trim, and 9 of 10 had lost their last line. The cut is therefore **1500** characters (about 2x the
+token target in English, 1.2-1.4x in German), and a note the cut shortened is flagged (`ExploreFlags.cut`) and
+counted (`wws.cut`, distinct from `wws.missing` for a line the model skipped; section 6.1 says what the tail and the
+gate do about it). The surrounding limits scale with it and still make sense: the relay stops reading a cancellable
+stream once the visible text exceeds 1.5x = 2250 characters (`overflow`; the backend closes the response at the same
+point plus the echo window, `cut`), a non-cancellable stream (Neon) is read on until 4x = 6000 characters (`runaway`),
+which is about where Neon's `max_tokens_slack` of 1536 tokens ends anyway, and the display cap of the stream filter
+is the cut itself. Routing granularity stays per segment. Not 256 for everyone: cost grows with visible tokens and
+Neon's abort does not stop billing.
 
 ### 6.4 Structured-notes instruction (replaces `RELAY_SYSTEM_TEMPLATE` when `explore.enabled`)
 
@@ -429,7 +455,8 @@ Where we stand|Lens kept|Lens dropped|Correction|Lens \([^)]+\)):` per line (cas
   the output while preserving correctness and reasoning quality", with the approach "mostly the same" and reasoning
   tokens governed separately (OpenAI docs). Under a 192-token target with client-side sentinel detection (Sol has no
   `stop`), `high` tends to overshoot, costs output tokens until the sentinel, and risks the trailing `Where we
-  stand:` being cut; `medium` is the budget-safe step up. `high` with `hard_cut_chars 1200` is the A/B arm.
+  stand:` being cut; `medium` is the budget-safe step up. `high` is the A/B arm (the 1500-character cut leaves it
+  room; `wws.cut` in the metrics says whether it still overshoots).
 - Answer: `verbosity: low` (new `answer_extra_body`), where verbosity compensation hurts (Zhang Y. 2024).
 - `seed = hash(explore.seed, idx) mod 2^31` on every Sol call (`supports_seed: true`): the only reproducibility
   handle on the three endpoints; used for template and cue A/B tests.
@@ -448,6 +475,7 @@ Where we stand|Lens kept|Lens dropped|Correction|Lens \([^)]+\)):` per line (cas
 | `lens_distance` (optional, embedding classifier present) | mean cosine distance of lens notes to the question | how far the lenses go |
 | `labels.counts`, `labels.coverage` | per-label counts; share of notes with >= 2 labelled items and with `Where we stand:` | verbalization in Meek's sense (factor listing) |
 | `wws_lines`, `answer_flips` | the sequence of `Where we stand:` best answers; number of changes (string-normalised, or judge) | commitment trajectory; flips after the gate opened are the failure signal |
+| `wws.{missing, cut, waived, waived_at}` | notes without the line: skipped by the model vs lost to the hard cut (disjoint); waivers the gate granted (section 6.1) and at which segment | whether the cut is too tight (`cut`), whether the template is followed (`missing`), whether the gate had to give in (`waived`) |
 | `premature_finals`, `forced_continuations`, `first_final_index`, `gate_missing_at_final` | gate bookkeeping | how often models conclude early; whether forcing loops |
 | `ngram_overlap_last2` | word-3-gram Jaccard of the last two notes | loop detection |
 | `notes_chars`, `notes_tokens_est`, `think_segments`, `main_line_segments` | sizes | cost driver; not a quality metric (Chen W.-L. 2026) |

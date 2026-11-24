@@ -36,7 +36,9 @@ system prompt and a per-segment tail (record status plus a lens, check, continua
 ``segment_start.data["explore"]`` badges the segment (``kind``, ``field``, ``tier``, ``cue``), ``segment_end.data``
 carries the segment's ``explore`` flags (and ``premature_final`` when a conclusion was set aside), the committed
 segments carry ``Segment.explore`` and ``done.data["explore"]`` (= ``trace.to_dict()["explore"]``) holds the §7
-metrics.
+metrics. The record status of the tail reminds the writer of the 'Where we stand:' line whenever the previous note
+has none (skipped, or removed by the hard cut: ``ExploreFlags.cut``), and the gate waives that line once it has been
+the only missing item after :data:`WWS_WAIVER_NOTES` consecutive notes (``explore.wws`` in the metrics).
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from cutoffmix.lenses import Field, draw_lens
 from cutoffmix.prompts import (
     LABELS,
+    WWS_ITEM,
     answer_system_prompt_explore,
     check_text,
     clean_segment,
@@ -75,6 +78,7 @@ from cutoffmix.prompts import (
     split_final,
     strip_preamble,
     trim_overlap,
+    trim_to_sentence,
     vs_direction_text,
     vs_menu_messages,
     word3gram_jaccard,
@@ -106,6 +110,7 @@ __all__ = [
     "STAGNATION_SEGMENTS",
     "VS_MENU_MAX_TOKENS",
     "VS_MENU_MODEL",
+    "WWS_WAIVER_NOTES",
     "ExploreTrace",
     "Relay",
     "RelayRuntime",
@@ -119,6 +124,9 @@ VS_MENU_MODEL = "gpt-6.2-sol"  # the next-move menu side call always runs on Sol
 VS_MENU_MAX_TOKENS = 300  # five menu lines of at most 25 words
 STAGNATION_SEGMENTS = 4  # the argmax topic unchanged for this many think segments (plus no new salient token)
 GARBLE_WORD_SHARE = 0.6  # a note whose share of dictionary-like words is below this counts as garbled
+# The gate waives the 'Where we stand:' line once it has been the only missing item after this many consecutive
+# committed notes (DESIGN_explore §6.1): a line the hard cut removed must not hold the record open for good.
+WWS_WAIVER_NOTES = 2
 _SEED_BITS = 31  # a random explore seed, when neither explore.seed nor the run seed is set
 _MARKER_LAG_EXTRA = 8  # display lag beyond the sentinel/marker length (markdown variants: **Final answer:**)
 _CUT_FACTOR = 1.5  # stop reading a think segment once its visible text exceeds hard_cut_chars * this
@@ -401,22 +409,26 @@ class _StreamFilter:
 
 
 def _finalize_think(raw: str, echo: _Echo, *, sentinel: str, final_marker: str,
-                    hard_cut_chars: int) -> tuple[str, str | None, bool]:
-    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel)`` of a think attempt.
+                    hard_cut_chars: int) -> tuple[str, str | None, bool, bool]:
+    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel, cut)`` of a think attempt.
 
     Nothing after the first sentinel counts, also a mangled one (a final marker written after it is not an answer).
     Notes repeated before the new paragraph are removed, and a text that is only a piece of the notes (an echo,
-    possibly cut off) becomes ``""``.
+    possibly cut off) becomes ``""``. ``cut`` says whether the hard cut to ``hard_cut_chars`` (with its sentence
+    trim) shortened the paragraph: a stream that ended normally can still lose its end here, which the explore
+    preset must know (a trailing 'Where we stand:' line is the first thing the cut removes).
     """
     pre, saw = cut_at_sentinel(raw, sentinel)
     notes, answer = split_final(pre, final_marker)
     body = echo.strip(strip_preamble(notes if answer is not None else pre))
-    text = clean_segment(body, echo.context, sentinel=sentinel, hard_cut_chars=hard_cut_chars)[0]
+    full = clean_segment(body, echo.context, sentinel=sentinel, hard_cut_chars=_NO_LIMIT)[0]
+    text = trim_to_sentence(full, hard_cut_chars)
+    cut = len(text) < len(full)
     if echo.repeats(text):
         text = ""
     if answer is not None:
         answer = clean_segment(answer, "", sentinel=sentinel, hard_cut_chars=_NO_LIMIT)[0]
-    return text, answer, saw
+    return text, answer, saw, cut
 
 
 def _finalize_answer(raw: str, *, sentinel: str, final_marker: str) -> str:
@@ -449,6 +461,7 @@ class _Attempt:
     retry_after: float | None = None
     note: str | None = None  # the backend's done.error, e.g. "refused: ..."
     saw_sentinel: bool = False
+    cut: bool = False  # think: the committed text is shorter than what was written (hard cut or truncated stream)
     aborted: bool = False  # the stream was closed (by the relay or the backend) before the provider finished
     streamed: bool = False  # the backend yielded at least one event (a call that failed before it is not billed)
     timed_out: bool = False  # the relay gave up waiting (the provider may have billed it: its usage is unknown)
@@ -546,6 +559,9 @@ class _ExploreState:
     gate_missing_at_final: list[str] | None = None
     window_notes: list[str] = field(default_factory=list)  # the notes the routing window sees (no lens notes)
     wws_lines: list[str] = field(default_factory=list)
+    wws_only_streak: int = 0  # consecutive committed notes after which the WWS line was the only missing item
+    wws_waivers: int = 0  # how often the streak reached WWS_WAIVER_NOTES (the gate then waives the line)
+    wws_waived_at: list[int] = field(default_factory=list)  # the segment index of every waiver granted
     vs_menu: dict[str, Any] = field(default_factory=lambda: {"calls": 0, "parsed": 0, "chosen_p": [], "menus": [],
                                                              "errors": [], "skipped": None})
     vs_cache: dict[int, str] = field(default_factory=dict)  # menu directive per segment index
@@ -570,9 +586,40 @@ class _ExploreState:
     def wws_recent(self, extra: ExploreFlags | None = None) -> bool:
         return any(f.has_wws for f in self.flags(extra)[-self.cfg.where_we_stand_window:])
 
+    def wws_previous(self) -> bool:
+        """Whether the last committed note has a 'Where we stand:' line. False (a reminder is due) when the model
+        skipped it or the hard cut removed it; True before the first note, whose tail lists the line anyway."""
+        flags = self.flags()
+        return not flags or flags[-1].has_wws
+
+    def wws_waived(self) -> bool:
+        """Whether the gate waives the 'Where we stand:' line: it has been the only missing item after
+        :data:`WWS_WAIVER_NOTES` consecutive notes (a line the hard cut removed must not block the gate for good).
+        The waiver lapses with the streak, i.e. once a note has the line again or another item goes missing."""
+        return self.wws_only_streak >= WWS_WAIVER_NOTES
+
+    def note_committed(self, index: int) -> None:
+        """Gate bookkeeping once think segment ``index`` joined the trace: advance or reset the waiver streak (judged
+        on the unwaived checklist), and log a waiver when the streak reaches :data:`WWS_WAIVER_NOTES`."""
+        if self._missing() == [WWS_ITEM]:
+            self.wws_only_streak += 1
+            if self.wws_only_streak == WWS_WAIVER_NOTES:
+                self.wws_waivers += 1
+                self.wws_waived_at.append(index)
+        else:
+            self.wws_only_streak = 0
+
+    def _missing(self, extra: ExploreFlags | None = None, pending: bool | None = None) -> list[str]:
+        """The checklist without the waiver (what :func:`missing_record_items` says)."""
+        return missing_record_items(main_line_count=self.main_line_count(extra), min_segments=self.cfg.min_segments,
+                                    label_counts=self.label_counts(extra), require_labels=self.cfg.require_labels,
+                                    wws_recent=self.wws_recent(extra),
+                                    pending_check=self.pending_check if pending is None else pending)
+
     def record_missing(self, *, after: tuple[SegmentKind, str] | None = None) -> list[str]:
         """The checklist items still failing (DESIGN_explore §6.1); empty when the gate is open. With ``after``
-        (kind and text of a note about to be committed) the record is judged as it will be once that note is in."""
+        (kind and text of a note about to be committed) the record is judged as it will be once that note is in.
+        While :meth:`wws_waived`, the 'Where we stand:' item is left out (the tail still reminds of the line)."""
         extra: ExploreFlags | None = None
         pending = self.pending_check
         if after is not None and after[1]:
@@ -580,9 +627,10 @@ class _ExploreState:
             parsed = parse_labels(text)
             extra = ExploreFlags(kind=kind, labels=dict(parsed["counts"]), has_wws=bool(parsed["has_wws"]))
             pending = True if kind == "lens" else False if kind == "check" else pending
-        return missing_record_items(main_line_count=self.main_line_count(extra), min_segments=self.cfg.min_segments,
-                                    label_counts=self.label_counts(extra), require_labels=self.cfg.require_labels,
-                                    wws_recent=self.wws_recent(extra), pending_check=pending)
+        missing = self._missing(extra, pending)
+        if self.wws_waived() and WWS_ITEM in missing:
+            missing.remove(WWS_ITEM)
+        return missing
 
     def gate_open(self) -> bool:
         return not self.record_missing()
@@ -673,6 +721,14 @@ class _ExploreState:
                 },
             },
             "wws_lines": list(self.wws_lines),
+            # notes without a 'Where we stand:' line: skipped by the model (missing) or lost to the cut (cut), and
+            # how often the gate waived the line (DESIGN_explore §6.1)
+            "wws": {
+                "missing": sum(1 for f in noted if not f.has_wws and not f.cut),
+                "cut": sum(1 for f in noted if not f.has_wws and f.cut),
+                "waived": self.wws_waivers,
+                "waived_at": list(self.wws_waived_at),
+            },
             "answer_flips": sum(1 for a, b in zip(keys, keys[1:]) if a != b),
             "premature_finals": list(self.premature_finals),
             "forced_continuations": sum(1 for f in flags if f.kind == "continue"),
@@ -1084,7 +1140,8 @@ class Relay:
         if phase == "think":
             req.system_override = relay_system_prompt_explore(rc.segment_tokens, st.today, rc.sentinel,
                                                               rc.final_marker)
-            status = record_status_text(ex.record_missing(), ex.gate_open(), rc.final_marker)
+            missing = ex.record_missing()
+            status = record_status_text(missing, not missing, rc.final_marker, remind_wws=not ex.wws_previous())
             req.tail = relay_tail(st.think_count() + 1, status, plan.directive if plan is not None else "")
             req.metadata["kind"] = plan.kind if plan is not None else "main"
         else:
@@ -1278,11 +1335,12 @@ class Relay:
             st.count_call(att)
         att.raw = filt.raw
         if req.phase == "think":
-            att.text, att.answer, att.saw_sentinel = _finalize_think(
+            att.text, att.answer, att.saw_sentinel, att.cut = _finalize_think(
                 filt.raw, echo, sentinel=rc.sentinel, final_marker=rc.final_marker,
                 hard_cut_chars=rc.hard_cut_chars)
             if att.answer is None and not att.saw_sentinel and att.finish in _TRUNCATED_FINISHES:
                 att.text = complete_sentences(att.text)  # cut off: drop the dangling half sentence
+                att.cut = True
         else:
             att.text = _finalize_answer(filt.raw, sentinel=rc.sentinel, final_marker=rc.final_marker)
             att.saw_sentinel = filt.stop_reason in ("sentinel", "mangled")
@@ -1316,6 +1374,8 @@ class Relay:
         flags = self._explore_commit(st, att, plan) if plan is not None and att.phase == "think" else None
         seg.explore = flags
         st.trace.segments.append(seg)
+        if flags is not None and st.explore is not None:
+            st.explore.note_committed(seg.index)  # the waiver streak is judged with this note in the record
         if att.phase == "think":
             if att.text:
                 st.notes.append(att.text)
@@ -1345,7 +1405,7 @@ class Relay:
         parsed = parse_labels(att.text)
         flags = ExploreFlags(kind=plan.kind, field=plan.field.label if plan.field is not None else None,
                              tier=plan.tier, labels=dict(parsed["counts"]), has_wws=bool(parsed["has_wws"]),
-                             cue=plan.cue)
+                             cut=att.cut, cue=plan.cue)
         if plan.kind == "lens":
             flags.lens_prefix_ok = parsed["lens_prefix"] is not None
             ex.pending_check, ex.lens_writer, ex.lens_field = True, att.model, plan.field

@@ -91,7 +91,7 @@ def test_explore_preset_matches_design_section_2():
                                  check_other_model=True)
     assert ex.vs_menu == "off" and ex.answer_basis is True
     assert (cfg.relay.segment_tokens, cfg.relay.hard_cut_chars, cfg.relay.max_segments, cfg.relay.answer_mode) == (
-        192, 1000, 16, "routed")
+        192, 1500, 16, "routed")
     assert cfg.relay.window_segments == 3
     # routing by cutoff stays the product: the preset does not touch the policy
     assert cfg.router == RouterConfig()

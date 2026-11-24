@@ -162,7 +162,9 @@ class ExploreFlags:
     ``kind`` says which tail directive the segment was written under: a plain main-line note, a cross-field lens
     note (``field``/``tier`` set), the check of the previous lens (``field`` set, ``lens_verdict`` from
     ``Lens kept:``/``Lens dropped:``) or a forced continuation (``cue`` set). ``labels`` counts the labelled items
-    found in the committed text, ``has_wws`` whether it ends with a ``Where we stand:`` line.
+    found in the committed text, ``has_wws`` whether it ends with a ``Where we stand:`` line, ``cut`` whether the
+    committed text is shorter than what the model wrote (the client-side hard cut, or a truncated stream), which is
+    how a trailing ``Where we stand:`` line gets lost.
     """
 
     kind: SegmentKind = "main"
@@ -170,6 +172,7 @@ class ExploreFlags:
     tier: str | None = None  # "near" | "mid" | "far" (lens segments)
     labels: dict[str, int] = dataclasses.field(default_factory=dict)  # canonical label -> count in the text
     has_wws: bool = False
+    cut: bool = False  # the hard cut (or a length/overflow finish) shortened the note
     lens_verdict: Literal["kept", "dropped"] | None = None  # check segments
     lens_prefix_ok: bool | None = None  # lens segments: the note opened with 'Lens (field):'
     cue: str | None = None  # continuation segments: the opening phrase asked for

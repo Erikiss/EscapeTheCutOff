@@ -588,7 +588,9 @@ Validation in `__post_init__` (`ConfigError` naming `explore.<key>` / `explore.l
 mapping patches the default weights (deep merge). YAML's bare `off` (parsed as false) is accepted for `vs_menu`.
 `cutoffmix/data/default.yaml` carries the whole `explore:` block with `enabled: false`;
 `cutoffmix/data/presets/explore.yaml` (package data) is the preset of `DESIGN_explore.md` §2 without `router.policy`:
-`relay: {segment_tokens: 192, hard_cut_chars: 1000, max_segments: 16, answer_mode: routed}`, `explore.enabled: true`
+`relay: {segment_tokens: 192, hard_cut_chars: 1500, max_segments: 16, answer_mode: routed}` (`hard_cut_chars` was
+1000 until the first live run showed 192 tokens of German running to 1100-1300 characters, so the cut removed the
+trailing `Where we stand:` line; `DESIGN_explore.md` §6.3), `explore.enabled: true`
 with the defaults above, `models: {gemini-4-neon: {supports_temperature: false}, gpt-6.2-sol: {extra_body:
 {verbosity: medium}, answer_extra_body: {verbosity: low}, supports_seed: true}}`. The default `default.yaml` keeps
 Sol at `verbosity: low` (the measured default run). `AppConfig.to_dict()` gives `explore` with plain lists/dicts and
@@ -615,6 +617,8 @@ class ExploreFlags:                    # Segment.explore (None when the preset i
     kind: SegmentKind = "main"; field: str | None = None; tier: str | None = None
     labels: dict[str, int] = {}        # canonical label -> count in the committed text (parse_labels()["counts"])
     has_wws: bool = False; lens_verdict: Literal["kept", "dropped"] | None = None
+    cut: bool = False                  # the committed text is shorter than what the model wrote: the client-side hard cut
+                                       # (sentence trim) or a length/cut/overflow finish; how a trailing 'Where we stand:' is lost
     lens_prefix_ok: bool | None = None # lens segments: the note opened with 'Lens (field):'
     cue: str | None = None             # continuation segments
 class Segment:
@@ -650,6 +654,8 @@ LENS_TEXT {field} {c1} {c2} {c3}; CHECK_TEXT {field}; CONTINUE_TEXT {why} {cue}
 VS_MENU_SYSTEM; VS_MENU_USER {question} {notes}; VS_DIRECTION_TEXT {direction}; VS_MENU_P_MAX = 0.10; VS_MENU_MIN_LINES = 3
 RELAY_TAIL_EXPLORE = "END OF THE SHARED NOTES. Write note {k}. {record_status} {directive}"
 RECORD_CLOSED_TEXT / RECORD_CLOSED_NO_ITEMS_TEXT / RECORD_OPEN_TEXT
+WWS_ITEM = "a 'Where we stand:' line at the end of this note"   # the checklist phrase, also the reminder (closed gate)
+RECORD_OPEN_WWS_TEXT = " If you write a note, end it with a 'Where we stand:' line."   # the reminder once the gate is open
 LABELS = ("Claim", "Evidence", "Inference", "Principle", "Alternative set aside", "Open question", "Next",
           "Where we stand", "Lens kept", "Lens dropped", "Correction", "Lens")
 LABEL_RE          # a label at a line start (bullet, **bold** tolerated, case-insensitive); group "label", "field" for 'Lens (field):'
@@ -658,9 +664,12 @@ VS_LINE_RE        # ^\s*(\d)[.)]\s*(.+?)\s*\|\s*p\s*=\s*(0?\.\d+|1(?:\.0+)?)\s*$
 def relay_system_prompt_explore(target_tokens, today, sentinel, final_marker) -> str
 def answer_system_prompt_explore(today, *, answer_basis=True) -> str   # ANSWER_SYSTEM_TEMPLATE + sentences + date
 def relay_tail(k: int, record_status: str, directive: str = "") -> str    # note k is 1-based
-def record_status_text(missing: Sequence[str], gate_open: bool, final_marker="FINAL ANSWER:") -> str
+def record_status_text(missing: Sequence[str], gate_open: bool, final_marker="FINAL ANSWER:", *, remind_wws=False) -> str
+    # remind_wws (the previous note has no 'Where we stand:' line, skipped or cut): WWS_ITEM joins the missing items while
+    # the gate is closed (once, even if the checklist lists it), RECORD_OPEN_WWS_TEXT follows the permission once it is open
 def missing_record_items(*, main_line_count, min_segments, label_counts, require_labels, wws_recent, pending_check) -> list[str]
-    # the checklist phrases ("three more main-line notes", "an 'Evidence:' item that names its source", ...); [] = complete
+    # the checklist phrases ("three more main-line notes", "an 'Evidence:' item that names its source", WWS_ITEM, ...);
+    # [] = complete
 def lens_text(field_label, concepts) / check_text(field_label) / continue_text(why, cue) / vs_direction_text(direction) -> str
 def vs_menu_messages(question, notes) -> list[dict]      # the side call's chat messages
 def parse_labels(text) -> dict   # {"counts": {label: n}, "items": n (all but 'Where we stand'), "has_wws", "lens_prefix":
@@ -698,8 +707,10 @@ scripted runs against `tests/fixtures/explore/default_relay_expectation.json`, r
 carries `metadata["segment_index"] = index` and `metadata["seed"]` (§7.5 derives Sol's `body["seed"]` from them).
 
 **Requests.** Think: `system_override = relay_system_prompt_explore(segment_tokens, today, sentinel, final_marker)`,
-`tail = relay_tail(k, record_status_text(missing, gate_open, final_marker), directive)` with `k` = committed think
-segments + 1, `metadata["kind"]` = the segment's kind. Answer: `system_override = answer_system_prompt_explore(today,
+`tail = relay_tail(k, record_status_text(missing, gate_open, final_marker, remind_wws=not wws_previous()), directive)`
+with `k` = committed think segments + 1, `metadata["kind"]` = the segment's kind; `wws_previous()` is whether the last
+committed note has a `Where we stand:` line (the model skipped it, or the hard cut removed it: `ExploreFlags.cut`),
+so the tail reminds of the line even when the gate's two-note window does not (or no longer) require it. Answer: `system_override = answer_system_prompt_explore(today,
 answer_basis=explore.answer_basis)`, no tail (the constant `ANSWER_TAIL`). `answer_mode` is honoured unchanged.
 
 **Plan per think segment** (`_Plan`, computed before the routing decision, once per model decision of a segment;
@@ -736,7 +747,12 @@ Skipped (logged in `vs_menu.skipped`) when Sol is not among the relay's models; 
 
 **Record gate.** `record_missing()` = `missing_record_items(...)` over the committed segments' `ExploreFlags`
 (main-line count = kinds `main` + `continue`; label counts summed; a `Where we stand:` in one of the last
-`where_we_stand_window` notes; no pending check); `gate_open()` = nothing missing. A conclusion (text after the marker)
+`where_we_stand_window` notes; no pending check); `gate_open()` = nothing missing. **Waiver** (`WWS_WAIVER_NOTES = 2`):
+after every committed think segment the unwaived checklist is judged; when `WWS_ITEM` is its only entry the streak
+advances, else it resets, and while the streak is at least 2 `record_missing()` leaves the line out (the tail still
+reminds of it), so a line the cut keeps removing cannot hold the gate closed for good; each time the streak reaches 2
+a waiver is logged (`wws.waived`, `wws.waived_at`), and it lapses once a note has the line again or another item goes
+missing. A conclusion (text after the marker)
 is **accepted** when the gate is open, or forcing stopped on a loop, or `forcings >= max_forced_continuations`.
 Otherwise it is **premature**: the answer part is discarded (`segment_end.data["premature_final"] = True`), the note
 part is committed if non-empty, else the attempt is dropped (`reason "empty"`, `premature_final` on the dropped row)
@@ -750,8 +766,11 @@ an all-empty segment ends the notes with the gate closed). Speculative strategy:
 is stripped before scoring; the chosen draft decides the forcing.
 
 **Per segment** (`Segment.explore`, `segment_end.data["explore"]`): `kind`, `field` (label), `tier`, `labels`
-(`parse_labels(text)["counts"]`), `has_wws`, `lens_prefix_ok` (lens: the note opened with `Lens (..):`; a missing
-prefix is committed and counted as `ignored`), `lens_verdict` (check), `cue` (continuation).
+(`parse_labels(text)["counts"]`), `has_wws`, `cut` (the committed text is shorter than what the model wrote: the
+relay compares the cleaned paragraph before and after the hard cut, and also sets it for a `length` / `cut` /
+`overflow` finish without a sentinel; a stream that ended normally can still be cut), `lens_prefix_ok` (lens: the
+note opened with `Lens (..):`; a missing prefix is committed and counted as `ignored`), `lens_verdict` (check),
+`cue` (continuation).
 `segment_start.data["explore"] = {"kind", "field", "tier", "cue"}` for the UI badge.
 
 **Metrics** `done.data["explore"]` = `trace.to_dict()["explore"]` (the trace of an explore run is `ExploreTrace`, a
@@ -764,6 +783,8 @@ topics_visited {all, main_line}, topic_entropy_bits {mean_posterior, argmax_hist
 lens {offered, written, ignored, kept, dropped, unverified, fields[], tiers[], keep_rate = kept / offered | null}
 labels {counts {label: n}, coverage {two_or_more_items, where_we_stand}}   # shares over non-empty notes
 wws_lines[] (the 'Where we stand:' sentences), answer_flips (changes of the text before the first comma/semicolon, normalised)
+wws {missing, cut, waived, waived_at[]}   # non-empty notes without the line: skipped by the model (missing) or lost to the
+                                          # cut (cut, disjoint); waivers granted by the gate and the segment index of each
 premature_finals[] ({index, model, kind, missing[], overlap_last2, forced, loop, cue?}), forced_continuations (committed
   "continue" segments), first_final_index, gate_open, gate_missing_at_final[] | null, loop_stop, ngram_overlap_last2
 notes_chars, notes_tokens_est (chars // 4), garble (notes with < 60 % dictionary-like words: letters with a vowel or CJK)

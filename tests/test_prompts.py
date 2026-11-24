@@ -299,7 +299,9 @@ def _explore_texts() -> list[str]:
         prompts.RELAY_SYSTEM_TEMPLATE_EXPLORE, prompts.ANSWER_SYSTEM_EXPLORE_SUFFIX, prompts.LENS_TEXT,
         prompts.CHECK_TEXT, prompts.CONTINUE_TEXT, prompts.VS_MENU_SYSTEM, prompts.VS_MENU_USER,
         prompts.VS_DIRECTION_TEXT, prompts.RECORD_CLOSED_TEXT, prompts.RECORD_CLOSED_NO_ITEMS_TEXT,
-        prompts.RECORD_OPEN_TEXT, prompts.RELAY_TAIL_EXPLORE,
+        prompts.RECORD_OPEN_TEXT, prompts.RECORD_OPEN_WWS_TEXT, prompts.WWS_ITEM, prompts.RELAY_TAIL_EXPLORE,
+        record_status_text([], True, remind_wws=True),
+        record_status_text(["one more main-line note"], False, remind_wws=True),
         lens_text("materials science", ("fatigue", "creep", "annealing")),
         check_text("materials science"),
         continue_text("the record has no 'Alternative set aside:' item yet", "Alternatively, "),
@@ -398,13 +400,36 @@ def test_record_status_and_tail():
     assert "  " not in tail and not tail.endswith(" ")
 
 
+def test_record_status_reminds_of_the_where_we_stand_line():
+    """``remind_wws`` (the previous note has no 'Where we stand:' line, or the cut removed it): the line joins the
+    missing items while the gate is closed (once, even if the checklist lists it already) and a sentence follows the
+    permission to conclude once the gate is open."""
+    wws = prompts.WWS_ITEM
+    assert wws == "a 'Where we stand:' line at the end of this note"
+    assert record_status_text(["one more main-line note"], False, remind_wws=True) == (
+        "Items still missing from the record: one more main-line note and a 'Where we stand:' line at the end of "
+        "this note. The moderator does not accept a conclusion yet; do not write 'FINAL ANSWER:'.")
+    assert record_status_text([], False, remind_wws=True) == (
+        "Items still missing from the record: a 'Where we stand:' line at the end of this note. The moderator does "
+        "not accept a conclusion yet; do not write 'FINAL ANSWER:'.")
+    listed = record_status_text(["one more main-line note", wws], False, remind_wws=True)
+    assert listed == record_status_text(["one more main-line note", wws], False) and listed.count(wws) == 1
+    opened = record_status_text([], True, remind_wws=True)
+    assert opened == record_status_text([], True) + " If you write a note, end it with a 'Where we stand:' line."
+    assert opened.endswith(prompts.RECORD_OPEN_WWS_TEXT.strip())
+    assert record_status_text([], True, remind_wws=False) == record_status_text([], True)
+    tail = relay_tail(9, opened)
+    assert "  " not in tail and tail.endswith("'Where we stand:' line.")
+
+
 def test_missing_record_items():
     items = missing_record_items(main_line_count=3, min_segments=6, label_counts={"Claim": 2, "Open question": 1},
                                  require_labels=("Evidence:", "Alternative set aside:", "Open question:"),
                                  wws_recent=False, pending_check=True)
     assert items == ["three more main-line notes", "an 'Evidence:' item that names its source",
-                     "an 'Alternative set aside:' item", "a 'Where we stand:' line in the latest note",
+                     "an 'Alternative set aside:' item", "a 'Where we stand:' line at the end of this note",
                      "the test of the previous cross-field lens ('Lens kept:' or 'Lens dropped:')"]
+    assert items[3] == prompts.WWS_ITEM
     assert missing_record_items(main_line_count=5, min_segments=6, label_counts={"Evidence": 1},
                                 require_labels=["Evidence:"], wws_recent=True, pending_check=False) == [
         "one more main-line note"]

@@ -94,6 +94,10 @@ RECORD_OPEN_TEXT = (
     "The record is complete. If the notes settle the problem, the moderator accepts a conclusion: write "
     "'{final_marker}' followed by the answer instead of a note."
 )
+# The checklist phrase for the 'Where we stand:' line; also the reminder appended to the record status whenever the
+# previous note has no such line (skipped by the model, or removed by the client-side hard cut).
+WWS_ITEM = "a 'Where we stand:' line at the end of this note"
+RECORD_OPEN_WWS_TEXT = " If you write a note, end it with a 'Where we stand:' line."
 
 LENS_TEXT = (
     "Cross-field lens for this note: the field is {field}. Choose one specific, well-established concept from this "
@@ -176,12 +180,21 @@ def _join_items(items: Sequence[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def record_status_text(missing: Sequence[str], gate_open: bool, final_marker: str = "FINAL ANSWER:") -> str:
+def record_status_text(missing: Sequence[str], gate_open: bool, final_marker: str = "FINAL ANSWER:", *,
+                       remind_wws: bool = False) -> str:
     """The record-status sentence(s) of the explore tail: what is still missing while the gate is closed, or the
-    permission to conclude once it is open. ``missing`` is ignored when ``gate_open`` is true."""
+    permission to conclude once it is open. ``missing`` is ignored when ``gate_open`` is true.
+
+    ``remind_wws`` (the previous note has no 'Where we stand:' line, or the hard cut removed it) adds
+    :data:`WWS_ITEM` to the missing items while the gate is closed and :data:`RECORD_OPEN_WWS_TEXT` once it is open,
+    so the reminder is in the tail even when the gate does not (or no longer) require the line.
+    """
     if gate_open:
-        return RECORD_OPEN_TEXT.format(final_marker=final_marker)
-    joined = _join_items(missing)
+        return RECORD_OPEN_TEXT.format(final_marker=final_marker) + (RECORD_OPEN_WWS_TEXT if remind_wws else "")
+    items = [s for s in missing if s and s.strip()]
+    if remind_wws and WWS_ITEM not in items:
+        items.append(WWS_ITEM)
+    joined = _join_items(items)
     if not joined:
         return RECORD_CLOSED_NO_ITEMS_TEXT.format(final_marker=final_marker)
     return RECORD_CLOSED_TEXT.format(missing=joined, final_marker=final_marker)
@@ -231,8 +244,8 @@ def missing_record_items(*, main_line_count: int, min_segments: int, label_count
 
     ``label_counts`` is ``parse_labels(all notes)["counts"]`` (canonical labels without the colon);
     ``require_labels`` the configured labels with their colon; ``wws_recent`` whether a 'Where we stand:' line appears
-    in one of the last ``where_we_stand_window`` notes; ``pending_check`` whether a lens still awaits its check.
-    An empty list means the record is complete.
+    in one of the last ``where_we_stand_window`` notes (its phrase is :data:`WWS_ITEM`); ``pending_check`` whether a
+    lens still awaits its check. An empty list means the record is complete.
     """
     out: list[str] = []
     short = min_segments - main_line_count
@@ -245,7 +258,7 @@ def missing_record_items(*, main_line_count: int, min_segments: int, label_count
             detail = " that names its source" if name.lower() == "evidence" else ""
             out.append(f"{_article(name)} '{name}:' item{detail}")
     if not wws_recent:
-        out.append("a 'Where we stand:' line in the latest note")
+        out.append(WWS_ITEM)
     if pending_check:
         out.append("the test of the previous cross-field lens ('Lens kept:' or 'Lens dropped:')")
     return out
