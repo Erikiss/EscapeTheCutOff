@@ -16,19 +16,26 @@ from typing import Any, AsyncIterator, Literal, Mapping, Protocol, Sequence, run
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """A model that can take a turn in the shared chain of thought."""
+    """A model that can take a turn in the shared chain of thought.
+
+    All three target models have *mandatory* hidden reasoning on OpenRouter (it cannot be disabled), expose no
+    logprobs, and never return raw chain-of-thought. The relay therefore shares a *visible* working-notes stream;
+    every call's own hidden reasoning is discarded (``reasoning.exclude``) and kept small (``effort: low``).
+    """
 
     key: str  # short stable key used everywhere (index rows, traces, UI), e.g. "claude-fable-5.2"
-    provider_id: str  # id at the provider/gateway, e.g. "anthropic/claude-fable-5.2" on OpenRouter
+    provider_id: str  # id at the gateway, e.g. "anthropic/claude-fable-5.2" on OpenRouter
     display: str = ""
     color: str = "#888888"  # UI colour of this model's segments
-    supports_stop: bool = True
-    supports_temperature: bool = True
-    supports_prefill: bool = False  # can we send a trailing assistant message to be continued?
-    # How reasoning is requested while relaying the *visible* scratchpad. "off"/"minimal" keep the
-    # visible output == the shared thinking stream. "native" lets the model think natively and we
-    # append whatever reasoning text the API returns (lossy: often only a summary).
-    relay_reasoning: Literal["off", "minimal", "low", "native"] = "minimal"
+    supports_stop: bool = True  # gateway honours `stop` on the pinned providers (GPT-6.2 Sol: no)
+    supports_temperature: bool = False  # Fable 5.2 / GPT-6.2 Sol: no; Gemini 4 Neon: yes
+    cancellable: bool = True  # closing the stream stops billing (Anthropic/OpenAI/Azure yes; Google no)
+    # OpenRouter `provider` routing object, e.g. {"only": ["anthropic", "azure"], "allow_fallbacks": False}
+    provider_routing: Mapping[str, Any] = field(default_factory=dict)
+    # OpenRouter `reasoning` object used for relay segments
+    reasoning: Mapping[str, Any] = field(default_factory=lambda: {"effort": "low", "exclude": True})
+    cache_style: Literal["anthropic", "openai", "implicit", "none"] = "none"
+    max_tokens_slack: int = 2048  # hidden-reasoning allowance added to the visible target (reasoning shares max_tokens)
     extra_body: Mapping[str, Any] = field(default_factory=dict)  # merged into every request body
 
     def label(self) -> str:
@@ -44,16 +51,22 @@ Phase = Literal["think", "answer"]
 
 @dataclass
 class ContinuationRequest:
-    """Ask a model to continue the shared scratchpad (phase="think") or to answer from it (phase="answer")."""
+    """Ask a model for the next segment of the shared notes (phase="think") or the final answer (phase="answer").
+
+    ``segments`` are the notes so far, one string per committed segment, *never edited* after commit, so that
+    request bodies stay append-only and provider prompt caches keep hitting.
+    """
 
     question: str
-    scratchpad: str
+    segments: list[str] = field(default_factory=list)
     phase: Phase = "think"
-    max_tokens: int = 96
-    today: str | None = None  # ISO date injected into the system prompt when not None
-    language_hint: str | None = None
-    temperature: float | None = None
-    end_marker: str = "<<END_OF_THINKING>>"
+    target_tokens: int = 128  # visible length we ask for ("about K tokens")
+    max_tokens: int | None = None  # total incl. hidden reasoning; None -> target_tokens + model.max_tokens_slack
+    today: str | None = None  # ISO date injected into the (static) system prompt when not None
+    sentinel: str = "<<END_STEP>>"
+    final_marker: str = "FINAL ANSWER:"
+    hard_cut_chars: int = 600  # client-side cap on visible characters per segment
+    run_id: str = ""  # used for prompt_cache_key / session_id
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -207,8 +220,17 @@ class RelayTrace:
 # Benchmark records
 # --------------------------------------------------------------------------------------
 
-ProbeKind = Literal["current", "recall", "mcq"]
-Grade = Literal["correct", "incorrect", "abstain", "error"]
+# current   : current-state question, no date, neutral system prompt (comparable to the apoorvumang "direct" probe)
+# current_d : same question under the deployment system prompt incl. today's date (PRIMARY routing index = "virtual cutoff")
+# recall    : question that names the period explicitly (knowledge availability)
+# mcq       : 4-way multiple choice incl. the stale/pre-event option (upper bracket, 25% floor)
+ProbeKind = Literal["current", "current_d", "recall", "mcq"]
+# correct  : asserts the current / ground-truth state
+# outdated : asserts the stale (pre-event) state, e.g. "X is alive", the predecessor as office holder
+# incorrect: other wrong / hallucinated
+# abstain  : declines, says it does not know
+# ungraded : empty response, API error, judge failure (dropped from every denominator)
+Grade = Literal["correct", "outdated", "incorrect", "abstain", "ungraded"]
 
 
 @dataclass
@@ -222,7 +244,7 @@ class Event:
     date: str  # ISO date YYYY-MM-DD (day may be 01 if unknown)
     month: str  # YYYY-MM
     topic: str  # cutoffmix topic id (see cutoffmix.taxonomy)
-    category: str  # death | office_change | release | result | event | control_alive | fake_event | ...
+    category: str  # event type: death | office_change | election | release | award | sports_result | other | control_alive | fake_event
     subject: str
     fact: str
     region: str = "International"
@@ -258,7 +280,8 @@ class ProbeResult:
     probe: ProbeKind
     response: str
     grade: Grade
-    grader: str = "rule"  # rule | judge:<model> | mcq
+    hedged: bool = False  # e.g. "As of March 2026, X is alive" -> grade=outdated, hedged=True
+    grader: str = "rule"  # rule | mcq | judge:<model>[+<model>] | kc
     latency_s: float = 0.0
     usage: dict[str, Any] | None = None
     error: str | None = None
