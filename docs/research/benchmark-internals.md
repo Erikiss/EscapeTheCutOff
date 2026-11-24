@@ -191,7 +191,7 @@ GPT-6.2 Sol does not list `stop`, so segment boundaries for switching cannot rel
 - The GitHub README shows a CC BY 4.0 badge, but the repo has no LICENSE file (none in `git ls-files`). So the code (`kc/`, `scripts/`) has no formal software license grant; reimplement it or ask the author before vendoring.
 - Events and results can be reused with attribution; the card asks users to cite the dataset. Per-row `source` URLs are Wikipedia or news.
 
-### Files (all under /tmp/claude-0/-home-user-EscapeTheCutOff/95d45c65-31f1-5b9f-b0f4-53e755166f71/scratchpad)
+### Files (all under (scratchpad))
 - (scratchpad)/kc-repo/ — full clone, HEAD a7bef1e
 - (scratchpad)/kc-data/events.jsonl — HF copy
 - (scratchpad)/kc-data/results.jsonl — HF copy
