@@ -143,6 +143,8 @@ input[type=number] { width: 96px; }
 .bar .track { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
 .bar .fill { height: 100%; border-radius: 4px; background: var(--fill, var(--accent)); min-width: 2px; transition: width .25s; }
 .bar .lbl .u { color: var(--text-3); font-size: 12px; margin-left: 6px; font-family: var(--mono); }
+.bar .lbl .u.top { color: var(--text-2); font-weight: 650; }
+.insp-note { font-size: 12px; color: var(--text-3); margin: 8px 0 0; line-height: 1.45; }
 .meter { display: inline-block; vertical-align: middle; width: 70px; height: 6px; border-radius: 4px; background: var(--surface-3); margin-left: 8px; overflow: hidden; }
 .meter b { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
 .drafts { display: grid; gap: 8px; }
@@ -173,7 +175,9 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
   .heat th.topic { white-space: normal; min-width: 88px; font-size: 12px; line-height: 1.3; }
   .heat thead .chip { white-space: normal; font-size: 11px; padding: 3px 5px; border-radius: 8px; flex-direction: column; gap: 3px; line-height: 1.2; text-align: center; }
   .heat td { padding: 4px 3px; font-size: 11px; }
+  .heat td small .pf { display: none; } /* "P(freshest) 41%" becomes "P 41%"; the footer names it */
 }
+.abbr { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
 .heat-foot { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; margin-top: 10px; font-size: 12px; color: var(--text-3); }
 .heat-about { flex-basis: 100%; }
 .heat-about summary { cursor: pointer; color: var(--text-2); }
@@ -238,7 +242,7 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
       <section class="card" id="insp-slot">
         <div id="insp">
           <div class="card-head"><h2>Routing</h2></div>
-          <p class="insp-empty">Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability of every model and the decision type.</p>
+          <p class="insp-empty">Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability and routing score of every model, and the decision type.</p>
         </div>
       </section>
       <section class="card">
@@ -273,7 +277,7 @@ const EXAMPLES = [
   { lang: "DE", kind: "timeless", q: "Wie viele Primzahlen liegen zwischen 1 und 100? Begründe Schritt für Schritt." },
 ];
 const DECISIONS = {
-  sample: "sampled from the softmax over freshness scores",
+  sample: "sampled from the softmax over routing scores",
   hold: "kept the current model",
   argmax: "deterministic best score (with hysteresis)",
   speculative: "best of parallel drafts by all models",
@@ -312,6 +316,26 @@ function fmtTau(x) {
   const year = 2024 + Math.floor(base / 12), month = ((base % 12) + 12) % 12 + 1;
   return `${year}-${String(month).padStart(2, "0")}.${frac}`;
 }
+/* The routing score U_m of one decision as a gap to the best model of that same decision. U is not a date: it is
+   the topic-mix cutoff minus the uncertainty (κ·sd) and stale-answer (λ·H) penalties, so only the differences
+   between the models of one decision mean something. A null score (-inf on the server) = the index lacks the model. */
+const SCORE_TITLE = "routing score U relative to the best model of this decision, in months: the cutoff for this " +
+  "topic mix minus penalties for an uncertain estimate (κ·sd) and for stale answers (λ·H). Not a date.";
+function scoreGaps(scores) {
+  const finite = Object.values(scores || {}).filter((v) => v != null && isFinite(v));
+  const best = finite.length ? Math.max(...finite) : null;
+  const ties = finite.filter((v) => v === best).length;
+  const out = {};
+  for (const [m, v] of Object.entries(scores || {})) {
+    if (v == null || !isFinite(v)) { out[m] = "not in index"; continue; }
+    if (v === best) { out[m] = ties > 1 ? "tied best" : "best"; continue; }
+    const gap = best - v;
+    out[m] = "−" + (Math.round(gap * 10) >= 1 ? gap.toFixed(1) : Math.round(gap * 100) >= 1 ? gap.toFixed(2) : "<0.01") + " mo";
+  }
+  return out;
+}
+const P_FRESHEST_TITLE = "P(freshest): the probability that this model has the latest knowledge cutoff on this " +
+  "topic, from the cutoff estimates τ and their uncertainty alone (routing also penalises the stale-answer rate).";
 const modelName = (k) => (S.models[k] ? S.models[k].display : k || "?");
 const modelColor = (k) => (S.models[k] ? S.models[k].color : "#888888");
 const topicName = (id) => S.topics[id] || String(id).replace(/_/g, " ");
@@ -586,7 +610,7 @@ function renderInspector(rec) {
   const box = $("insp");
   if (!rec) {
     box.replaceChildren(h("div", { class: "card-head" }, h("h2", {}, "Routing")),
-      h("p", { class: "insp-empty" }, "Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability of every model and the decision type."));
+      h("p", { class: "insp-empty" }, "Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability and routing score of every model, and the decision type."));
     return;
   }
   const what = rec.phase === "answer" ? "Answer" : `Segment ${rec.index + 1}`;
@@ -605,15 +629,19 @@ function renderInspector(rec) {
   if (dl.childElementCount) kids.push(dl);
   const post = topN(rec.posterior, 5);
   if (post.length) kids.push(h("h3", {}, "Topic posterior (top 5)"), bars(post.map(([t, p]) => [topicName(t), p])));
-  const models = Object.keys(rec.probs || {}).length ? Object.keys(rec.probs) : Object.keys(rec.scores || {});
+  /* every scored model, also those a forced decision (round robin, fixed) gave no chance: their gap shows what it cost */
+  const models = [...new Set([...Object.keys(rec.probs || {}), ...Object.keys(rec.scores || {})])];
   if (models.length) {
     kids.push(h("h3", {}, rec.decision === "speculative" ? "Choice among the drafts" : "Model probabilities"));
-    const rows = models.map((m) => [m, rec.probs[m] || 0, rec.scores && rec.scores[m] != null ? "U " + fmtTau(rec.scores[m]) : ""])
-      .sort((a, b) => b[1] - a[1]);
+    const scores = rec.scores || {}, gaps = scoreGaps(scores);
+    const rank = (m) => (scores[m] != null && isFinite(scores[m]) ? scores[m] : -Infinity);
+    const rows = models.map((m) => [m, rec.probs[m] || 0, gaps[m] || ""]).sort((a, b) => b[1] - a[1] || rank(b[0]) - rank(a[0]));
     kids.push(h("div", { class: "bars" }, rows.map(([m, p, u]) => h("div", { class: "bar" },
-      h("span", { class: "lbl" }, chipInline(m), u ? h("span", { class: "u", title: "routing score: freshness of the window's topic mix" }, u) : null),
+      h("span", { class: "lbl" }, chipInline(m), u ? h("span", { class: "u" + (u.endsWith("best") ? " top" : ""), title: SCORE_TITLE }, u) : null),
       h("span", { class: "num" }, pct(p)),
       h("div", { class: "track" }, h("div", { class: "fill", style: `width:${p * 100}%;--fill:${modelColor(m)}` }))))));
+    if (Object.keys(gaps).length) kids.push(h("p", { class: "insp-note" },
+      "Next to each model: its routing score against the best one here, in months. The score is the cutoff for this topic mix minus penalties for an uncertain estimate and for stale answers, so it can rank models differently from the index below."));
   }
   if (rec.drafts) {
     kids.push(h("h3", {}, "Drafts"));
@@ -679,7 +707,7 @@ function renderHeatmap() {
       const bg = isFinite(r.tau) ? step(r.tau) : "transparent";
       const fg = bg !== "transparent" && luminance(bg) < 0.28 ? "#ffffff" : "#111111";
       const td = h("td", { class: r === best ? "best" : "", style: `background:${bg};color:${fg}`, tabindex: "0" },
-        fmtTau(r.tau), h("small", {}, "P " + pct(r.p_best)));
+        fmtTau(r.tau), h("small", {}, "P", h("span", { class: "pf" }, "(freshest)"), " " + pct(r.p_best)));
       td.addEventListener("mouseenter", (e) => showTip(e, r));
       td.addEventListener("mousemove", moveTip);
       td.addEventListener("mouseleave", hideTip);
@@ -695,7 +723,7 @@ function renderHeatmap() {
   foot.replaceChildren(
     h("span", {}, "τ = estimated virtual cutoff (YYYY-MM.tenths)"),
     h("span", {}, fmtTau(lo), h("span", { class: "ramp", style: `background:linear-gradient(90deg, ${ramp.join(",")})` }), fmtTau(hi)),
-    h("span", {}, "outlined = highest P(best) for the topic"),
+    h("span", {}, "% = ", h("span", { class: "abbr", title: P_FRESHEST_TITLE }, "P(freshest)"), ", outlined = highest for the topic"),
     aboutIndex(idx.meta || {}));
   foot.hidden = false;
   markActiveRow();
@@ -709,7 +737,12 @@ function aboutIndex(meta) {
   const counts = meta.n_events ? `${meta.n_events} events, ${meta.n_results} graded answers` : "";
   const line = [sources && "Data: " + sources, span, counts].filter(Boolean).join(" · ");
   if (line) parts.push(h("p", {}, line));
-  if (!parts.length) return h("span", {});
+  parts.push(h("p", {}, "P(freshest) and the outline compare the cutoff estimates τ alone. Routing does not just " +
+    "pick that model: for each segment it scores every model on the topic mix of the current window as " +
+    "U = Σ π·τ (the cutoff for that mix) − κ·sd (a penalty for an uncertain estimate) − λ·H (a penalty for the " +
+    "stale-answer rate H, how often the model states outdated facts as current), and the policy then samples or " +
+    "picks from these scores. A model with a later τ can therefore lose a segment to one with a surer estimate or " +
+    "fewer stale answers. The routing panel shows U as months behind the best model of each decision."));
   return h("details", { class: "heat-about" }, h("summary", {}, "About this index"), parts);
 }
 function markActiveRow() {
@@ -723,8 +756,9 @@ function showTip(e, r) {
   tip.replaceChildren(
     h("div", {}, h("b", {}, topicName(r.topic)), " · ", modelName(r.model)),
     h("div", { class: "mono" }, `τ ${fmtTau(r.tau)}  ± ${isFinite(r.sd) ? r.sd.toFixed(1) : "?"} mo`),
-    h("div", {}, `P(best) ${pct(r.p_best)} · n = ${r.n}`),
-    h("div", {}, `stale-assertion hazard ${pct(r.hazard)}` + (r.abstain != null ? ` · abstains ${pct(r.abstain)}` : "")));
+    h("div", {}, `P(freshest) ${pct(r.p_best)} · n = ${r.n}`),
+    h("div", { class: "hint" }, "chance that this model has the latest cutoff on this topic"),
+    h("div", {}, `stale-answer rate ${pct(r.hazard)}` + (r.abstain != null ? ` · abstains ${pct(r.abstain)}` : "")));
   tip.hidden = false;
   moveTip(e);
 }
