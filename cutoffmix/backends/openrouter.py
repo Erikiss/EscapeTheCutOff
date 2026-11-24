@@ -66,7 +66,7 @@ def segment_seed(key: str | int, index: int) -> int:
     """A stable request seed for segment ``index`` of a run keyed by ``key`` (the run seed or run id): the first
     eight bytes of SHA-256 of ``"{key}:{index}"`` modulo :data:`SEED_MODULUS`. Same inputs, same seed, on every
     platform (unlike ``hash()``)."""
-    digest = hashlib.sha256(f"{key}:{index}".encode("utf-8")).digest()
+    digest = hashlib.sha256(f"{key}:{index}".encode()).digest()
     return int.from_bytes(digest[:8], "big") % SEED_MODULUS
 
 

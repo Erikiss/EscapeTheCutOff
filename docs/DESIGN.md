@@ -109,6 +109,7 @@ class AppConfig:
     base_url: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
     app_title: str = "cutoffmix"
+    preset: str | None = None          # the packaged preset load_config() merged ("explore"), else None: an echo (§7.1)
     def model(self, key: str) -> ModelSpec
     def model_keys(self) -> list[str]
     def today_str(self) -> str
@@ -497,12 +498,12 @@ Loop, with i = segment index:
   - `GET /` returns the UI. `GET /api/config` returns models with colours and defaults. `GET /api/index` returns the
     index table. `POST /api/relay` returns rich SSE events (`data: RelayEvent.to_dict()`).
   - OpenAI-compatible `POST /v1/chat/completions`, stream and non-stream. Model ids are `cutoffmix`,
-    `cutoffmix-speculative` and `cutoffmix-fixed-<key>`. The question is the conversation flattened into
+    `cutoffmix-speculative`, `cutoffmix-explore` (§7.7) and `cutoffmix-fixed-<key>`. The question is the conversation flattened into
     PROBLEM text. Thinking goes in `delta.reasoning` plus `delta.cutoffmix` metadata; the answer goes in
     `delta.content`. Non-stream returns `message.content`, `message.reasoning` and a `cutoffmix` trace. The
     `usage` object carries `cutoffmix_partial: true` when the run's usage is incomplete.
   - `GET /v1/models`.
-  - Per request, options `policy`, `strategy` and `segment_tokens` can override the config.
+  - Per request, options `policy`, `strategy`, `segment_tokens` and `preset` (`"explore"`, §7.7) can override the config.
   - The POST endpoints start paid calls, so they take only `Content-Type: application/json` (415 otherwise, so a
     cross-site page cannot send them without a CORS preflight, which is never granted) and refuse a foreign
     `Origin` (403): only the server's own (`Host` or `X-Forwarded-Host`) or one passed via `allowed_origins` /
@@ -517,9 +518,9 @@ Loop, with i = segment index:
   probs). It also shows a topic bar for the current window, an index heatmap (topics × models, τ as YYYY-MM, P_best
   highlighted), and stats (switches, share per model, latency). Dark and light mode.
 - `cli.py` (`cutoffmix` entry point, argparse):
-  - `run "question" [--mock] [--policy] [--strategy] [--segments] [--json out] [--config]` prints coloured
-    segments to the terminal.
-  - `serve [--host] [--port] [--mock] [--allow-origin ORIGIN] [--allow-host HOST]`
+  - `run "question" [--mock] [--policy] [--strategy] [--segments] [--json out] [--config] [--preset explore]` prints
+    coloured segments to the terminal.
+  - `serve [--host] [--port] [--mock] [--allow-origin ORIGIN] [--allow-host HOST] [--preset explore]`
   - `index show [--path] [--probe] [--config]` (default index and probe from `router.index_path` and
     `router.probe_preference`, as routing and `/api/index` use them)
   - `bench import-kc --out DIR`
@@ -532,3 +533,296 @@ Loop, with i = segment index:
   - `router train`
   - `simulate [--out DIR]`
   - `--mock` uses MockBackend everywhere. Without `--mock` and without `OPENROUTER_API_KEY`, print a clear message.
+
+## 7. Explore preset
+
+An **opt-in** preset (`cutoffmix run --preset explore`, `cutoffmix serve --preset explore`, per-request
+`"preset": "explore"` on `/api/relay` and `/v1/chat/completions`, model id `cutoffmix-explore` on `/v1`). With the
+preset off, the relay's request bodies and behaviour are unchanged. The design and its evidence are in
+`docs/DESIGN_explore.md`; this section is the binding contract of what is implemented. The preset does **not** change
+`router.policy`: routing by cutoff is the product (with the shipped prior index Sol is freshest on every topic;
+`--policy round_robin` shows all three writers). One seed: the run seed (`--seed` / `router.seed`) seeds every
+client-side draw; `explore.seed` overrides it when set. No temperature or top_p is sent to any model (§1).
+
+Wording safety for every text in this section: no "thinking", "reasoning", "reason", "scratchpad", "chain of
+thought", no XML-like tags; labels are plain words ending with a colon. `tests/test_prompts.py` checks every text.
+
+### 7.1 config.py: `ExploreConfig`, `LensConfig`, the preset file
+
+```python
+@dataclass
+class LensConfig:                      # explore.lens
+    p: float = 0.25                    # draw probability per eligible segment
+    p_stagnation: float = 0.50         # while the main line stagnates
+    min: int = 1                       # force one lens at the last eligible slot if none was drawn
+    max: int = 2                       # lenses per run (>= min)
+    first_index: int = 2               # 0-based segment index; never in the first two segments
+    cooldown: int = 2                  # segments after a committed check before the next lens
+    tiers: Mapping[str, float] = {"mid": 0.55, "far": 0.35, "near": 0.10}   # keys from LENS_TIERS, weights >= 0, sum > 0
+    exclude_from_window: bool = True   # lens notes are not part of the routing window
+    check_other_model: bool = True     # the check is routed away from the lens writer
+
+@dataclass
+class ExploreConfig:                   # explore
+    enabled: bool = False
+    seed: int | None = None            # overrides the run seed for every client-side draw when set
+    min_segments: int = 6              # main-line notes (lens/check not counted) before a conclusion is accepted
+    require_labels: tuple[str, ...] = ("Evidence:", "Alternative set aside:", "Open question:")  # each ends with ':'
+    where_we_stand_window: int = 2     # a 'Where we stand:' line must appear in one of the last N notes
+    max_forced_continuations: int = 3
+    loop_overlap_jaccard: float = 0.5  # word-3-gram Jaccard of the last two notes above this -> stop forcing
+    cues: tuple[str, ...] = ("Alternatively, ", "One thing not yet checked: ",
+                             "The strongest objection to the current conclusion is ",
+                             "Perhaps the missing piece is ", "Before closing, the weakest assumption above is ")
+    lens: LensConfig
+    vs_menu: str = "off"               # VS_MENU_MODES = ("off", "stagnation", "every_lens"); side call always on gpt-6.2-sol
+    answer_basis: bool = True          # the answer ends with 'Basis:' and 'Not resolved:'
+```
+
+Validation in `__post_init__` (`ConfigError` naming `explore.<key>` / `explore.lens.<key>`); a partial `lens.tiers`
+mapping patches the default weights (deep merge). YAML's bare `off` (parsed as false) is accepted for `vs_menu`.
+`cutoffmix/data/default.yaml` carries the whole `explore:` block with `enabled: false`;
+`cutoffmix/data/presets/explore.yaml` (package data) is the preset of `DESIGN_explore.md` §2 without `router.policy`:
+`relay: {segment_tokens: 192, hard_cut_chars: 1000, max_segments: 16, answer_mode: routed}`, `explore.enabled: true`
+with the defaults above, `models: {gemini-4-neon: {supports_temperature: false}, gpt-6.2-sol: {extra_body:
+{verbosity: medium}, answer_extra_body: {verbosity: low}, supports_seed: true}}`. The default `default.yaml` keeps
+Sol at `verbosity: low` (the measured default run). `AppConfig.to_dict()` gives `explore` with plain lists/dicts and
+`config_from_dict` reproduces it. `_validate_model` also refuses `verbosity` in `answer_extra_body` of an
+`anthropic/` model. `AppConfig.preset` echoes the preset `load_config(preset=...)` merged (`"explore"`, else `None`);
+the loader always sets it after the file and the overrides, so a `preset:` key in a config file is overwritten and
+never loads anything. It feeds the relay's `done.data["explore"]["preset"]` (§7.6) and `/api/config.defaults.preset`
+(§7.7); `to_dict()` carries it and `config_from_dict` keeps it.
+
+### 7.2 types.py (additive only)
+
+```python
+class ModelSpec:                       # appended fields
+    answer_extra_body: Mapping[str, Any] = {}   # merged over extra_body for phase "answer" only
+    supports_seed: bool = False                 # the endpoint honours `seed` (Sol): body["seed"] per segment
+class ChatRequest:
+    temperature: float | None = None   # was 0.0; a value is still only sent when model.supports_temperature
+class ContinuationRequest:             # appended fields
+    tail: str | None = None            # replaces the tail block (the last user block; the only non-cached one)
+    system_override: str | None = None # replaces the static system text for the run
+SegmentKind = Literal["main", "lens", "check", "continue"]
+@dataclass
+class ExploreFlags:                    # Segment.explore (None when the preset is off)
+    kind: SegmentKind = "main"; field: str | None = None; tier: str | None = None
+    labels: dict[str, int] = {}        # canonical label -> count in the committed text (parse_labels()["counts"])
+    has_wws: bool = False; lens_verdict: Literal["kept", "dropped"] | None = None
+    lens_prefix_ok: bool | None = None # lens segments: the note opened with 'Lens (field):'
+    cue: str | None = None             # continuation segments
+class Segment:
+    explore: ExploreFlags | None = None   # last field; to_dict() nests it (None otherwise)
+```
+
+### 7.3 lenses.py: fields, distance tiers, seeded draw
+
+```python
+@dataclass(frozen=True)
+class Field: name: str; home_topic: str; concepts: tuple[str, ...]; label -> str   # "materials_science" -> "materials science"
+FIELDS: tuple[Field, ...]              # the 23 fields of DESIGN_explore.md §4.3 (home topic = taxonomy topic id)
+TOPIC_GROUPS: tuple[tuple[str, ...], ...]   # Science | Tech/Economy | Politics | Culture, in line order (all 15 topics once)
+GROUP_NAMES = ("science", "tech_economy", "politics", "culture"); TIERS = ("mid", "far", "near")
+def group_of(topic) -> int | None
+def tier_of(home_topic, current_topic) -> str      # same group "near", adjacent "mid", else "far"; unknown/None -> "mid"
+def fields_by_tier(current_topic, used_fields=()) -> dict[str, list[Field]]
+def tier_weights(tiers, stagnating=False) -> dict[str, float]   # far raised to >= 0.5 when stagnating, others scaled
+def draw_lens(rng: random.Random, current_topic, used_fields: Collection[str], tiers, stagnating=False)
+    -> tuple[Field, str, tuple[str, str, str]] | None
+    # tier = rng.choices(TIERS, weights)[0] (fallback to the next-heaviest tier with unused fields), field = rng.choice
+    # of the unused fields of that tier, concepts = rng.sample(field.concepts, 3); None when every field is used.
+    # Deterministic for a seeded Random: the relay uses random.Random(f"{seed}:{idx}").
+def field_by_name(name) -> Field ; def normalise_field(text) -> str   # "Materials Science" -> "materials_science"
+```
+
+### 7.4 prompts.py: explore texts, tail, record status, parsers
+
+```python
+RELAY_SYSTEM_TEMPLATE_EXPLORE          # DESIGN_explore.md §6.4, {K} {final_marker} {sentinel}
+ANSWER_LENS_SENTENCE, ANSWER_BASIS_SENTENCE, ANSWER_SYSTEM_EXPLORE_SUFFIX = lens + basis
+LENS_TEXT {field} {c1} {c2} {c3}; CHECK_TEXT {field}; CONTINUE_TEXT {why} {cue}
+VS_MENU_SYSTEM; VS_MENU_USER {question} {notes}; VS_DIRECTION_TEXT {direction}; VS_MENU_P_MAX = 0.10; VS_MENU_MIN_LINES = 3
+RELAY_TAIL_EXPLORE = "END OF THE SHARED NOTES. Write note {k}. {record_status} {directive}"
+RECORD_CLOSED_TEXT / RECORD_CLOSED_NO_ITEMS_TEXT / RECORD_OPEN_TEXT
+LABELS = ("Claim", "Evidence", "Inference", "Principle", "Alternative set aside", "Open question", "Next",
+          "Where we stand", "Lens kept", "Lens dropped", "Correction", "Lens")
+LABEL_RE          # a label at a line start (bullet, **bold** tolerated, case-insensitive); group "label", "field" for 'Lens (field):'
+LENS_PREFIX_RE    # 'Lens (field):' as the first thing in a note; group "field"
+VS_LINE_RE        # ^\s*(\d)[.)]\s*(.+?)\s*\|\s*p\s*=\s*(0?\.\d+|1(?:\.0+)?)\s*$ (multiline)
+def relay_system_prompt_explore(target_tokens, today, sentinel, final_marker) -> str
+def answer_system_prompt_explore(today, *, answer_basis=True) -> str   # ANSWER_SYSTEM_TEMPLATE + sentences + date
+def relay_tail(k: int, record_status: str, directive: str = "") -> str    # note k is 1-based
+def record_status_text(missing: Sequence[str], gate_open: bool, final_marker="FINAL ANSWER:") -> str
+def missing_record_items(*, main_line_count, min_segments, label_counts, require_labels, wws_recent, pending_check) -> list[str]
+    # the checklist phrases ("three more main-line notes", "an 'Evidence:' item that names its source", ...); [] = complete
+def lens_text(field_label, concepts) / check_text(field_label) / continue_text(why, cue) / vs_direction_text(direction) -> str
+def vs_menu_messages(question, notes) -> list[dict]      # the side call's chat messages
+def parse_labels(text) -> dict   # {"counts": {label: n}, "items": n (all but 'Where we stand'), "has_wws", "lens_prefix":
+                                 #  field | None, "lens_verdict": "kept" | "dropped" | None, "wws_sentence": str}
+                                 # labels count at line starts and after a sentence end inside a paragraph
+def parse_vs_menu(text) -> list[tuple[str, float]]       # (direction, p) per well-formed line, in order
+def pick_vs_direction(menu, rng) -> tuple[str, float] | None   # p < 0.10 (else the two lowest); None if < 3 lines parsed
+def word3gram_jaccard(a, b) -> float                     # 0.0 when either text has fewer than three words
+```
+
+`strip_preamble` / `clean_segment` keep every label above (incl. `Lens (field):`, `Lens kept:`, `Correction:`);
+`tests/test_prompts.py` proves it per label.
+
+### 7.5 backends/openrouter.py: body rules with the preset
+
+`build_continuation_body`: `req.system_override` replaces the system text (both phases); `req.tail` replaces the tail
+block, which stays the last user block and is never cache-marked, so consecutive explore requests have identical
+`blocks[:-1]` (prefix) and only the tail differs (test `test_explore_bodies_stay_append_only_across_segments`). Phase
+`answer` merges `model.answer_extra_body` over `extra_body`; an `anthropic/` model never gets `verbosity` from either.
+`model.supports_seed` -> `body["seed"] = segment_seed(key, index)` with `key = req.metadata["seed"]` if present else
+`req.run_id`, `index = req.metadata["segment_index"]` (else `metadata["segment"]`, else 0); `segment_seed(key, index)
+= int(sha256(f"{key}:{index}")[:8]) % 2**31` (public, platform-stable). `build_chat_body` adds `seed` only for a
+`supports_seed` model when `req.metadata["seed"]` is set (the next-move menu side call). The relay passes
+`metadata["seed"] = explore seed or run seed` and `metadata["segment_index"]` so Sol calls are reproducible per
+(seed, segment).
+
+### 7.6 relay.py: schedule, record gate, continuations, metrics
+
+With `cfg.explore.enabled` false nothing below runs: requests, events, `done` and the trace are byte-identical to §5
+(`tests/test_explore_relay.py::test_default_relay_is_byte_identical_to_the_recorded_expectation` compares three
+scripted runs against `tests/fixtures/explore/default_relay_expectation.json`, recorded before the preset existed).
+
+**Seed.** `explore.seed` if set, else `router.seed` (the run seed, `--seed`), else a random 31-bit integer; logged as
+`done.data["explore"]["seed"]` / `seed_source` (`"explore" | "run" | "random"`). Every think and answer request
+carries `metadata["segment_index"] = index` and `metadata["seed"]` (§7.5 derives Sol's `body["seed"]` from them).
+
+**Requests.** Think: `system_override = relay_system_prompt_explore(segment_tokens, today, sentinel, final_marker)`,
+`tail = relay_tail(k, record_status_text(missing, gate_open, final_marker), directive)` with `k` = committed think
+segments + 1, `metadata["kind"]` = the segment's kind. Answer: `system_override = answer_system_prompt_explore(today,
+answer_basis=explore.answer_basis)`, no tail (the constant `ANSWER_TAIL`). `answer_mode` is honoured unchanged.
+
+**Plan per think segment** (`_Plan`, computed before the routing decision, once per model decision of a segment;
+deterministic for the state and `index`, the lens draw with `random.Random(f"{seed}:{index}")`):
+
+```
+if pending_check:          kind "check",    directive CHECK_TEXT(field);  exclude {lens writer} (check_other_model) and the
+                                                                          concluding model of a pending continuation
+elif forcing pending:      kind "continue", directive CONTINUE_TEXT(why, cue); exclude {concluding model}
+else:
+  stagnating = argmax topic unchanged for the last 4 think segments and the last note adds no number / capitalised token
+  eligible   = index >= lens.first_index and not gate_open and cooldown == 0 and lenses_used < lens.max
+  last_slot  = eligible and main_line_count == min_segments - 1
+  if eligible and (rng.random() < (p_stagnation if stagnating else p) or (last_slot and lenses_used < lens.min)):
+      kind "lens", draw_lens(rng, current_topic, used_fields, tiers, stagnating) -> directive LENS_TEXT(field.label, c1..c3)
+  else kind "main"; with vs_menu "stagnation" and stagnating, or "every_lens" and eligible (gate closed): the menu side call
+```
+
+`exclude` only narrows `available` when another model remains. The lens decision is made with `update=False` (the
+router's EMA ignores it); lens notes are left out of the routing window (`lens.exclude_from_window`, also for the
+answer decision), check notes stay in. `current_topic` = argmax of the last committed think segment's posterior.
+After a committed lens: `pending_check`, `lens_writer`, `lenses_used += 1`, the field is used up. After a committed
+check: `cooldown = lens.cooldown`, decremented by every other committed think segment. A check never waits for a
+continuation: a pending forcing is consumed by the check (the check continues the line, the concluding model is
+excluded from it).
+
+**Menu side call** (`vs_menu != "off"`): `backend.chat(cfg.model("gpt-6.2-sol"), ChatRequest(vs_menu_messages(q,
+notes), max_tokens=300, metadata={"seed", "segment_index", "purpose": "vs_menu"}))`, once per segment index, then
+`pick_vs_direction(parse_vs_menu(text), random.Random(f"{seed}:{index}:vs"))` and `directive = vs_direction_text(..)`.
+Skipped (logged in `vs_menu.skipped`) when Sol is not among the relay's models; an exception is logged in
+`vs_menu.errors` and the note is written plain; usage is added to the model's `usage` row.
+
+**Record gate.** `record_missing()` = `missing_record_items(...)` over the committed segments' `ExploreFlags`
+(main-line count = kinds `main` + `continue`; label counts summed; a `Where we stand:` in one of the last
+`where_we_stand_window` notes; no pending check); `gate_open()` = nothing missing. A conclusion (text after the marker)
+is **accepted** when the gate is open, or forcing stopped on a loop, or `forcings >= max_forced_continuations`.
+Otherwise it is **premature**: the answer part is discarded (`segment_end.data["premature_final"] = True`), the note
+part is committed if non-empty, else the attempt is dropped (`reason "empty"`, `premature_final` on the dropped row)
+and the same segment is re-routed. Then, with at least one continuation already forced and the word-3-gram Jaccard
+of the last two notes (the note part included) above `loop_overlap_jaccard`, forcing stops: the conclusion is
+accepted after all (`loop_stop`). Else a continuation is scheduled for the next think segment: the next cue in
+`explore.cues` (rotating), `why = "the record still lacks <missing items after this note>"`, the concluding model
+excluded. The tail's record status always states the checklist; after the limit the model is not told to conclude,
+but the next conclusion is accepted and `gate_missing_at_final` logs the missing items (also when `max_segments` or
+an all-empty segment ends the notes with the gate closed). Speculative strategy: every draft's premature conclusion
+is stripped before scoring; the chosen draft decides the forcing.
+
+**Per segment** (`Segment.explore`, `segment_end.data["explore"]`): `kind`, `field` (label), `tier`, `labels`
+(`parse_labels(text)["counts"]`), `has_wws`, `lens_prefix_ok` (lens: the note opened with `Lens (..):`; a missing
+prefix is committed and counted as `ignored`), `lens_verdict` (check), `cue` (continuation).
+`segment_start.data["explore"] = {"kind", "field", "tier", "cue"}` for the UI badge.
+
+**Metrics** `done.data["explore"]` = `trace.to_dict()["explore"]` (the trace of an explore run is `ExploreTrace`, a
+`RelayTrace` with an `explore` dict; filled when the run ends, also on error):
+
+```
+preset (AppConfig.preset: "explore" | null), seed, seed_source, config (ExploreConfig as plain dict)
+think_segments, main_line_segments, lens_segments, check_segments, continue_segments, kinds[], topics[] (argmax per think segment)
+topics_visited {all, main_line}, topic_entropy_bits {mean_posterior, argmax_histogram}, topic_switches
+lens {offered, written, ignored, kept, dropped, unverified, fields[], tiers[], keep_rate = kept / offered | null}
+labels {counts {label: n}, coverage {two_or_more_items, where_we_stand}}   # shares over non-empty notes
+wws_lines[] (the 'Where we stand:' sentences), answer_flips (changes of the text before the first comma/semicolon, normalised)
+premature_finals[] ({index, model, kind, missing[], overlap_last2, forced, loop, cue?}), forced_continuations (committed
+  "continue" segments), first_final_index, gate_open, gate_missing_at_final[] | null, loop_stop, ngram_overlap_last2
+notes_chars, notes_tokens_est (chars // 4), garble (notes with < 60 % dictionary-like words: letters with a vowel or CJK)
+vs_menu {mode, calls, parsed, chosen_p[], menus[] ({index, menu[[direction, p]], chosen, p}), errors[], skipped}
+```
+
+`model_switches` / `share_by_model`, `usage_total`, `latency`, `refusals` and `dropped` stay where §5 puts them.
+`preset` is `AppConfig.preset` (§7.1), so `--preset explore` and the per-request preset both echo `"explore"`; a
+config built by hand with `explore.enabled` and no preset echoes `null`.
+
+### 7.7 Surface: mock backend, CLI, server, UI
+
+**backends/mock.py.** A request with `system_override` set is an explore request; `MockBackend` then writes a
+structured note instead of the default paragraph (without `system_override` the output is byte-identical to before;
+`tests/test_mock_backend.py::test_default_output_is_pinned` pins it). The directive is read from `req.tail` the way a
+model would read the texts of §7.4:
+
+- plain note: two to four labelled items (`Claim:`, `Evidence:` naming a source, `Inference:`, at most one
+  `Principle:`, `Alternative set aside:`, `Open question:`, `Next:`), one per line, always ending with a `Where we
+  stand:` line (best answer, confidence low/medium/high by note number, weakest assumption). The labels the record
+  status names as missing (`'<Label>:' item`) are written first, so the gate opens as soon as `min_segments`
+  main-line notes exist; an unknown required label gets a generic item. Items are dropped from the end until the
+  note fits `min(4 * target_tokens, hard_cut_chars - 40)` characters, so the trailing line survives the client cut.
+- `LENS_TEXT` in the tail (`Begin the note with 'Lens (field):'`): the note opens with `Lens (field):`, maps the
+  first two example concepts onto the problem, has one `Inference:` marked as a working analogy, a return sentence
+  and `Where we stand:`.
+- `CHECK_TEXT` (`applied a cross-field lens from <field>`): `Lens kept:` or `Lens dropped:` first, deterministic per
+  (seed, model, question, field, note number), about 60 % kept.
+- `CONTINUE_TEXT` (`Begin this note with the words '<cue>'`): the note starts with the cue; `VS_DIRECTION_TEXT`
+  (`Direction for this note: ...`): the first `Claim:` names the direction.
+- `FINAL ANSWER:` only when the tail contains `the moderator accepts a conclusion` (then the marker and the answer
+  instead of a note), plus exactly one early attempt per run: the first plain note with at least two notes before it
+  concludes while the gate is closed (its `Claim:` says `the record already settles the problem`; no later note does
+  while that text is in the notes), so the relay's premature-final path and a forced continuation run in every mock
+  run. The answer phase appends `Basis:` and `Not resolved:` paragraphs when the answer system prompt asks for
+  `'Basis:'`.
+
+**cli.py.** `--preset NAME` on `run` and `serve` is passed as `load_config(path, overrides, preset=NAME)` (unknown
+names: `invalid configuration: unknown preset ...`, exit 2); `serve` also hands `--config` to `create_app(...,
+config_path=)`. `TerminalPrinter.explore_tag(data)` reads `segment_start.data["explore"]` (`kind`, `field`, `tier`,
+`cue`; the same keys flat in `data` are accepted) and appends `[lens: <field> (<tier>)]`, `[check: <field>]` or
+`[continue: '<cue>']` to the segment header (bold when coloured). `explore_summary(done.data["explore"])` adds
+`lenses N (k kept, d dropped)`, `labels P%` (the first coverage share), `topics N` (`topics_visited["all"]`) and
+`forced N` to the summary line; every key is optional and numbers, lists (their length) and mappings are tolerated.
+
+**server.py.** `create_app(cfg, ..., config_path=None)`. `POST /api/relay` and `/v1/chat/completions` take
+`"preset": "explore"` (any other value: 400 `preset must be 'explore' (or absent)`); on `/v1` the model id
+`cutoffmix-explore` (listed by `/v1/models` and `/api/config.model_ids`) means the same, and a body `preset` wins
+over the id. A preset request runs on a per-preset `RelayRuntime` built lazily from `load_config(config_path,
+preset=name)`: the packaged default, the preset, then the server's config file, exactly what `serve --preset name`
+loads; it shares the main runtime's backend (closed once) and its router factory (looked up per call, so routing
+data are loaded once), and the per-request `policy`/`strategy`/`segment_tokens` apply on top. `GET /api/config`
+adds `presets: [{"name", "segment_tokens", "max_segments"}]` (a preset the server's file cannot combine with is
+logged and omitted) and `defaults.preset` (`config.preset`, else `"explore"` when the server's own config file
+enables the explore protocol without the packaged preset, else `null`). The explore metrics need no server code: `done.data["explore"]` reaches the SSE `done` event, the final
+`/v1` stream chunk (`cutoffmix`) and the non-stream `cutoffmix` object with the rest of the trace, and
+`segment_start.data["explore"]` / `segment_end.data["explore"]` pass through the `/v1` `delta.cutoffmix` metadata.
+
+**web/index.html.** A `Preset` select (`default` plus `/api/config.presets`; `default` is disabled with a title when
+`defaults.preset` names the server's own preset) next to Policy; choosing a preset sets the segment-tokens input to
+the preset's value, and the request carries `preset` unless `default` is chosen. Segment badges from
+`segment_start.data["explore"]` (or the flat keys): `lens · <field> (<tier>)`, `check · <field>` becoming `check ·
+kept` / `check · dropped` at `segment_end` (from `data.explore.lens_verdict`, else from `Lens kept:` /
+`Lens dropped:` in the committed text), `continue · “<cue>”`; the routing inspector lists note kind, field, lens
+verdict and cue. An `Exploration` strip (topics visited, lenses with kept/dropped, labels coverage, forced
+continuations with the number of early conclusions) appears below the run stats only when `done.data["explore"]`
+exists; `exploreStats()` tolerates missing keys, lists and mappings (`topics_visited.all`, the first coverage
+share). Dark mode and the 390 px layout hold (`tests/test_server.py` checks the markup, the pure functions run under
+node; screenshots in the work log).

@@ -3,14 +3,21 @@
 Endpoints of :func:`create_app`:
 
 - ``GET /`` -- the single-file web UI (``cutoffmix/web/index.html``).
-- ``GET /api/config`` -- models with colours, topic names, defaults and the selectable strategies/policies.
+- ``GET /api/config`` -- models with colours, topic names, defaults, the selectable strategies/policies and the
+  packaged presets (name plus the segment settings they imply).
 - ``GET /api/index[?probe=]`` -- the cutoff index as table rows (topic, model, tau, tau_label, sd, n, hazard, p_best).
-- ``POST /api/relay`` -- ``{"question", "policy"?, "strategy"?, "segment_tokens"?}``; answers with server-sent
-  events ``data: RelayEvent.to_dict()``.
+- ``POST /api/relay`` -- ``{"question", "policy"?, "strategy"?, "segment_tokens"?, "preset"?}``; answers with
+  server-sent events ``data: RelayEvent.to_dict()``.
 - ``GET /v1/models`` and ``POST /v1/chat/completions`` -- OpenAI-compatible, streaming and non-streaming. Model ids
-  ``cutoffmix``, ``cutoffmix-speculative`` and ``cutoffmix-fixed-<model key>``. The conversation is flattened into
-  the PROBLEM text; the shared notes go to ``delta.reasoning`` (plus ``delta.cutoffmix`` metadata), the answer to
-  ``delta.content``.
+  ``cutoffmix``, ``cutoffmix-speculative``, ``cutoffmix-<preset>`` (``cutoffmix-explore``) and
+  ``cutoffmix-fixed-<model key>``. The conversation is flattened into the PROBLEM text; the shared notes go to
+  ``delta.reasoning`` (plus ``delta.cutoffmix`` metadata), the answer to ``delta.content``; the final chunk carries
+  the whole ``done`` trace under ``cutoffmix`` (with the explore metrics when the preset ran).
+
+A per-request ``"preset": "explore"`` (or the model id) runs the relay with the configuration ``cutoffmix serve
+--preset explore`` would have loaded: the packaged default, the preset, then the server's ``--config`` file
+(``create_app(..., config_path=...)``), see DESIGN.md §7. The per-request ``policy``/``strategy``/``segment_tokens``
+overrides apply on top.
 
 FastAPI is imported inside :func:`create_app`, so this module imports without the optional server dependencies.
 Every relay run (SSE or not) polls for a client disconnect and stops the relay (closing the in-flight model stream)
@@ -37,6 +44,7 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -50,14 +58,16 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["LOOPBACK_HOSTS", "MODEL_ID", "SSE_HEADERS", "create_app", "flatten_messages", "index_payload",
-           "model_ids"]
+__all__ = ["EXPLORE_MODEL_ID", "LOOPBACK_HOSTS", "MODEL_ID", "SSE_HEADERS", "create_app", "flatten_messages",
+           "index_payload", "model_ids"]
 
 log = logging.getLogger(__name__)
 
 MODEL_ID = "cutoffmix"
 SPECULATIVE_MODEL_ID = "cutoffmix-speculative"
 FIXED_MODEL_PREFIX = "cutoffmix-fixed-"
+PRESET_MODEL_PREFIX = "cutoffmix-"  # + preset name: cutoffmix-explore
+EXPLORE_MODEL_ID = PRESET_MODEL_PREFIX + "explore"
 STRATEGIES: tuple[str, ...] = ("sequential", "speculative")
 POLICIES: tuple[str, ...] = ("softmax", "thompson", "argmax", "round_robin", "random")
 SSE_HEADERS: dict[str, str] = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -87,12 +97,21 @@ def _dumps(obj: Any) -> str:
     return json.dumps(to_jsonable(obj), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def model_ids(model_keys: Sequence[str]) -> list[str]:
-    """The OpenAI-compatible model ids served for these relay models."""
-    return [MODEL_ID, SPECULATIVE_MODEL_ID, *(FIXED_MODEL_PREFIX + k for k in model_keys)]
+def _presets(presets: Sequence[str] | None) -> list[str]:
+    if presets is not None:
+        return list(presets)
+    from cutoffmix.config import list_presets
+
+    return list_presets()
 
 
-def _model_overrides(model_id: str, model_keys: Sequence[str]) -> dict[str, Any]:
+def model_ids(model_keys: Sequence[str], presets: Sequence[str] | None = None) -> list[str]:
+    """The OpenAI-compatible model ids served for these relay models (``presets`` default to the packaged ones)."""
+    return [MODEL_ID, SPECULATIVE_MODEL_ID, *(PRESET_MODEL_PREFIX + p for p in _presets(presets)),
+            *(FIXED_MODEL_PREFIX + k for k in model_keys)]
+
+
+def _model_overrides(model_id: str, model_keys: Sequence[str], presets: Sequence[str] | None = None) -> dict[str, Any]:
     """Per-run overrides implied by an OpenAI model id; ``LookupError`` for an unknown id."""
     if model_id == MODEL_ID:
         return {}
@@ -100,11 +119,15 @@ def _model_overrides(model_id: str, model_keys: Sequence[str]) -> dict[str, Any]
         return {"strategy": "speculative"}
     if model_id.startswith(FIXED_MODEL_PREFIX) and model_id[len(FIXED_MODEL_PREFIX):] in model_keys:
         return {"policy": f"fixed:{model_id[len(FIXED_MODEL_PREFIX):]}"}
-    raise LookupError(f"model {model_id!r} does not exist; available: {', '.join(model_ids(model_keys))}")
+    names = _presets(presets)
+    if model_id.startswith(PRESET_MODEL_PREFIX) and model_id[len(PRESET_MODEL_PREFIX):] in names:
+        return {"preset": model_id[len(PRESET_MODEL_PREFIX):]}
+    raise LookupError(f"model {model_id!r} does not exist; available: {', '.join(model_ids(model_keys, names))}")
 
 
-def _run_overrides(body: Mapping[str, Any]) -> dict[str, Any]:
-    """The per-request overrides ``policy``, ``strategy`` and ``segment_tokens`` (type-checked)."""
+def _run_overrides(body: Mapping[str, Any], presets: Sequence[str] | None = None) -> dict[str, Any]:
+    """The per-request overrides ``policy``, ``strategy``, ``segment_tokens`` and ``preset`` (type-checked; a preset
+    must be one of the packaged ones, ``"explore"``)."""
     out: dict[str, Any] = {}
     for key in ("policy", "strategy"):
         value = body.get(key)
@@ -112,6 +135,13 @@ def _run_overrides(body: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(value, str) or not value.strip():
                 raise RequestError(f"{key} must be a non-empty string")
             out[key] = value.strip()
+    preset = body.get("preset")
+    if preset is not None:
+        names = _presets(presets)
+        if not isinstance(preset, str) or preset.strip() not in names:
+            raise RequestError("preset must be " + (" or ".join(repr(n) for n in names) if names else "absent")
+                               + " (or absent)")
+        out["preset"] = preset.strip()
     tokens = body.get("segment_tokens")
     if tokens is not None:
         if (isinstance(tokens, bool) or not isinstance(tokens, (int, float))
@@ -383,26 +413,52 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
 
 
 def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None, mock: bool = False,
-               allowed_origins: Sequence[str] = (), allowed_hosts: Sequence[str] = ()) -> "FastAPI":
+               allowed_origins: Sequence[str] = (), allowed_hosts: Sequence[str] = (),
+               config_path: "str | Path | None" = None) -> "FastAPI":
     """Build the FastAPI app. ``cfg`` defaults to the packaged config; ``backend`` defaults to OpenRouter (or the
     mock backend with ``mock=True``). A backend created here is closed when the app shuts down.
     ``allowed_origins`` (``scheme://host[:port]``) may POST besides the server's own origin, e.g. the public origin
     of a reverse proxy that rewrites ``Host`` without setting ``X-Forwarded-Host``.
     Requests must name one of :data:`LOOPBACK_HOSTS`, a host of ``allowed_origins`` or one of ``allowed_hosts``
-    (host names or IP addresses, ``"*"`` for any) in ``Host``; others get HTTP 403."""
+    (host names or IP addresses, ``"*"`` for any) in ``Host``; others get HTTP 403.
+    ``config_path`` is the YAML file ``cfg`` was loaded from (``serve --config``): a per-request preset is then the
+    configuration ``load_config(config_path, preset=name)`` gives, i.e. what ``serve --preset name`` would run with;
+    without it a preset request runs on the packaged defaults plus the preset."""
     try:
         from fastapi import FastAPI, Request
         from fastapi.responses import HTMLResponse, Response, StreamingResponse
     except ImportError as e:  # pragma: no cover - depends on the installation
         raise ImportError("the cutoffmix server needs FastAPI: pip install 'cutoffmix[server]'") from e
-    from cutoffmix.config import load_config
+    from cutoffmix.config import list_presets, load_config
 
     config = cfg if cfg is not None else load_config()
     runtime = RelayRuntime(config, backend=backend, mock=mock)
+    preset_runtimes: dict[str, RelayRuntime] = {}
+    presets = list_presets()
     index_cache: dict[str, dict[str, Any]] = {}
     origins = frozenset(_normalize_origin(o) for o in allowed_origins if o.strip())
     hosts = frozenset({*LOOPBACK_HOSTS, *(_host_name(h) for h in allowed_hosts if h.strip()),
                        *(_host_name(urlsplit(o).netloc) for o in origins if urlsplit(o).netloc)})
+
+    def preset_runtime(name: str) -> RelayRuntime:
+        """The runtime of a packaged preset: its own config, the main runtime's backend, routing data and router
+        factory (looked up per call, so a replaced ``runtime.router_factory`` is honoured)."""
+        if name not in preset_runtimes:
+            preset_runtimes[name] = RelayRuntime(load_config(config_path, preset=name), backend=runtime.backend,
+                                                 mock=runtime.mock, router_factory=lambda c: runtime.router_factory(c))
+        return preset_runtimes[name]
+
+    def preset_payload() -> list[dict[str, Any]]:
+        """``/api/config`` rows of the presets a request may name, with the segment settings each implies."""
+        rows = []
+        for name in presets:
+            try:
+                rc = preset_runtime(name).cfg.relay
+            except ValueError as e:  # the preset does not combine with the server's config file
+                log.warning("preset %s is not available: %s", name, e)
+                continue
+            rows.append({"name": name, "segment_tokens": rc.segment_tokens, "max_segments": rc.max_segments})
+        return rows
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -440,9 +496,12 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
             raise RequestError("the request body must be a JSON object")
         return body
 
-    def run_config(overrides: Mapping[str, Any]) -> "AppConfig":
+    def run_config(overrides: Mapping[str, Any]) -> "tuple[RelayRuntime, AppConfig]":
+        """The runtime a request runs on (the preset's, if it names one) and its validated per-run config."""
+        rest = {k: v for k, v in overrides.items() if k != "preset"}
         try:
-            return runtime.configure(**overrides)
+            rt = preset_runtime(overrides["preset"]) if overrides.get("preset") else runtime
+            return rt, rt.configure(**rest)
         except (ValueError, TypeError) as e:
             raise RequestError(str(e)) from e
 
@@ -465,10 +524,14 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
             "topics": [{"id": t.id, "name": t.name} for t in TOPICS],
             "defaults": {"strategy": rc.strategy, "policy": ro.policy, "segment_tokens": rc.segment_tokens,
                          "max_segments": rc.max_segments, "answer_mode": rc.answer_mode,
-                         "speculative_gate": rc.speculative_gate},
+                         "speculative_gate": rc.speculative_gate,
+                         # the server's own config already runs a preset (serve --preset explore), or a config
+                         # file of its own that enables the explore protocol
+                         "preset": config.preset or ("explore" if config.explore.enabled else None)},
             "strategies": list(STRATEGIES),
             "policies": [*POLICIES, *(f"fixed:{k}" for k in config.model_keys())],
-            "model_ids": model_ids(config.model_keys()),
+            "presets": preset_payload(),
+            "model_ids": model_ids(config.model_keys(), presets),
         })
 
     @app.get("/api/index")
@@ -491,17 +554,17 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                 raise RequestError("question must be a non-empty string")
             if len(question) > MAX_QUESTION_CHARS:
                 raise RequestError(f"question is longer than {MAX_QUESTION_CHARS} characters")
-            relay = runtime.relay(run_config(_run_overrides(body)))
+            rt, run_cfg = run_config(_run_overrides(body, presets))
         except RequestError as e:
             return bad_request(str(e), e.status)
-        events = relay.run(question, run_id=uuid.uuid4().hex[:16])
+        events = rt.relay(run_cfg).run(question, run_id=uuid.uuid4().hex[:16])
         return sse(_sse_relay(_pump_events(events, request)))
 
     @app.get("/v1/models")
     async def v1_models() -> Response:
         return json_response({"object": "list", "data": [
             {"id": mid, "object": "model", "created": _CREATED, "owned_by": "cutoffmix"}
-            for mid in model_ids(config.model_keys())]})
+            for mid in model_ids(config.model_keys(), presets)]})
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
@@ -511,15 +574,16 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
             if not isinstance(model_id, str):
                 raise RequestError("model must be a string")
             try:
-                overrides = _model_overrides(model_id, config.model_keys())
+                overrides = _model_overrides(model_id, config.model_keys(), presets)
             except LookupError as e:
                 return openai_error(404, str(e), "invalid_request_error", "model_not_found")
-            overrides |= _run_overrides(body)
+            overrides |= _run_overrides(body, presets)
             question = flatten_messages(body.get("messages"))
             if len(question) > MAX_QUESTION_CHARS:
                 raise RequestError(f"the conversation is longer than {MAX_QUESTION_CHARS} characters once "
                                    f"flattened ({len(question)}); shorten it or start a new chat")
-            relay = runtime.relay(run_config(overrides))
+            rt, run_cfg = run_config(overrides)
+            relay = rt.relay(run_cfg)
         except RequestError as e:
             return openai_error(e.status, str(e), "invalid_request_error")
         run_id = uuid.uuid4().hex[:24]

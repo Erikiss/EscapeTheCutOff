@@ -29,6 +29,14 @@ Event protocol of :meth:`Relay.run` (every attempt that streams from a backend i
 
 The trace holds exactly the committed segments (one per non-dropped ``segment_end``, the answer as a segment with
 phase ``"answer"``), so it always agrees with the event stream.
+
+Explore preset (``cfg.explore.enabled``, DESIGN.md §7.6): the protocol above is unchanged, and so is every request,
+event and ``done`` payload while the preset is off. With it on, every think request carries the structured-notes
+system prompt and a per-segment tail (record status plus a lens, check, continuation or next-move directive),
+``segment_start.data["explore"]`` badges the segment (``kind``, ``field``, ``tier``, ``cue``), ``segment_end.data``
+carries the segment's ``explore`` flags (and ``premature_final`` when a conclusion was set aside), the committed
+segments carry ``Segment.explore`` and ``done.data["explore"]`` (= ``trace.to_dict()["explore"]``) holds the §7
+metrics.
 """
 
 from __future__ import annotations
@@ -37,41 +45,67 @@ import asyncio
 import contextlib
 import dataclasses
 import math
+import random
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import AsyncGenerator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from cutoffmix.lenses import Field, draw_lens
 from cutoffmix.prompts import (
+    LABELS,
+    answer_system_prompt_explore,
+    check_text,
     clean_segment,
     complete_sentences,
+    continue_text,
     cut_at_sentinel,
+    lens_text,
+    missing_record_items,
     notes_echo_window,
+    parse_labels,
+    parse_vs_menu,
+    pick_vs_direction,
+    record_status_text,
+    relay_system_prompt_explore,
+    relay_tail,
     split_final,
     strip_preamble,
     trim_overlap,
+    vs_direction_text,
+    vs_menu_messages,
+    word3gram_jaccard,
 )
 from cutoffmix.types import (
     Backend,
+    ChatRequest,
     ContinuationRequest,
     Decision,
+    ExploreFlags,
     ModelSpec,
     Phase,
     RelayEvent,
     RelayTrace,
     Segment,
+    SegmentKind,
 )
 
 if TYPE_CHECKING:
-    from cutoffmix.config import AppConfig
+    from cutoffmix.config import AppConfig, ExploreConfig
     from cutoffmix.router.gate import TimeSensitivityGate
     from cutoffmix.router.index import CutoffIndex
     from cutoffmix.router.router import RouteDecision, Router
 
 __all__ = [
     "BUFFER_CHARS",
+    "GARBLE_WORD_SHARE",
+    "STAGNATION_SEGMENTS",
+    "VS_MENU_MAX_TOKENS",
+    "VS_MENU_MODEL",
+    "ExploreTrace",
     "Relay",
     "RelayRuntime",
     "mock_truth_index",
@@ -79,6 +113,12 @@ __all__ = [
 ]
 
 BUFFER_CHARS = 40  # display text held back at the start of a segment so preambles/echoes can be stripped
+# Explore preset (DESIGN.md §7.6)
+VS_MENU_MODEL = "gpt-6.2-sol"  # the next-move menu side call always runs on Sol (cheapest, honours `seed`)
+VS_MENU_MAX_TOKENS = 300  # five menu lines of at most 25 words
+STAGNATION_SEGMENTS = 4  # the argmax topic unchanged for this many think segments (plus no new salient token)
+GARBLE_WORD_SHARE = 0.6  # a note whose share of dictionary-like words is below this counts as garbled
+_SEED_BITS = 31  # a random explore seed, when neither explore.seed nor the run seed is set
 _MARKER_LAG_EXTRA = 8  # display lag beyond the sentinel/marker length (markdown variants: **Final answer:**)
 _CUT_FACTOR = 1.5  # stop reading a think segment once its visible text exceeds hard_cut_chars * this
 _RUNAWAY_FACTOR = 4  # safety: stop reading even a non-cancellable stream that keeps going past this many hard cuts
@@ -160,6 +200,66 @@ async def _aclose(stream: Any) -> None:
 
 def _new_run_id() -> str:
     return uuid.uuid4().hex[:16]
+
+
+# ---- explore helpers (pure) ----
+
+_LABEL_WORDS = frozenset(word for label in LABELS for word in label.split())
+_SALIENT = re.compile(r"\d+(?:[.,:]\d+)*|[^\W\d_]+(?:['’-][^\W\d_]+)*", re.UNICODE)
+_NUMERIC = re.compile(r"[\d.,:%/+-]+")
+_WORDISH = re.compile(r"^[^\W\d_]+(?:['’-][^\W\d_]+)*$", re.UNICODE)
+_VOWEL = re.compile(r"[aeiouyAEIOUYÀ-ÿ]")
+_PUNCT = "\"'()[]{}.,;:!?…«»„“”‘’*_-/"
+
+
+def _without(avail: list[str], exclude: Collection[str]) -> list[str]:
+    """``avail`` minus ``exclude``, unless that leaves nothing (then the only model left writes anyway)."""
+    kept = [m for m in avail if m not in exclude]
+    return kept or avail
+
+
+def _join(items: Sequence[str]) -> str:
+    return (", ".join(items[:-1]) + " and " + items[-1]) if len(items) > 1 else "".join(items)
+
+
+def _lacks(missing: Sequence[str]) -> str:
+    """The moderator's grounds for setting a conclusion aside (the ``{why}`` of the continuation text)."""
+    return f"the record still lacks {_join(missing)}" if missing else "the moderator does not accept a conclusion yet"
+
+
+def _argmax(posterior: Mapping[str, float]) -> str | None:
+    return max(posterior, key=lambda t: posterior[t]) if posterior else None
+
+
+def _entropy_bits(weights: Mapping[str, float]) -> float:
+    total = sum(v for v in weights.values() if v > 0)
+    if total <= 0:
+        return 0.0
+    return round(max(0.0, -sum((v / total) * math.log2(v / total) for v in weights.values() if v > 0)), 4)
+
+
+def _salient_tokens(text: str) -> set[str]:
+    """Numbers and capitalised tokens (the cheap proxy for 'the note introduces something new')."""
+    return {t for t in _SALIENT.findall(text) if (t[0].isdigit() or t[0].isupper()) and t not in _LABEL_WORDS}
+
+
+def _word_share(text: str) -> float | None:
+    """Share of tokens that look like dictionary words (letters, a vowel or a CJK character); None without tokens.
+    Numbers, dates and percentages do not count either way."""
+    tokens = [t.strip(_PUNCT) for t in text.split()]
+    tokens = [t for t in tokens if t and not _NUMERIC.fullmatch(t)]
+    if not tokens:
+        return None
+    good = sum(1 for t in tokens if _WORDISH.match(t)
+               and (len(t) <= 2 or _VOWEL.search(t) or any(ord(c) > 0x2E80 for c in t)))
+    return good / len(tokens)
+
+
+def _wws_key(sentence: str) -> str:
+    """The 'best answer' part of a 'Where we stand:' sentence, normalised for flip counting: the text before the
+    first comma or semicolon (the confidence and the weakest assumption follow it), lower-cased, letters/digits only."""
+    head = re.split(r"[,;]", sentence, maxsplit=1)[0]
+    return re.sub(r"[^\w]+", " ", head.lower(), flags=re.UNICODE).strip()
 
 
 # --------------------------------------------------------------------------------------
@@ -355,6 +455,8 @@ class _Attempt:
     ended_at: float = 0.0
     ttft_s: float | None = None  # time to the first text from the model
     duration_s: float = 0.0
+    premature: bool = False  # explore: the attempt concluded while the record gate was closed (answer set aside)
+    premature_answer: str | None = None  # the answer that was set aside (restored when the loop stop accepts it)
 
     @property
     def outcome(self) -> Outcome:
@@ -379,6 +481,213 @@ class _Produced:
 
 
 @dataclass
+class ExploreTrace(RelayTrace):
+    """The trace of an explore run: ``explore`` holds the DESIGN.md §7 metrics once the run has ended, and
+    ``to_dict()`` includes them under ``"explore"`` (so ``done.data["explore"]`` is the same object)."""
+
+    explore: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return super().to_dict() | {"explore": self.explore}
+
+
+@dataclass
+class _Plan:
+    """What the tail of a think segment asks for (DESIGN.md §7.6), decided before its routing decision.
+
+    Deterministic for the run state and the segment index (the lens draw uses ``random.Random(f"{seed}:{index}")``),
+    so a re-route of the same segment gets the same plan unless the state changed (a premature conclusion schedules a
+    continuation). ``exclude`` names the models the segment is routed away from when another one is available.
+    """
+
+    kind: SegmentKind = "main"
+    directive: str = ""
+    exclude: frozenset[str] = frozenset()
+    field: Field | None = None
+    tier: str | None = None
+    concepts: tuple[str, ...] = ()
+    cue: str | None = None
+    why: str | None = None
+    forcing: dict[str, Any] | None = None  # the pending continuation this segment consumes (identity matters)
+    stagnating: bool = False
+    wants_menu: bool = False  # a next-move menu side call is due for this segment (resolved once per index)
+
+    def badge(self) -> dict[str, Any]:
+        """What ``segment_start.data["explore"]`` shows."""
+        return {"kind": self.kind, "field": self.field.label if self.field else None, "tier": self.tier,
+                "cue": self.cue}
+
+
+@dataclass
+class _ExploreState:
+    """Per-run bookkeeping of the explore preset: the lens/check schedule, the record gate, forced continuations and
+    the material for the §7 metrics. ``trace`` and ``notes`` are the run state's own objects."""
+
+    cfg: ExploreConfig
+    seed: int
+    seed_source: str  # "explore" (explore.seed) | "run" (router.seed) | "random"
+    trace: RelayTrace
+    notes: list[str]
+    preset: str | None = None  # AppConfig.preset: the packaged preset the run's config was loaded with
+    pending_check: bool = False
+    lens_writer: str | None = None
+    lens_field: Field | None = None
+    cooldown: int = 0
+    lenses_used: int = 0
+    used_fields: list[str] = field(default_factory=list)  # field ids, drawn without replacement
+    forcings: int = 0  # continuations scheduled so far (the limit counts these)
+    forcing: dict[str, Any] | None = None  # pending continuation: {"why", "model", "cue", "index"}
+    cue_index: int = 0
+    loop_stop: bool = False
+    premature_finals: list[dict[str, Any]] = field(default_factory=list)
+    first_final_index: int | None = None
+    gate_missing_at_final: list[str] | None = None
+    window_notes: list[str] = field(default_factory=list)  # the notes the routing window sees (no lens notes)
+    wws_lines: list[str] = field(default_factory=list)
+    vs_menu: dict[str, Any] = field(default_factory=lambda: {"calls": 0, "parsed": 0, "chosen_p": [], "menus": [],
+                                                             "errors": [], "skipped": None})
+    vs_cache: dict[int, str] = field(default_factory=dict)  # menu directive per segment index
+
+    # ---- the record ----
+
+    def flags(self, extra: ExploreFlags | None = None) -> list[ExploreFlags]:
+        """The flags of the committed think segments, plus ``extra`` (a note about to be committed)."""
+        flags = [s.explore for s in self.trace.segments if s.phase == "think" and s.explore is not None]
+        return [*flags, extra] if extra is not None else flags
+
+    def main_line_count(self, extra: ExploreFlags | None = None) -> int:
+        return sum(1 for f in self.flags(extra) if f.kind in ("main", "continue"))
+
+    def label_counts(self, extra: ExploreFlags | None = None) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for f in self.flags(extra):
+            for label, n in f.labels.items():
+                counts[label] = counts.get(label, 0) + n
+        return counts
+
+    def wws_recent(self, extra: ExploreFlags | None = None) -> bool:
+        return any(f.has_wws for f in self.flags(extra)[-self.cfg.where_we_stand_window:])
+
+    def record_missing(self, *, after: tuple[SegmentKind, str] | None = None) -> list[str]:
+        """The checklist items still failing (DESIGN_explore §6.1); empty when the gate is open. With ``after``
+        (kind and text of a note about to be committed) the record is judged as it will be once that note is in."""
+        extra: ExploreFlags | None = None
+        pending = self.pending_check
+        if after is not None and after[1]:
+            kind, text = after
+            parsed = parse_labels(text)
+            extra = ExploreFlags(kind=kind, labels=dict(parsed["counts"]), has_wws=bool(parsed["has_wws"]))
+            pending = True if kind == "lens" else False if kind == "check" else pending
+        return missing_record_items(main_line_count=self.main_line_count(extra), min_segments=self.cfg.min_segments,
+                                    label_counts=self.label_counts(extra), require_labels=self.cfg.require_labels,
+                                    wws_recent=self.wws_recent(extra), pending_check=pending)
+
+    def gate_open(self) -> bool:
+        return not self.record_missing()
+
+    def accepting(self) -> bool:
+        """Whether a conclusion written now is accepted: the gate is open, forcing stopped on a loop, or the
+        continuation limit is used up (the next conclusion is then accepted and the missing items logged)."""
+        return self.gate_open() or self.loop_stop or self.forcings >= self.cfg.max_forced_continuations
+
+    def next_cue(self) -> str:
+        cue = self.cfg.cues[self.cue_index % len(self.cfg.cues)]
+        self.cue_index += 1
+        return cue
+
+    # ---- topics ----
+
+    def topics(self) -> list[str | None]:
+        """The argmax topic of every committed think segment (its decision's smoothed posterior)."""
+        return [_argmax(s.topic_posterior) for s in self.trace.segments if s.phase == "think"]
+
+    def current_topic(self) -> str | None:
+        topics = self.topics()
+        return topics[-1] if topics else None
+
+    def stagnating(self) -> bool:
+        """The cheap proxy of DESIGN_explore §4.2: the argmax topic unchanged for :data:`STAGNATION_SEGMENTS`
+        think segments and the last note introducing no number or capitalised token the notes did not have."""
+        topics = self.topics()
+        if len(topics) < STAGNATION_SEGMENTS or len(self.notes) < 2:
+            return False
+        last = topics[-STAGNATION_SEGMENTS:]
+        if last[0] is None or any(t != last[0] for t in last):
+            return False
+        earlier = _salient_tokens("\n".join(self.notes[:-1]))
+        return not (_salient_tokens(self.notes[-1]) - earlier)
+
+    # ---- metrics (DESIGN_explore §7) ----
+
+    def metrics(self) -> dict[str, Any]:
+        think = [s for s in self.trace.segments if s.phase == "think"]
+        flags = [s.explore or ExploreFlags() for s in think]
+        topics = self.topics()
+        main = [i for i, f in enumerate(flags) if f.kind in ("main", "continue")]
+        seen = [t for t in topics if t is not None]
+        posteriors = [s.topic_posterior for s in think if s.topic_posterior]
+        mean: dict[str, float] = {}
+        for p in posteriors:
+            for topic, v in p.items():
+                mean[topic] = mean.get(topic, 0.0) + v / len(posteriors)
+        lenses = [f for f in flags if f.kind == "lens"]
+        checks = [f for f in flags if f.kind == "check"]
+        kept = sum(1 for f in checks if f.lens_verdict == "kept")
+        dropped = sum(1 for f in checks if f.lens_verdict == "dropped")
+        written = sum(1 for f in lenses if f.lens_prefix_ok)
+        noted = [f for f, s in zip(flags, think) if s.text]
+        items = [sum(n for label, n in f.labels.items() if label != "Where we stand") for f in noted]
+        keys = [_wws_key(w) for w in self.wws_lines]
+        cfg = dataclasses.asdict(self.cfg)
+        cfg["require_labels"], cfg["cues"] = list(self.cfg.require_labels), list(self.cfg.cues)
+        cfg["lens"]["tiers"] = dict(self.cfg.lens.tiers)
+        return {
+            "preset": self.preset,
+            "seed": self.seed,
+            "seed_source": self.seed_source,
+            "config": cfg,
+            "think_segments": len(think),
+            "main_line_segments": len(main),
+            "lens_segments": len(lenses),
+            "check_segments": len(checks),
+            "continue_segments": sum(1 for f in flags if f.kind == "continue"),
+            "kinds": [f.kind for f in flags],
+            "topics": topics,
+            "topics_visited": {"all": len(set(seen)), "main_line": len({topics[i] for i in main} - {None})},
+            "topic_entropy_bits": {"mean_posterior": _entropy_bits(mean),
+                                   "argmax_histogram": _entropy_bits(Counter(seen))},
+            "topic_switches": sum(1 for a, b in zip(seen, seen[1:]) if a != b),
+            "lens": {
+                "offered": len(lenses), "written": written, "ignored": len(lenses) - written,
+                "kept": kept, "dropped": dropped, "unverified": len(checks) - kept - dropped,
+                "fields": [f.field for f in lenses], "tiers": [f.tier for f in lenses],
+                "keep_rate": round(kept / len(lenses), 4) if lenses else None,
+            },
+            "labels": {
+                "counts": self.label_counts(),
+                "coverage": {
+                    "two_or_more_items": round(sum(1 for n in items if n >= 2) / len(noted), 4) if noted else None,
+                    "where_we_stand": round(sum(1 for f in noted if f.has_wws) / len(noted), 4) if noted else None,
+                },
+            },
+            "wws_lines": list(self.wws_lines),
+            "answer_flips": sum(1 for a, b in zip(keys, keys[1:]) if a != b),
+            "premature_finals": list(self.premature_finals),
+            "forced_continuations": sum(1 for f in flags if f.kind == "continue"),
+            "first_final_index": self.first_final_index,
+            "gate_open": self.gate_open(),
+            "gate_missing_at_final": self.gate_missing_at_final,
+            "loop_stop": self.loop_stop,
+            "ngram_overlap_last2": (round(word3gram_jaccard(self.notes[-2], self.notes[-1]), 4)
+                                    if len(self.notes) >= 2 else None),
+            "notes_chars": sum(len(s.text) for s in think),
+            "notes_tokens_est": sum(len(s.text) for s in think) // 4,
+            "garble": sum(1 for s in think if s.text and (_word_share(s.text) or 1.0) < GARBLE_WORD_SHARE),
+            "vs_menu": {"mode": self.cfg.vs_menu, **self.vs_menu},
+        }
+
+
+@dataclass
 class _RunState:
     question: str
     run_id: str
@@ -396,12 +705,19 @@ class _RunState:
     timings: list[dict[str, Any]] = field(default_factory=list)
     first_delta_s: float | None = None
     error: str | None = None
+    explore: _ExploreState | None = None  # set when the explore preset is enabled
 
     def available(self, excluded: set[str] | frozenset[str] = frozenset()) -> list[str]:
         return [k for k in self.keys if k not in self.disabled and k not in excluded]
 
     def think_count(self) -> int:
         return sum(1 for s in self.trace.segments if s.phase == "think")
+
+    def window_notes(self) -> list[str]:
+        """The notes the routing window is built from: all of them, or, with the preset, the non-lens notes."""
+        if self.explore is not None and self.explore.cfg.lens.exclude_from_window:
+            return self.explore.window_notes
+        return self.notes
 
     def count_call(self, att: _Attempt) -> None:
         acc = self.usage.setdefault(att.model, {"calls": 0})
@@ -514,8 +830,21 @@ class Relay:
         if not isinstance(question, str) or not question.strip():
             raise ValueError("the question must be a non-empty string")
         today = self.cfg.today_str() if self.cfg.relay.inject_date else None
-        return _RunState(question=question.strip(), run_id=run_id or _new_run_id(), today=today,
-                         keys=[m.key for m in self.models], trace=RelayTrace(question=question.strip()))
+        question = question.strip()
+        ex = self.cfg.explore
+        trace: RelayTrace = ExploreTrace(question=question) if ex.enabled else RelayTrace(question=question)
+        st = _RunState(question=question, run_id=run_id or _new_run_id(), today=today,
+                       keys=[m.key for m in self.models], trace=trace)
+        if ex.enabled:
+            if ex.seed is not None:
+                seed, source = ex.seed, "explore"
+            elif self.cfg.router.seed is not None:
+                seed, source = self.cfg.router.seed, "run"
+            else:
+                seed, source = random.randrange(1 << _SEED_BITS), "random"
+            st.explore = _ExploreState(cfg=ex, seed=seed, seed_source=source, trace=st.trace, notes=st.notes,
+                                       preset=self.cfg.preset)
+        return st
 
     async def _run(self, st: _RunState) -> AsyncGenerator[RelayEvent, None]:
         rc = self.cfg.relay
@@ -524,7 +853,7 @@ class Relay:
         final: _Attempt | None = None
         while st.error is None and st.think_count() < rc.max_segments:
             index = len(st.trace.segments)
-            window = self.router.window(st.question, st.notes, rc.window_segments)
+            window = self.router.window(st.question, st.window_notes(), rc.window_segments)
             out = _Produced()
             async with contextlib.aclosing(self._think(st, index, window, out)) as events:
                 async for event in events:
@@ -537,6 +866,8 @@ class Relay:
                 final = out.attempt
                 break
         if st.error is None:
+            if st.explore is not None and not st.explore.gate_open():
+                st.explore.gate_missing_at_final = st.explore.record_missing()
             out = _Produced()
             async with contextlib.aclosing(self._answer(st, final, out)) as events:
                 async for event in events:
@@ -545,6 +876,8 @@ class Relay:
                 st.error = out.error or "the answer phase failed"
         if st.error is not None:
             yield RelayEvent(type="error", text=st.error, data={"dropped": st.dropped[-10:]})
+        if st.explore is not None and isinstance(st.trace, ExploreTrace):
+            st.trace.explore = st.explore.metrics()
         st.trace.ended_at = time.time()
         yield RelayEvent(type="done", data=st.done_data("error" if st.error is not None else "ok"))
 
@@ -555,12 +888,14 @@ class Relay:
         decision: RouteDecision | None = None
         update = True
         if rc.strategy == "speculative" and self.cfg.router.policy in _DRAFT_POLICIES:
-            avail = st.available()
+            plan = await self._plan(st, index) if st.explore is not None else None
+            avail = st.available() if plan is None else _without(st.available(), plan.exclude)
             if len(avail) > 1:
-                decision = self.router.decide(window, current=st.current, available=avail)
+                decision = self.router.decide(window, current=st.current, available=avail,
+                                              update=plan is None or plan.kind != "lens")
                 update = False
                 if decision.r >= rc.speculative_gate:
-                    async with contextlib.aclosing(self._speculative(st, index, window, out)) as events:
+                    async with contextlib.aclosing(self._speculative(st, index, window, out, plan)) as events:
                         async for event in events:
                             yield event
                     if out.attempt is not None:
@@ -586,7 +921,8 @@ class Relay:
             yield self._commit(st, att, "forced", posterior={}, scores={}, extra={"answer_mode": "inline"})
             out.attempt = att
             return
-        window = self.router.window(st.question, st.notes, len(st.notes))
+        notes = st.window_notes()
+        window = self.router.window(st.question, notes, len(notes))
         async with contextlib.aclosing(self._produce(st, "answer", index, window, out, update=False)) as events:
             async for event in events:
                 yield event
@@ -606,8 +942,13 @@ class Relay:
                 detail = "; ".join(f"{m}: {r}" for m, r in reasons.items()) or "all models are disabled"
                 out.error = f"no model left for {'the answer' if phase == 'answer' else f'segment {index}'} ({detail})"
                 return
+            plan: _Plan | None = None
+            if st.explore is not None and phase == "think":
+                plan = await self._plan(st, index)
+                avail = _without(avail, plan.exclude)
             if decision is None or decision.model not in avail:
-                decision = self.router.decide(window, current=st.current, available=avail, update=update)
+                decision = self.router.decide(window, current=st.current, available=avail,
+                                              update=update and (plan is None or plan.kind != "lens"))
             update = False
             d, decision = decision, None
             spec = self._spec[d.model]
@@ -618,19 +959,26 @@ class Relay:
             while True:
                 att = _Attempt(model=spec.key, phase=phase, index=index, attempt=attempt_no)
                 attempt_no += 1
+                start: dict[str, Any] = {"probs": _rounded(d.probs, 4), "r": round(float(d.r), 4),
+                                         "attempt": att.attempt, "strategy": "sequential", "available": avail}
+                if plan is not None:
+                    start["explore"] = plan.badge()
                 yield RelayEvent(
                     type="segment_start" if phase == "think" else "phase", segment=index, model=spec.key, phase=phase,
                     decision=d.decision, topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3),
-                    data={"probs": _rounded(d.probs, 4), "r": round(float(d.r), 4), "attempt": att.attempt,
-                          "strategy": "sequential", "available": avail})
-                req = self._request(st, phase, max_tokens)
+                    data=start)
+                req = self._request(st, phase, max_tokens, plan)
                 async with contextlib.aclosing(self._stream(st, spec, req, att, emit=True)) as events:
                     async for event in events:
                         yield event
+                if plan is not None:
+                    self._strip_final(st, att)
+                    self._resolve_final(st, att, plan)
                 result = att.outcome
                 if result == "ok":
                     extra = {"probs": _rounded(d.probs, 4), "r": round(float(d.r), 4)}
-                    yield self._commit(st, att, d.decision, posterior=d.posterior, scores=d.scores, extra=extra)
+                    yield self._commit(st, att, d.decision, posterior=d.posterior, scores=d.scores, extra=extra,
+                                       plan=plan)
                     out.attempt = att
                     return
                 yield self._drop(st, att, result)
@@ -651,11 +999,11 @@ class Relay:
 
     # ---- speculative path ------------------------------------------------------------------------
 
-    async def _speculative(self, st: _RunState, index: int, window: str,
-                           out: _Produced) -> AsyncGenerator[RelayEvent, None]:
+    async def _speculative(self, st: _RunState, index: int, window: str, out: _Produced,
+                           plan: _Plan | None = None) -> AsyncGenerator[RelayEvent, None]:
         """Draft the segment with every available model concurrently; the router picks among the usable drafts."""
-        avail = st.available()
-        req = self._request(st, "think", None)
+        avail = st.available() if plan is None else _without(st.available(), plan.exclude)
+        req = self._request(st, "think", None, plan)
         tasks = [asyncio.create_task(self._draft(st, self._spec[m], req, index)) for m in avail]
         try:
             drafts: list[_Attempt] = await asyncio.gather(*tasks)
@@ -667,6 +1015,8 @@ class Relay:
         ok: dict[str, _Attempt] = {}
         failed: dict[str, str] = {}
         for att in drafts:
+            if plan is not None:
+                self._strip_final(st, att)  # a draft that concludes early keeps only its note part
             result = att.outcome
             if result == "ok":
                 ok[att.model] = att
@@ -683,15 +1033,19 @@ class Relay:
         d = self.router.decide_speculative(window, {m: a.text or a.answer or "" for m, a in ok.items()},
                                            current=st.current)
         att = ok[d.model]
+        if plan is not None:
+            self._resolve_final(st, att, plan)
         extra = {"probs": _rounded(d.probs, 4), "r": round(float(d.r), 4)}
+        start = extra | {"attempt": 0, "strategy": "speculative", "available": list(ok)}
+        if plan is not None:
+            start["explore"] = plan.badge()
         yield RelayEvent(type="segment_start", segment=index, model=att.model, phase="think", decision=d.decision,
-                         topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3),
-                         data=extra | {"attempt": 0, "strategy": "speculative", "available": list(ok)})
+                         topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3), data=start)
         if att.text:
             st.mark_delta()
             yield RelayEvent(type="delta", segment=index, model=att.model, phase="think", text=att.text)
         extra |= {"drafts": {m: a.text for m, a in ok.items()}, "failed_drafts": failed}
-        yield self._commit(st, att, d.decision, posterior=d.posterior, scores=d.scores, extra=extra)
+        yield self._commit(st, att, d.decision, posterior=d.posterior, scores=d.scores, extra=extra, plan=plan)
         out.attempt = att
 
     async def _draft(self, st: _RunState, spec: ModelSpec, req: ContinuationRequest, index: int) -> _Attempt:
@@ -711,13 +1065,141 @@ class Relay:
 
     # ---- one streamed call -------------------------------------------------------------------------
 
-    def _request(self, st: _RunState, phase: Phase, max_tokens: int | None) -> ContinuationRequest:
+    def _request(self, st: _RunState, phase: Phase, max_tokens: int | None,
+                 plan: _Plan | None = None) -> ContinuationRequest:
         rc = self.cfg.relay
-        return ContinuationRequest(
+        index = len(st.trace.segments)
+        req = ContinuationRequest(
             question=st.question, segments=list(st.notes), phase=phase,
             target_tokens=rc.answer_max_tokens if phase == "answer" else rc.segment_tokens, max_tokens=max_tokens,
             today=st.today, sentinel=rc.sentinel, final_marker=rc.final_marker, hard_cut_chars=rc.hard_cut_chars,
-            run_id=st.run_id, metadata={"segment": len(st.trace.segments), "phase": phase})
+            run_id=st.run_id, metadata={"segment": index, "phase": phase})
+        ex = st.explore
+        if ex is None:
+            return req
+        # explore preset: the structured-notes prompts, the per-segment tail, and a reproducible seed per segment
+        req.metadata |= {"segment_index": index, "seed": ex.seed}
+        if phase == "think":
+            req.system_override = relay_system_prompt_explore(rc.segment_tokens, st.today, rc.sentinel,
+                                                              rc.final_marker)
+            status = record_status_text(ex.record_missing(), ex.gate_open(), rc.final_marker)
+            req.tail = relay_tail(st.think_count() + 1, status, plan.directive if plan is not None else "")
+            req.metadata["kind"] = plan.kind if plan is not None else "main"
+        else:
+            req.system_override = answer_system_prompt_explore(st.today, answer_basis=ex.cfg.answer_basis)
+        return req
+
+    # ---- explore preset: the plan of a think segment and the record gate (DESIGN.md §7.6) -------------
+
+    async def _plan(self, st: _RunState, index: int) -> _Plan:
+        """Decide what the tail of think segment ``index`` asks for: the pending check of a lens, a forced
+        continuation, a freshly drawn lens, a next-move direction from the menu side call, or a plain note."""
+        ex = st.explore
+        assert ex is not None
+        lens = ex.cfg.lens
+        if ex.pending_check and ex.lens_field is not None:
+            exclude = {ex.lens_writer} if lens.check_other_model and ex.lens_writer else set()
+            if ex.forcing is not None:  # the conclusion set aside in the lens note: the check continues the line
+                exclude.add(ex.forcing["model"])
+            return _Plan(kind="check", directive=check_text(ex.lens_field.label), exclude=frozenset(exclude),
+                         field=ex.lens_field, forcing=ex.forcing)
+        if ex.forcing is not None:
+            f = ex.forcing
+            return _Plan(kind="continue", directive=continue_text(f["why"], f["cue"]), exclude=frozenset({f["model"]}),
+                         cue=f["cue"], why=f["why"], forcing=f)
+        stagnating = ex.stagnating()
+        gate_open = ex.gate_open()
+        eligible = (index >= lens.first_index and not gate_open and ex.cooldown == 0
+                    and ex.lenses_used < lens.max)
+        last_slot = eligible and ex.main_line_count() == ex.cfg.min_segments - 1
+        rng = random.Random(f"{ex.seed}:{index}")
+        if eligible:
+            p = lens.p_stagnation if stagnating else lens.p
+            if rng.random() < p or (last_slot and ex.lenses_used < lens.min):
+                drawn = draw_lens(rng, ex.current_topic(), ex.used_fields, lens.tiers, stagnating)
+                if drawn is not None:
+                    fld, tier, concepts = drawn
+                    return _Plan(kind="lens", directive=lens_text(fld.label, concepts), field=fld, tier=tier,
+                                 concepts=concepts, stagnating=stagnating)
+        mode = ex.cfg.vs_menu
+        wants = not gate_open and ((mode == "stagnation" and stagnating) or (mode == "every_lens" and eligible))
+        plan = _Plan(kind="main", stagnating=stagnating, wants_menu=wants)
+        if wants:
+            plan.directive = await self._menu_directive(st, index)
+        return plan
+
+    async def _menu_directive(self, st: _RunState, index: int) -> str:
+        """The next-move menu side call (verbalized sampling) for segment ``index``, once per index: Sol lists five
+        directions with probabilities, the client picks one from the tail. Skipped (logged) when Sol is not among the
+        relay's models; a failing side call never fails the run."""
+        ex = st.explore
+        assert ex is not None
+        if index in ex.vs_cache:
+            return ex.vs_cache[index]
+        book = ex.vs_menu
+        directive = ""
+        spec = self._spec.get(VS_MENU_MODEL)
+        if spec is None:
+            book["skipped"] = f"{VS_MENU_MODEL} is not configured"
+        else:
+            book["calls"] += 1
+            req = ChatRequest(messages=vs_menu_messages(st.question, st.notes), max_tokens=VS_MENU_MAX_TOKENS,
+                              metadata={"seed": ex.seed, "segment_index": index, "purpose": "vs_menu"})
+            try:
+                res = await self.backend.chat(spec, req)
+            except Exception as e:  # noqa: BLE001 -- a side call must never fail the run
+                book["errors"].append({"index": index, "error": f"{type(e).__name__}: {e}"})
+            else:
+                acc = st.usage.setdefault(spec.key, {"calls": 0})
+                acc["calls"] += 1
+                if res.usage:
+                    _add_usage(acc, res.usage)
+                menu = parse_vs_menu(res.text)
+                pick = pick_vs_direction(menu, random.Random(f"{ex.seed}:{index}:vs"))
+                row: dict[str, Any] = {"index": index, "menu": [list(line) for line in menu], "chosen": None, "p": None}
+                if pick is not None:
+                    book["parsed"] += 1
+                    book["chosen_p"].append(pick[1])
+                    row["chosen"], row["p"] = pick
+                    directive = vs_direction_text(pick[0])
+                book["menus"].append(row)
+        ex.vs_cache[index] = directive
+        return directive
+
+    def _strip_final(self, st: _RunState, att: _Attempt) -> None:
+        """Set aside a conclusion the record gate does not accept yet: the note part stays, the answer is kept
+        only for :meth:`_resolve_final` (the loop stop may accept it after all)."""
+        ex = st.explore
+        if ex is None or att.answer is None or ex.accepting():
+            return
+        att.premature, att.premature_answer, att.answer = True, att.answer, None
+
+    def _resolve_final(self, st: _RunState, att: _Attempt, plan: _Plan) -> None:
+        """Gate bookkeeping once ``att`` is the segment's result (DESIGN_explore §6.1-6.2): record the first
+        conclusion; for a premature one either stop forcing (the last two notes loop: the conclusion is accepted)
+        or schedule the forced continuation with the next cue, the concluding model excluded."""
+        ex = st.explore
+        if ex is None or (att.answer is None and not att.premature):
+            return
+        if ex.first_final_index is None:
+            ex.first_final_index = att.index
+        if not att.premature:
+            return
+        missing = ex.record_missing(after=(plan.kind, att.text))  # what is still missing once the note is in
+        notes = [*st.notes, att.text] if att.text else list(st.notes)
+        overlap = word3gram_jaccard(notes[-2], notes[-1]) if len(notes) >= 2 else 0.0
+        row: dict[str, Any] = {"index": att.index, "model": att.model, "kind": plan.kind, "missing": missing,
+                               "overlap_last2": round(overlap, 4), "forced": False, "loop": False}
+        if ex.forcings > 0 and overlap > ex.cfg.loop_overlap_jaccard:
+            ex.loop_stop = True  # forcing produced a repeat: accept this conclusion rather than loop
+            att.answer, att.premature = att.premature_answer, False
+            row["loop"] = True
+        else:
+            cue = ex.next_cue()
+            ex.forcings += 1
+            ex.forcing = {"why": _lacks(missing), "model": att.model, "cue": cue, "index": att.index}
+            row["forced"], row["cue"] = True, cue
+        ex.premature_finals.append(row)
 
     async def _stream(self, st: _RunState, spec: ModelSpec, req: ContinuationRequest, att: _Attempt, *,
                       emit: bool) -> AsyncGenerator[RelayEvent, None]:
@@ -823,12 +1305,14 @@ class Relay:
     # ---- commit / drop -----------------------------------------------------------------------------
 
     def _commit(self, st: _RunState, att: _Attempt, decision: Decision, *, posterior: Mapping[str, float],
-                scores: Mapping[str, float], extra: dict[str, Any]) -> RelayEvent:
+                scores: Mapping[str, float], extra: dict[str, Any], plan: _Plan | None = None) -> RelayEvent:
         """Append the attempt to the trace (and the notes) and return its authoritative ``segment_end``."""
         seg = Segment(index=att.index, model=att.model, phase=att.phase, text=att.text, decision=decision,
                       topic_posterior=_rounded(posterior, 4), scores=_rounded(scores, 3),
                       started_at=att.started_at, ended_at=att.ended_at, aborted=att.aborted, usage=att.usage,
                       note=att.finish or "")
+        flags = self._explore_commit(st, att, plan) if plan is not None and att.phase == "think" else None
+        seg.explore = flags
         st.trace.segments.append(seg)
         if att.phase == "think":
             if att.text:
@@ -843,12 +1327,48 @@ class Relay:
                         "saw_sentinel": att.saw_sentinel}
         if att.phase == "think":
             data["final"] = att.answer is not None
+        if flags is not None:
+            data["explore"] = flags.to_dict()
+            if att.premature:
+                data["premature_final"] = True
         return RelayEvent(type="segment_end", segment=att.index, model=att.model, phase=att.phase, text=att.text,
                           decision=decision, data=data)
+
+    def _explore_commit(self, st: _RunState, att: _Attempt, plan: _Plan) -> ExploreFlags:
+        """The committed think segment's explore flags, and the state transitions of the schedule: a lens awaits
+        its check (its writer is remembered, its field is used up), a check starts the cooldown, a continuation
+        consumes its forcing; non-lens notes join the routing window."""
+        ex = st.explore
+        assert ex is not None
+        parsed = parse_labels(att.text)
+        flags = ExploreFlags(kind=plan.kind, field=plan.field.label if plan.field is not None else None,
+                             tier=plan.tier, labels=dict(parsed["counts"]), has_wws=bool(parsed["has_wws"]),
+                             cue=plan.cue)
+        if plan.kind == "lens":
+            flags.lens_prefix_ok = parsed["lens_prefix"] is not None
+            ex.pending_check, ex.lens_writer, ex.lens_field = True, att.model, plan.field
+            ex.lenses_used += 1
+            if plan.field is not None:
+                ex.used_fields.append(plan.field.name)
+        elif plan.kind == "check":
+            flags.lens_verdict = parsed["lens_verdict"]
+            ex.pending_check, ex.lens_writer, ex.lens_field = False, None, None
+            ex.cooldown = ex.cfg.lens.cooldown
+        else:
+            ex.cooldown = max(0, ex.cooldown - 1)
+        if plan.forcing is not None and ex.forcing is plan.forcing:
+            ex.forcing = None  # consumed by this segment (a newer one scheduled meanwhile stays pending)
+        if att.text and (plan.kind != "lens" or not ex.cfg.lens.exclude_from_window):
+            ex.window_notes.append(att.text)
+        if parsed["has_wws"]:
+            ex.wws_lines.append(parsed["wws_sentence"])
+        return flags
 
     def _record_drop(self, st: _RunState, att: _Attempt, reason: Outcome) -> dict[str, Any]:
         row = {"index": att.index, "model": att.model, "phase": att.phase, "attempt": att.attempt, "reason": reason,
                "finish_reason": att.finish, "error": att.error or att.note}
+        if att.premature:
+            row["premature_final"] = True  # explore: it concluded with an empty note while the gate was closed
         st.dropped.append(row)
         return row
 

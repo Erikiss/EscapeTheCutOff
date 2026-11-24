@@ -121,6 +121,22 @@ def test_preset_merges_before_user_file_and_overrides(tmp_path):
     assert load_config(path, preset="explore").model("gpt-6.2-sol").extra_body == {"verbosity": "low"}
 
 
+def test_preset_echo_is_set_by_the_loader_only(tmp_path):
+    assert load_config().preset is None and default_config().preset is None
+    cfg = load_config(preset="explore")
+    assert cfg.preset == "explore" and cfg.to_dict()["preset"] == "explore"
+    assert config_from_dict(cfg.to_dict()) == cfg and config_from_dict(cfg.to_dict()).preset == "explore"
+    # a `preset:` key in a config file (or in overrides) is an echo, never a loader: it is overwritten
+    path = tmp_path / "labelled.yaml"
+    path.write_text("preset: explore\n", encoding="utf-8")
+    plain = load_config(path)
+    assert plain.preset is None and plain.explore.enabled is False and plain.relay.segment_tokens == 128
+    assert load_config(path, overrides={"preset": "explore"}).preset is None
+    assert load_config(path, preset="explore").preset == "explore"
+    with pytest.raises(ConfigError, match="preset must be a packaged preset name"):
+        AppConfig(models=[ModelSpec(key="a", provider_id="x/a")], preset="Not A Name")
+
+
 def test_explore_without_preset_is_off_and_fully_overridable():
     cfg = load_config(overrides={"explore": {"enabled": True, "seed": 7, "vs_menu": "stagnation",
                                              "lens": {"tiers": {"far": 1.0}}}})

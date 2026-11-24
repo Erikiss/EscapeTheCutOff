@@ -3,7 +3,8 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...]
+                             [--preset NAME]
+    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...] [--preset NAME]
     cutoffmix index show [--path FILE] [--probe P] [--config FILE]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
@@ -17,7 +18,9 @@
 
 ``--mock`` uses the simulated models of :mod:`cutoffmix.backends.mock` everywhere. Commands that call the real
 models stop with a clear message when the API key variable (``OPENROUTER_API_KEY``) is not set. Benchmark modules
-are imported only by the subcommands that need them.
+are imported only by the subcommands that need them. ``--preset explore`` (``run`` and ``serve``) merges the packaged
+explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
+and the summary line adds the exploration metrics of the ``done`` event.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["CLIError", "TerminalPrinter", "build_parser", "format_tau", "main", "use_color"]
+__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "use_color"]
 
 PROBE_CHOICES = ("current", "current_d", "recall", "mcq")
 _ANY_ADDRESS = ("0.0.0.0", "::", "")  # --host values that bind every interface (no host name to allow)
@@ -128,6 +131,24 @@ class TerminalPrinter:
         r, g, b = _rgb(self.models[model].color)
         return self._sgr(label, f"48;2;{r};{g};{b}", "38;2;255;255;255", "1")
 
+    @staticmethod
+    def explore_tag(data: Mapping[str, Any]) -> str:
+        """The explore tag of a ``segment_start`` (DESIGN.md §7.6: ``data["explore"]`` with ``kind`` lens, check or
+        continue, ``field``, ``tier`` and ``cue``; the same keys flat in ``data`` are accepted too), else ``""``."""
+        nested = data.get("explore")
+        if isinstance(nested, Mapping):
+            data = nested
+        kind = data.get("kind")
+        if kind == "lens":
+            tier = data.get("tier")
+            return f"lens: {data.get('field') or '?'}" + (f" ({tier})" if tier else "")
+        if kind == "check":
+            return f"check: {data.get('field') or 'the previous lens'}"
+        if kind == "continue":
+            cue = str(data.get("cue") or "").strip()
+            return f"continue: '{cue}'" if cue else "continue"
+        return ""
+
     def _header(self, ev: RelayEvent) -> tuple[str, str]:
         """``(styled header, visible header)`` for a segment or answer start."""
         data = ev.data or {}
@@ -140,9 +161,11 @@ class TerminalPrinter:
         if ev.phase == "answer":
             bits.insert(0, "answer")
         meta = " · ".join(b for b in bits if b)
+        tag = self.explore_tag(data)
         chip = self._chip(ev.model)
         plain_chip = f" {self.models[ev.model].label()} " if self.color and ev.model in self.models else chip
-        return f"{chip} {self._sgr(meta, '2')}", f"{plain_chip} {meta}"
+        styled = f"{chip} {self._sgr(meta, '2')}" + (f" {self._sgr(f'[{tag}]', '1')}" if tag else "")
+        return styled, f"{plain_chip} {meta}" + (f" [{tag}]" if tag else "")
 
     # ---- output ----
 
@@ -224,7 +247,59 @@ class TerminalPrinter:
             parts.append(f"tokens {usage['total_tokens']}{partial}")
         if usage.get("cost"):
             parts.append(f"cost ${usage['cost']:.4f}{partial}")
+        explore = data.get("explore")
+        if isinstance(explore, Mapping):
+            parts.extend(explore_summary(explore))
         return " · ".join(parts)
+
+
+def _count(value: Any) -> int | None:
+    """A count from a metric that may be a number, a list (its length) or a mapping (its ``all`` or first value)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, Mapping) and value:
+        return _count(value.get("all", next(iter(value.values()))))
+    return None
+
+
+def _share(value: Any) -> float | None:
+    """A share in [0, 1] from a coverage metric that may be a number or a mapping of shares (the first one)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    if isinstance(value, Mapping) and value:
+        return _share(next(iter(value.values())))
+    return None
+
+
+def explore_summary(explore: Mapping[str, Any]) -> list[str]:
+    """Summary parts for the explore metrics of a ``done`` event (DESIGN.md §7): lenses kept/dropped, labels
+    coverage, topics visited, forced continuations. Every key is optional."""
+    parts: list[str] = []
+    lens = explore.get("lens")
+    if isinstance(lens, Mapping):
+        written = _count(lens.get("written", lens.get("offered")))
+        kept, dropped = _count(lens.get("kept")), _count(lens.get("dropped"))
+        if written is not None or kept is not None or dropped is not None:
+            verdicts = ", ".join(f"{n} {word}" for n, word in ((kept, "kept"), (dropped, "dropped")) if n is not None)
+            parts.append(f"lenses {written if written is not None else (kept or 0) + (dropped or 0)}"
+                         + (f" ({verdicts})" if verdicts else ""))
+    labels = explore.get("labels")
+    coverage = _share(labels.get("coverage")) if isinstance(labels, Mapping) else None
+    if coverage is not None:
+        parts.append(f"labels {coverage:.0%}")
+    topics = _count(explore.get("topics_visited"))
+    if topics is not None:
+        parts.append(f"topics {topics}")
+    forced = _count(explore.get("forced_continuations"))
+    if forced is not None:
+        parts.append(f"forced {forced}")
+    return parts
 
 
 # --------------------------------------------------------------------------------------
@@ -236,7 +311,7 @@ def _load_cfg(args: argparse.Namespace, overrides: dict[str, Any] | None = None)
     from cutoffmix.config import load_config
 
     try:
-        return load_config(getattr(args, "config", None), overrides or None)
+        return load_config(getattr(args, "config", None), overrides or None, preset=getattr(args, "preset", None))
     except (ValueError, OSError) as e:
         raise CLIError(f"invalid configuration: {e}") from e
 
@@ -370,8 +445,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
                   "machines use", file=sys.stderr)
     else:
         hosts.append(args.host)
-    app = server.create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin, allowed_hosts=hosts)
-    print(f"cutoffmix {'(simulated models) ' if args.mock else ''}on http://{args.host}:{args.port}/", file=sys.stderr)
+    app = server.create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin, allowed_hosts=hosts,
+                            config_path=args.config)
+    modes = [*(["simulated models"] if args.mock else []), *([f"preset {args.preset}"] if args.preset else [])]
+    print(f"cutoffmix{' (' + ', '.join(modes) + ')' if modes else ''} on http://{args.host}:{args.port}/",
+          file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
@@ -628,6 +706,12 @@ def _add_config(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", metavar="FILE", help="YAML config merged over the packaged defaults")
 
 
+def _add_preset(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--preset", metavar="NAME",
+                   help="packaged preset merged before --config: 'explore' (structured notes, cross-field lenses, a "
+                        "record gate before the answer; DESIGN.md section 7)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The ``cutoffmix`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -645,9 +729,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--segments", type=int, metavar="N", help="maximum number of note segments")
     run.add_argument("--segment-tokens", type=int, metavar="K", help="visible tokens asked per segment")
     run.add_argument("--answer-mode", choices=("routed", "inline"))
-    run.add_argument("--seed", type=int, help="seed for routing (and the simulated models)")
+    run.add_argument("--seed", type=int,
+                     help="seed for routing, the simulated models and the explore preset's client-side draws")
     run.add_argument("--today", metavar="YYYY-MM-DD", help="date given to the models (default: today)")
     run.add_argument("--json", metavar="OUT", help="write the trace (with usage and latency) as JSON")
+    _add_preset(run)
     _add_config(run)
     run.set_defaults(func=_cmd_run)
 
@@ -662,6 +748,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="a host name or address clients may use in Host besides localhost and --host, e.g. a "
                             "LAN address or a proxy's public name ('*' for any: no DNS-rebinding protection); "
                             "repeatable")
+    _add_preset(serve)
     _add_config(serve)
     serve.set_defaults(func=_cmd_serve)
 

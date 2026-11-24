@@ -221,10 +221,15 @@ class AppConfig:
     base_url: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
     app_title: str = "cutoffmix"
+    # The packaged preset :func:`load_config` merged into this configuration (``"explore"``), else None. An echo for
+    # the relay's metrics and the server, always set by the loader: a ``preset:`` key in a config file loads nothing.
+    preset: str | None = None
 
     def __post_init__(self) -> None:
         _require(bool(self.models), "config needs at least one model")
         _require(isinstance(self.explore, ExploreConfig), "config.explore must be a mapping")
+        _require(self.preset is None or bool(_PRESET_NAME.match(self.preset)),
+                 f"preset must be a packaged preset name (lowercase letters, digits, _ or -), got {self.preset!r}")
         keys = [m.key for m in self.models]
         dupes = sorted({k for k in keys if keys.count(k) > 1})
         _require(not dupes, f"duplicate model keys: {', '.join(dupes)}")
@@ -429,6 +434,8 @@ def load_config(path: str | Path | None = None, overrides: Mapping[str, Any] | N
 
     ``preset`` names a file ``cutoffmix/data/presets/<preset>.yaml`` (see :func:`list_presets`); an unknown name
     raises :class:`ConfigError`. ``overrides`` is a nested dict such as ``{"relay": {"strategy": "speculative"}}``.
+    The result's ``preset`` field echoes the ``preset`` argument (None when none was merged), whatever the file or
+    the overrides say.
     """
     data = _packaged_default()
     if preset is not None:
@@ -442,6 +449,7 @@ def load_config(path: str | Path | None = None, overrides: Mapping[str, Any] | N
         data = _merge_config(data, _parse_yaml(text, str(p)))
     if overrides:
         data = _merge_config(data, overrides)
+    data["preset"] = preset
     return config_from_dict(data)
 
 
