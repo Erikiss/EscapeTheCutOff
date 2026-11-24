@@ -115,13 +115,16 @@ class FakeIndex:
                 for t in self.topics for m in self.models]
 
 
+TEST_HOSTS = ("test",)  # the host name of client() below
+
+
 def make_cfg() -> AppConfig:
     return AppConfig(models=list(MODELS), relay=RelayConfig(), router=RouterConfig(), today="2026-11-24")
 
 
 def make_app(backend: FakeBackend | None = None, *, index: Any = None):
     backend = backend or FakeBackend()
-    app = create_app(make_cfg(), backend=backend)
+    app = create_app(make_cfg(), backend=backend, allowed_hosts=TEST_HOSTS)
     runtime = app.state.runtime
     runtime.seen_cfgs = []
 
@@ -204,7 +207,9 @@ async def test_ui_is_a_single_self_contained_page():
     html = r.text
     assert "<title>" in html and "/api/relay" in html and "/api/index" in html and "prefers-color-scheme" in html
     assert not re.search(r"https?://", html), "the UI must not load anything from the network"
-    assert "<link" not in html and "@import" not in html
+    assert "@import" not in html
+    links = re.findall(r"<link\b[^>]*>", html)
+    assert all(re.search(r'href="data:', tag) for tag in links), links  # only inline resources (the icon)
 
 
 async def test_ui_link_with_a_question_never_starts_a_run_by_itself():
@@ -353,12 +358,12 @@ async def test_api_index_without_an_index():
 async def test_default_index_is_the_packaged_prior_and_mock_mode_uses_the_mock_truths():
     from cutoffmix.config import default_config
 
-    async with client(create_app(default_config())) as c:  # no request reaches a model: no key needed
+    async with client(create_app(default_config(), allowed_hosts=TEST_HOSTS)) as c:  # no request reaches a model: no key needed
         real = (await c.get("/api/index")).json()
     assert real["available"] is True and real["source"] == "packaged index_prior.json"
     assert real["meta"]["sources"] == ["apoorvumang/knowledge-cutoff (CC BY 4.0)"]
     assert real["meta"]["data_range"]["last"] <= "2026-06-30" and "PRIOR" in real["meta"]["note"]
-    async with client(create_app(default_config(), mock=True)) as c:
+    async with client(create_app(default_config(), mock=True, allowed_hosts=TEST_HOSTS)) as c:
         mock = (await c.get("/api/index")).json()
     assert mock["source"] == "mock truths" and "not a measurement" in mock["meta"]["note"]
 
@@ -474,7 +479,7 @@ async def test_posts_from_another_origin_are_refused(path, origin):
 ])
 async def test_posts_from_the_own_or_an_allowed_origin_run(origin, headers, allowed):
     backend = FakeBackend()
-    app = create_app(make_cfg(), backend=backend, allowed_origins=allowed)
+    app = create_app(make_cfg(), backend=backend, allowed_origins=allowed, allowed_hosts=TEST_HOSTS)
     app.state.runtime.router_factory = lambda cfg: FakeRouter(cfg.model_keys())
     app.state.runtime._load_routing = lambda: (None, None, None)
     async with client(app) as c:
@@ -564,8 +569,10 @@ async def test_chat_completions_non_stream():
     assert message["role"] == "assistant" and message["content"] == "The answer is 42."
     assert message["reasoning"].startswith("Step 0:") and "\n\nStep 1:" in message["reasoning"]
     assert data["choices"][0]["finish_reason"] == "stop"
+    # the concluding segment was closed at the final marker, before its usage chunk: the totals are a lower bound
     assert data["usage"] == {"prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45,
-                             "cost": pytest.approx(0.03)}
+                             "cost": pytest.approx(0.03), "cutoffmix_partial": True}
+    assert data["cutoffmix"]["usage_complete"] is False
     assert data["cutoffmix"]["answer"] == "The answer is 42." and "segments" in data["cutoffmix"]
 
 

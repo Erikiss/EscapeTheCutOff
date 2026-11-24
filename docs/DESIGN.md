@@ -77,6 +77,8 @@ class RelayConfig:
     inject_date: bool = True
     max_retries: int = 2
     disable_after_refusals: int = 2    # a model that refuses this often is excluded for the rest of the run
+    first_content_timeout_s: float = 60.0  # per attempt: wall clock until the first visible text
+    segment_timeout_s: float = 120.0   # per attempt: the whole stream (keep-alive comments reset neither)
 
 @dataclass
 class RouterConfig:
@@ -93,6 +95,7 @@ class RouterConfig:
     probe_preference: tuple[str, ...] = ("current_d", "current", "recall", "mcq")
     classifier: str = "auto"           # auto | keyword | linear | embedding
     classifier_path: str | None = None
+    gate_path: str | None = None       # trained gate (router train: gate_linear.npz); None -> lexical gate
     seed: int | None = None
 
 @dataclass
@@ -134,6 +137,9 @@ def strip_preamble(text: str) -> str          # "Next paragraph:", "Continuation
     # also template echoes ("Next result:", "Zwischenergebnis:", "Nächster Schritt:"), not "Correction:"/"Korrektur:"
 def clean_segment(raw: str, notes_tail: str, *, sentinel: str, hard_cut_chars: int) -> tuple[str, bool]
     # -> (clean text, saw_sentinel). Cut at sentinel, strip preamble, trim echoed overlap, hard-cut, trim to sentence.
+def cut_at_sentinel(raw: str, sentinel: str) -> tuple[str, bool]   # text before the first exact or mangled sentinel
+def complete_sentences(text: str) -> str      # up to the last sentence end ("" if none): for cut-off paragraphs
+def notes_echo_window(segments: list[str]) -> str   # the end of the notes (<= 8000 chars) a model may repeat
 def split_final(text: str, final_marker: str) -> tuple[str, str | None]   # (notes part, answer part or None)
 ```
 
@@ -165,12 +171,16 @@ class OpenRouterBackend:                                       # implements type
         # sentinel as its last content), closing the connection when the usage chunk arrives, when more than
         # SENTINEL_GRACE_CHARS (32) of further content arrive, or after SENTINEL_GRACE_S (2.0 s); failures in that
         # window do not fail the segment. It also stops if model.cancellable and the text exceeds
-        # req.hard_cut_chars*1.5 (a non-cancellable model is read on: closing would not stop its billing; the
-        # relay bounds it); final
+        # req.hard_cut_chars*1.5 plus len(notes_echo_window(req.segments)) (an echo of the notes may come first; a
+        # non-cancellable model is read on: closing would not stop its billing; the relay bounds it); final
         # kind="done" with usage (the usage chunk if received, plus "generation_id" from X-Generation-Id or the
         # chunk id when known), finish_reason ("stop"|"length"|"content_filter"|"sentinel"|"cut"|"error"), and
         # StreamEvent.text = "" ; on errors kind="error" with error message (never raise inside the iterator after
         # the first yield; raising BackendError before the first yield is ok for HTTP errors).
+        # The first text or reasoning event also carries usage={"generation_id": ...} (when known), so a caller
+        # that closes the stream before "done" (final marker, mangled sentinel, overflow) keeps the id.
+        # Chunks of an unexpected shape (choices [null], a non-object delta, content as a list of parts) are read
+        # tolerantly and never raise.
         # Refusal text (delta.refusal) with no content counts as finish_reason "content_filter".
         # Reasoning deltas (delta.reasoning) -> kind="reasoning" (streamed for Fable despite reasoning.exclude; the
         # relay drops them, and error messages never quote raw payloads, so they cannot reach notes or traces).
@@ -237,11 +247,15 @@ class EmbeddingTopicClassifier:    # optional sentence-transformers; ImportError
 def load_classifier(kind: str = "auto", path: str | None = None) -> TopicClassifier
     # auto: linear if path exists, else keyword
 # router/gate.py
-class TimeSensitivityGate:
+class TimeSensitivityGate:                                 # __init__(..., today=None): which years are recent
     def score(self, text: str) -> float                   # r(W) in [0,1]; lexical baseline (temporal cues EN/DE,
-                                                           # years 2024-2027, "current/latest/now/aktuell/derzeit",
-                                                           # office/role nouns, capitalised-entity density, news-topic mass)
-    @classmethod train(...)/save/load                      # optional LR on hashed features
+                                                           # years from today-2 to today+1, "current/latest/now/
+                                                           # aktuell/derzeit", office/role nouns, capitalised-entity
+                                                           # density, news-topic mass). The current or previous year
+                                                           # counts as a strong temporal cue ("this year") unless the
+                                                           # text has math cues.
+    @classmethod train(...)/save/load(path, *, today=None) # optional LR on hashed features
+def load_gate(path: str | None = None, *, today=None) -> TimeSensitivityGate   # router.gate_path, else lexical
 # router/index.py
 @dataclass
 class ProbeIndex:
@@ -293,7 +307,7 @@ class Router:
                  gate: TimeSensitivityGate | None = None, policy: RoutingPolicy | None = None,
                  cfg: RouterConfig | None = None, seed: int | None = None)
     @classmethod
-    def from_config(cls, cfg: AppConfig) -> "Router"
+    def from_config(cls, cfg: AppConfig) -> "Router"     # index, classifier and load_gate(gate_path, today)
     def reset(self) -> None
     def window(self, question: str, segments: list[str], n: int) -> str
     def decide(self, window_text: str, *, current: str | None, available: list[str] | None = None,
@@ -433,6 +447,9 @@ Loop, with i = segment index:
    decision, posterior, scores and probs. Stream `backend.stream_continuation(model, req)`. Buffer the first 40 chars
    so that preamble or echoed overlap can be stripped, then emit `delta` events. Never emit text after the sentinel,
    nor trailing whitespace at the end of the segment.
+   A model may repeat earlier notes (whole notes, or the end of the last one) before its new paragraph: the buffer is
+   held while the text is still a piece of `notes_echo_window(notes)`, the hard cut counts from where the new text
+   starts, and the repeat is stripped. An attempt that is only a repeat (possibly cut off) is `empty`.
    At the end, `clean_segment()` and emit `segment_end` with the final text. The final text is authoritative; the UI
    replaces the streamed text with it.
 3. Speculative strategy, when r(W) ≥ speculative_gate and more than one model is available:
@@ -440,12 +457,19 @@ Loop, with i = segment index:
    - Score each draft with `router.score_draft(W, draft, m)`, then `policy.choose` over those scores with
      current = current model. Decision "speculative".
    - Emit the chosen draft as segment_start, one delta and segment_end, plus `data={"drafts": {m: text}}`.
-   - Below the gate, use the sequential path.
+   - Below the gate, use the sequential path. So do the policies that ignore scores (`fixed:<key>`, `round_robin`,
+     `random`): they would pick the same model with or without drafts, so the other drafts would be paid for nothing.
 4. Errors:
    - `finish_reason == content_filter`: refusal. Drop the text, count it, exclude that model for this segment, and
      re-decide.
-   - `length` with empty text: retry once with doubled max_tokens.
+   - `length` with empty text: retry once with doubled max_tokens. A think paragraph cut off (`length`, `cut`,
+     `overflow`, no sentinel) loses its incomplete last sentence; with no complete sentence it counts as empty.
+   - Nothing after the first sentinel counts, also a mangled one: a final marker written after it is no answer.
    - error or exception: retry ≤ max_retries with backoff, then exclude the model for this segment.
+   - Each attempt (drafts included) has a wall-clock budget that keep-alive comments cannot reset:
+     `first_content_timeout_s` until the first text, `segment_timeout_s` in total. Running out of it is a retryable
+     error (`finish_reason` "timeout"; its usage is unknown, so it is listed in `usage_missing`), unless the
+     paragraph was already complete (sentinel, marker, overflow), which is then kept.
    - If no model is left: emit `error` and stop. Exception: in the think phase, if every remaining model returned
      nothing usable (`empty`, e.g. it stopped at once or wrote only the sentinel) and the notes are not empty, the
      notes count as concluded and the answer phase runs.
@@ -455,10 +479,13 @@ Loop, with i = segment index:
      `answer_*` prompts, streamed as `phase` and then `delta` events with phase "answer".
 6. Stop when max_segments is reached and force the answer phase. Emit `done` with
    `data = trace.to_dict() | {"usage": per-model usage, "latency": ...}`. A call whose stream was closed before its
-   usage chunk is listed in `usage_missing` (with its `generation_id`), and `usage_complete` is then false: the
-   usage and cost totals are a lower bound and clients label them as partial. `Segment.aborted` is true whenever
+   usage chunk is listed in `usage_missing` (with its `generation_id`, which the backend also reports on its first
+   event, so a stream the relay closes itself keeps it), and `usage_complete` is then false: the usage and cost
+   totals are a lower bound and clients label them (cost and tokens) as partial. `Segment.aborted` is true whenever
    the stream was closed before the provider finished (by the relay, or by the backend at the cut or at the
-   sentinel without the usage chunk); a sentinel stream whose usage chunk arrived in the grace window is not.
+   sentinel without the usage chunk); a sentinel stream whose usage chunk arrived in the grace window is not. When
+   the relay closes a stream itself, `Segment.note` and `finish_reason` say why: `marker`, `mangled`, `overflow`,
+   `sentinel` (a runaway past it) or `timeout`.
 
 ## 6. Server, UI and CLI (WP5)
 
@@ -468,13 +495,17 @@ Loop, with i = segment index:
   - OpenAI-compatible `POST /v1/chat/completions`, stream and non-stream. Model ids are `cutoffmix`,
     `cutoffmix-speculative` and `cutoffmix-fixed-<key>`. The question is the conversation flattened into
     PROBLEM text. Thinking goes in `delta.reasoning` plus `delta.cutoffmix` metadata; the answer goes in
-    `delta.content`. Non-stream returns `message.content`, `message.reasoning` and a `cutoffmix` trace.
+    `delta.content`. Non-stream returns `message.content`, `message.reasoning` and a `cutoffmix` trace. The
+    `usage` object carries `cutoffmix_partial: true` when the run's usage is incomplete.
   - `GET /v1/models`.
   - Per request, options `policy`, `strategy` and `segment_tokens` can override the config.
   - The POST endpoints start paid calls, so they take only `Content-Type: application/json` (415 otherwise, so a
     cross-site page cannot send them without a CORS preflight, which is never granted) and refuse a foreign
     `Origin` (403): only the server's own (`Host` or `X-Forwarded-Host`) or one passed via `allowed_origins` /
-    `serve --allow-origin`. A client disconnect stops the relay on every path (stream and non-stream). The
+    `serve --allow-origin` (compared without the scheme's default port). Every request must name a served host in
+    `Host` (403 otherwise), so a DNS-rebinding page cannot reach the server: `localhost`, `127.0.0.1`, `::1`, the
+    hosts of the allowed origins and `allowed_hosts` / `serve --allow-host` (`serve` adds its `--host` unless it is
+    `0.0.0.0`/`::`; `*` allows any). A client disconnect stops the relay on every path (stream and non-stream). The
     flattened `/v1` conversation is capped at 20,000 characters like the `/api/relay` question (400). The UI's
     `?q=` link only prefills the question; a run always needs a click.
 - `web/index.html`: a single self-contained file with no external network. It has the question box, strategy and
@@ -484,12 +515,14 @@ Loop, with i = segment index:
 - `cli.py` (`cutoffmix` entry point, argparse):
   - `run "question" [--mock] [--policy] [--strategy] [--segments] [--json out] [--config]` prints coloured
     segments to the terminal.
-  - `serve [--host] [--port] [--mock] [--allow-origin ORIGIN]`
-  - `index show [--path] [--probe]`
+  - `serve [--host] [--port] [--mock] [--allow-origin ORIGIN] [--allow-host HOST]`
+  - `index show [--path] [--probe] [--config]` (default index and probe from `router.index_path` and
+    `router.probe_preference`, as routing and `/api/index` use them)
   - `bench import-kc --out DIR`
   - `bench build-wikidata --out FILE`
   - `bench build-wikipedia --out FILE --start --end [--probe-model KEY]`
-  - `bench run --events --out --models --probes [--dry-run] [--batch] [--limit]`
+  - `bench run --events --out --models --probes [--dry-run] [--batch] [--limit]` (`--batch` is refused outside
+    `--dry-run`, see §3.5)
   - `bench grade`
   - `bench fit --events --results --out [--priors]`
   - `router train`

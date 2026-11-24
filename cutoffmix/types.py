@@ -30,7 +30,7 @@ class ModelSpec:
     supports_stop: bool = True  # gateway honours `stop` on the pinned providers (GPT-6.2 Sol: no)
     supports_temperature: bool = False  # Fable 5.2 / GPT-6.2 Sol: no; Gemini 4 Neon: yes
     cancellable: bool = True  # closing the stream stops billing (Anthropic/OpenAI/Azure yes; Google no)
-    # OpenRouter `provider` routing object, e.g. {"only": ["anthropic", "azure"], "allow_fallbacks": False}
+    # OpenRouter `provider` routing object, e.g. {"only": ["anthropic", "azure"]} (no allow_fallbacks: DESIGN §1)
     provider_routing: Mapping[str, Any] = field(default_factory=dict)
     # OpenRouter `reasoning` object used for relay segments
     reasoning: Mapping[str, Any] = field(default_factory=lambda: {"effort": "low", "exclude": True})

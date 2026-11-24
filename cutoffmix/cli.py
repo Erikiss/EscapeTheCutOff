@@ -3,8 +3,8 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...]
-    cutoffmix index show [--path FILE] [--probe P]
+    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...]
+    cutoffmix index show [--path FILE] [--probe P] [--config FILE]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
     cutoffmix bench build-wikipedia --out FILE --start DATE --end DATE [--probe-model KEY]
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 __all__ = ["CLIError", "TerminalPrinter", "build_parser", "format_tau", "main", "use_color"]
 
 PROBE_CHOICES = ("current", "current_d", "recall", "mcq")
+_ANY_ADDRESS = ("0.0.0.0", "::", "")  # --host values that bind every interface (no host name to allow)
 
 
 class CLIError(Exception):
@@ -218,10 +219,11 @@ class TerminalPrinter:
             parts.append(f"first token {latency['first_delta_s']:.2f}s")
         if latency.get("total_s") is not None:
             parts.append(f"total {latency['total_s']:.2f}s")
+        partial = "" if data.get("usage_complete", True) else " (partial)"  # totals are a lower bound
         if usage.get("total_tokens"):
-            parts.append(f"tokens {usage['total_tokens']}")
+            parts.append(f"tokens {usage['total_tokens']}{partial}")
         if usage.get("cost"):
-            parts.append(f"cost ${usage['cost']:.4f}" + ("" if data.get("usage_complete", True) else " (partial)"))
+            parts.append(f"cost ${usage['cost']:.4f}{partial}")
         return " · ".join(parts)
 
 
@@ -355,12 +357,20 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         import uvicorn
     except ImportError as e:
         raise CLIError("serving needs uvicorn and FastAPI: pip install 'cutoffmix[server]'") from e
-    from cutoffmix.server import create_app
+    from cutoffmix import server
 
     cfg = _load_cfg(args)
     if not args.mock:
         _require_key(cfg, "'cutoffmix serve'")
-    app = create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin)
+    hosts = list(args.allow_host)
+    if args.host in _ANY_ADDRESS:
+        if not hosts:
+            print(f"cutoffmix: listening on all interfaces, but only {', '.join(server.LOOPBACK_HOSTS)} and the "
+                  "hosts of --allow-origin are served; add --allow-host NAME for the name or address other "
+                  "machines use", file=sys.stderr)
+    else:
+        hosts.append(args.host)
+    app = server.create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin, allowed_hosts=hosts)
     print(f"cutoffmix {'(simulated models) ' if args.mock else ''}on http://{args.host}:{args.port}/", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
@@ -404,14 +414,15 @@ def render_index(index: CutoffIndex, probe: str, *, color: bool = False) -> str:
 def _cmd_index_show(args: argparse.Namespace) -> int:
     from cutoffmix.router.index import load_index
 
+    cfg = _load_cfg(args)  # router.index_path and router.probe_preference, as routing and /api/index use them
     try:
-        index = load_index(args.path)
+        index = load_index(args.path or cfg.router.index_path)
     except (OSError, ValueError) as e:
         raise CLIError(f"cannot load the index: {e}") from e
     if index is None:
         raise CLIError("no cutoff index: pass --path FILE (written by 'cutoffmix bench fit'), or ship "
                        "cutoffmix/data/index_prior.json", code=1)
-    probe = args.probe or index.primary().probe
+    probe = args.probe or index.primary(cfg.router.probe_preference).probe
     if probe not in index.probes:
         raise CLIError(f"probe {probe!r} not in the index; available: {', '.join(index.probes)}")
     print(render_index(index, probe, color=use_color(sys.stdout)))
@@ -485,8 +496,10 @@ async def _close(backend: Any) -> None:
 def _cmd_bench_run(args: argparse.Namespace) -> int:
     from cutoffmix.backends import make_backend
     from cutoffmix.bench.io import load_events
-    from cutoffmix.bench.runner import estimate_cost, run_probes
+    from cutoffmix.bench.runner import BATCH_UNSUPPORTED, estimate_cost, run_probes
 
+    if args.batch and not args.dry_run:
+        raise CLIError(BATCH_UNSUPPORTED)
     cfg = _load_cfg(args)
     events = load_events(args.events)
     if args.limit is not None:
@@ -644,15 +657,20 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--mock", action="store_true", help="use the simulated models")
     serve.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
                        help="a browser origin (scheme://host[:port]) besides the server's own that may POST to the "
-                            "API, e.g. the public URL of a reverse proxy; repeatable")
+                            "API, e.g. the public URL of a reverse proxy (its host is also served); repeatable")
+    serve.add_argument("--allow-host", action="append", default=[], metavar="HOST",
+                       help="a host name or address clients may use in Host besides localhost and --host, e.g. a "
+                            "LAN address or a proxy's public name ('*' for any: no DNS-rebinding protection); "
+                            "repeatable")
     _add_config(serve)
     serve.set_defaults(func=_cmd_serve)
 
     index = sub.add_parser("index", help="inspect the cutoff index")
     index_sub = index.add_subparsers(dest="index_command", required=True, metavar="ACTION")
     show = index_sub.add_parser("show", help="print the topic x model cutoff table")
-    show.add_argument("--path", help="index JSON (default: the packaged prior)")
-    show.add_argument("--probe", choices=PROBE_CHOICES)
+    show.add_argument("--path", help="index JSON (default: router.index_path of the config, else the packaged prior)")
+    show.add_argument("--probe", choices=PROBE_CHOICES, help="default: the first of router.probe_preference")
+    _add_config(show)
     show.set_defaults(func=_cmd_index_show)
 
     bench = sub.add_parser("bench", help="build and run the topic-stratified cutoff benchmark")
@@ -689,7 +707,9 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--models", nargs="*", metavar="KEY", help="default: every configured model")
     br.add_argument("--probes", nargs="+", choices=PROBE_CHOICES, default=list(PROBE_CHOICES))
     br.add_argument("--dry-run", action="store_true", help="only print the call and cost estimate")
-    br.add_argument("--batch", action="store_true", help="use OpenRouter's discounted :batch variants")
+    br.add_argument("--batch", action="store_true",
+                    help="not supported (OpenRouter serves :batch ids only through its Batch API); with --dry-run "
+                         "it only notes that no batch discount applies")
     br.add_argument("--limit", type=int, metavar="N", help="only the first N events")
     br.add_argument("--judges", nargs="*", default=[], metavar="KEY", help="judge models for open answers")
     br.add_argument("--concurrency", type=int, default=8)

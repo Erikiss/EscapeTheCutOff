@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>cutoffmix relay</title>
+<link rel="icon" href="data:,">
 <style>
 :root {
   color-scheme: light;
@@ -574,8 +575,9 @@ function finish(data) {
   if (S.ttft == null && lat.first_delta_s != null) setStat("s-ttft", secs(lat.first_delta_s));
   setStat("s-sw", String(data.switches != null ? data.switches : switches()));
   const total = data.usage_total || {};
-  if (total.cost) { $("s-cost-k").textContent = data.usage_complete === false ? "Cost (partial)" : "Cost"; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
-  else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens"; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
+  const partial = data.usage_complete === false ? " (partial)" : "";
+  if (total.cost) { $("s-cost-k").textContent = "Cost" + partial; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
+  else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens" + partial; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
   renderLegend(data.share_by_model);
   $("notes-hint").textContent = data.status === "ok"
     ? `${S.committed.length} segments by ${Object.keys(data.share_by_model || {}).length} model(s) · hover or tap for routing`

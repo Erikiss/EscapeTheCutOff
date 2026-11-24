@@ -68,6 +68,8 @@ relay:
   inject_date: true
   max_retries: 2
   disable_after_refusals: 2
+  first_content_timeout_s: 60.0   # per attempt, until the first visible text; keep-alive comments do not reset it
+  segment_timeout_s: 120.0        # per attempt, the whole stream (drafts and answers included)
 
 router:
   policy: softmax
@@ -82,4 +84,5 @@ router:
   probe_preference: [current_d, current, recall, mcq]
   classifier: auto
   classifier_path: null
+  gate_path: null                 # gate_linear.npz from `cutoffmix router train`; null -> the lexical gate
   seed: null

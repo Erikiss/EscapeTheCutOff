@@ -19,7 +19,9 @@ when the client goes away; idle SSE streams get ``: ping`` comments so proxies k
 The POST endpoints start paid model calls, so they only take ``Content-Type: application/json`` (HTTP 415
 otherwise: a cross-site page can then not send them without a CORS preflight, which this server never grants) and
 refuse a request whose ``Origin`` header is neither the server's own origin (``Host`` or ``X-Forwarded-Host``) nor
-in ``allowed_origins`` (HTTP 403).
+in ``allowed_origins`` (HTTP 403). Every request must also name a served host in ``Host`` (a loopback name, a host
+of ``allowed_origins`` or one of ``allowed_hosts``; HTTP 403 otherwise): after DNS rebinding a malicious page is
+"same-origin" with this server, but its requests still carry the attacker's host name.
 
 (No ``from __future__ import annotations`` here: FastAPI must see the real ``Request`` class in the endpoint
 signatures defined inside :func:`create_app`; names imported only for type checking are quoted.)
@@ -48,7 +50,8 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["MODEL_ID", "SSE_HEADERS", "create_app", "flatten_messages", "index_payload", "model_ids"]
+__all__ = ["LOOPBACK_HOSTS", "MODEL_ID", "SSE_HEADERS", "create_app", "flatten_messages", "index_payload",
+           "model_ids"]
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +65,7 @@ HEARTBEAT_S = 15.0  # ": ping" comment after this much silence
 POLL_S = 0.5  # how often an idle stream checks for a client disconnect
 MAX_QUESTION_CHARS = 20_000
 MAX_SEGMENT_TOKENS = 4096
+LOOPBACK_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "::1")  # always served (see create_app)
 _CREATED = 1_764_000_000  # fixed "created" timestamp of the virtual models
 _END = object()
 
@@ -126,10 +130,57 @@ def _netloc(value: str, scheme: str) -> str:
     return value[:-len(default)] if default and value.endswith(default) else value
 
 
+def _normalize_origin(origin: str) -> str:
+    """``scheme://host[:port]`` in lower case, without a trailing slash or the scheme's default port (browsers omit
+    it in ``Origin``: ``https://host:443`` is sent as ``https://host``)."""
+    origin = origin.strip().rstrip("/").lower()
+    parts = urlsplit(origin)
+    if parts.scheme in ("http", "https") and parts.netloc:
+        return f"{parts.scheme}://{_netloc(parts.netloc, parts.scheme)}"
+    return origin
+
+
+def _host_name(value: str) -> str:
+    """The host of a ``Host`` header or netloc: lower case, without port, IPv6 brackets or a trailing dot."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        value = value[1:end] if end > 0 else value[1:]
+    elif value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return value.rstrip(".")
+
+
+class _HostGuard:
+    """ASGI middleware: refuse (HTTP 403) a request whose ``Host`` is not served here.
+
+    A page that rebinds its own DNS name to this machine talks to the server "same-origin", but the browser still
+    sends that name as ``Host``, which no page can change.
+    """
+
+    def __init__(self, app: Any, *, hosts: frozenset[str]) -> None:
+        self.app = app
+        self.hosts = hosts
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            raw = dict(scope.get("headers") or []).get(b"host")
+            host = _host_name(raw.decode("latin-1")) if raw else None
+            if host is not None and host not in self.hosts:
+                body = _dumps({"detail": f"host {host!r} is not served here; to allow it, start the server with "
+                                         f"--allow-host {host}"}).encode()
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 def _origin_allowed(origin: str, headers: Mapping[str, str], allowed: frozenset[str]) -> bool:
     """Whether a browser ``Origin`` may POST here: the server's own origin (by ``Host`` or ``X-Forwarded-Host``,
-    neither of which a cross-site page can set) or one listed in ``allowed`` (normalised ``scheme://host[:port]``)."""
-    origin = origin.strip().rstrip("/").lower()
+    neither of which a cross-site page can set) or one listed in ``allowed`` (see :func:`_normalize_origin`)."""
+    origin = _normalize_origin(origin)
     if origin in allowed:
         return True
     parts = urlsplit(origin)
@@ -189,10 +240,14 @@ def index_payload(index: "CutoffIndex | None", *, probe: str | None = None, sour
 
 
 def _openai_usage(done: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The OpenAI ``usage`` object; ``cutoffmix_partial: true`` when some call's usage is unknown, so the totals
+    are a lower bound (DESIGN.md §5)."""
     total = dict((done or {}).get("usage_total") or {})
     total.pop("calls", None)
     for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
         total.setdefault(key, 0)
+    if (done or {}).get("usage_complete") is False:
+        total["cutoffmix_partial"] = True
     return total
 
 
@@ -328,11 +383,13 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
 
 
 def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None, mock: bool = False,
-               allowed_origins: Sequence[str] = ()) -> "FastAPI":
+               allowed_origins: Sequence[str] = (), allowed_hosts: Sequence[str] = ()) -> "FastAPI":
     """Build the FastAPI app. ``cfg`` defaults to the packaged config; ``backend`` defaults to OpenRouter (or the
     mock backend with ``mock=True``). A backend created here is closed when the app shuts down.
     ``allowed_origins`` (``scheme://host[:port]``) may POST besides the server's own origin, e.g. the public origin
-    of a reverse proxy that rewrites ``Host`` without setting ``X-Forwarded-Host``."""
+    of a reverse proxy that rewrites ``Host`` without setting ``X-Forwarded-Host``.
+    Requests must name one of :data:`LOOPBACK_HOSTS`, a host of ``allowed_origins`` or one of ``allowed_hosts``
+    (host names or IP addresses, ``"*"`` for any) in ``Host``; others get HTTP 403."""
     try:
         from fastapi import FastAPI, Request
         from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -343,7 +400,9 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
     config = cfg if cfg is not None else load_config()
     runtime = RelayRuntime(config, backend=backend, mock=mock)
     index_cache: dict[str, dict[str, Any]] = {}
-    origins = frozenset(o.strip().rstrip("/").lower() for o in allowed_origins if o.strip())
+    origins = frozenset(_normalize_origin(o) for o in allowed_origins if o.strip())
+    hosts = frozenset({*LOOPBACK_HOSTS, *(_host_name(h) for h in allowed_hosts if h.strip()),
+                       *(_host_name(urlsplit(o).netloc) for o in origins if urlsplit(o).netloc)})
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -352,6 +411,8 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
 
     app = FastAPI(title="cutoffmix", version=__version__, lifespan=lifespan)
     app.state.runtime = runtime
+    if "*" not in hosts:
+        app.add_middleware(_HostGuard, hosts=hosts)
 
     def json_response(body: Any, status: int = 200) -> Response:
         return Response(_dumps(body), status_code=status, media_type="application/json")

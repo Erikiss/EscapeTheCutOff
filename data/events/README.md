@@ -57,7 +57,7 @@ Wikidata keeps changing, so a rebuild will give slightly different events.
     recipients of the same award, then of the same award family and recipient type (person or work). There is no
     fallback to other sports, countries or award types: an event with too few such candidates has no MCQ.
 
-  The correct letter is `stable_hash(event id) % 4`. Answers are spread A 234, B 210, C 177, D 234.
+  The correct letter is `stable_hash(event id) % 4`. Answers are spread A 221, B 210, C 177, D 234.
 - `aliases` holds the label plus simple variants: without diacritics, without a parenthetical, without "Jr.", and
   for teams the short names people answer with ("Manchester United F.C." → "Manchester United", "Spain men's
   national football team" → "Spain", "Spain national team", "2023 Kansas City Chiefs season" → "Kansas City
@@ -114,8 +114,8 @@ sports and award questions asked for a "most recent" result that a later edition
 
 ### Caveats
 
-- **Coverage is uneven.** Wikidata covers only 7 of the 15 topics, and sports makes up 64% of the events (119 of the
-  341 current-question events). A paid run on this file alone mostly measures sports, government and elections;
+- **Coverage is uneven.** Wikidata covers only 7 of the 15 topics, and sports makes up 64% of all events (606 of 953)
+  and 35% of the current-question events (119 of 341). A paid run on this file alone mostly measures sports, government and elections;
   add the topic-stratified Current-events set (or kc events) and cap sports before using it for topic reversals. Wikidata
   has nothing for conflict, law, accidents, natural disasters, health, AI/ML, computing or space. Those topics need the
   Wikipedia Current-events items (`cutoffmix.bench.sources.wikipedia` plus `cutoffmix.bench.probegen`, which needs an

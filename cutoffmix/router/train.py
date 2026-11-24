@@ -256,7 +256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Writes ``<out-dir>/topic_linear.npz`` and ``<out-dir>/gate_linear.npz`` and prints held-out accuracies
     (a deterministic 10% split by text hash). Use the topic model with ``router.classifier: linear`` and
-    ``router.classifier_path: <out-dir>/topic_linear.npz``.
+    ``router.classifier_path: <out-dir>/topic_linear.npz``, the gate with ``router.gate_path:
+    <out-dir>/gate_linear.npz`` (blended with the lexical gate).
     """
     ap = argparse.ArgumentParser(prog="cutoffmix router train", description=main.__doc__)
     ap.add_argument("--events", nargs="*", default=[], help="events JSONL files (bench output)")

@@ -38,12 +38,20 @@ from typing import Any
 import httpx
 
 from cutoffmix.backends.base import BackendError, continuation_max_tokens, is_retryable_status
-from cutoffmix.prompts import answer_system_prompt, answer_user_blocks, relay_system_prompt, relay_user_blocks
+from cutoffmix.prompts import (
+    answer_system_prompt,
+    answer_user_blocks,
+    notes_echo_window,
+    relay_system_prompt,
+    relay_user_blocks,
+)
 from cutoffmix.types import ChatRequest, ChatResult, ContinuationRequest, ModelSpec, StreamEvent
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 USER_AGENT = "cutoffmix/0.1"
-CUT_FACTOR = 1.5  # the stream is closed once visible text exceeds hard_cut_chars * CUT_FACTOR
+# The stream is closed once visible text exceeds hard_cut_chars * CUT_FACTOR plus the length of the notes it was sent
+# (a model may repeat them before its new paragraph; the relay strips such an echo and bounds the rest itself).
+CUT_FACTOR = 1.5
 # After the sentinel the stream is read on for its finish and usage chunks, but closed at once when more than
 # SENTINEL_GRACE_CHARS of further content arrive (the model ignored the sentinel) or after SENTINEL_GRACE_S seconds.
 SENTINEL_GRACE_CHARS = 32
@@ -188,7 +196,17 @@ def _message_text(content: Any) -> str:
     """Message content as text; some providers return a list of content parts."""
     if isinstance(content, list):
         return "".join(str(p.get("text", "")) for p in content if isinstance(p, Mapping))
-    return content or ""
+    return content if isinstance(content, str) else ""
+
+
+def _first_choice(chunk: Mapping[str, Any]) -> tuple[Mapping[str, Any], Any]:
+    """``(delta, finish_reason)`` of a chunk's first choice; an empty delta for any unexpected shape."""
+    choices = chunk.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, Mapping):
+        return {}, None
+    delta = choice.get("delta")
+    return (delta if isinstance(delta, Mapping) else {}), choice.get("finish_reason")
 
 
 # --------------------------------------------------------------------------------------
@@ -219,28 +237,26 @@ class _StreamState:
         """Process one decoded chunk; returns the events to emit and whether to stop reading."""
         if self.generation_id is None and isinstance(chunk.get("id"), str) and chunk["id"]:
             self.generation_id = chunk["id"]
-        if chunk.get("usage"):
+        if isinstance(chunk.get("usage"), Mapping) and chunk["usage"]:
             self.usage = dict(chunk["usage"])
         if self.sentinel_seen:
             return [], self._after_sentinel(chunk)
         if chunk.get("error"):
             self.finish = "error"
             return [StreamEvent(kind="error", error=_error_message(chunk["error"]), finish_reason="error")], True
-        choices = chunk.get("choices") or []
-        if not choices:
-            return [], False
-        choice = choices[0]
-        delta = choice.get("delta") or {}
+        delta, reason = _first_choice(chunk)
         events: list[StreamEvent] = []
         stop = False
-        if delta.get("reasoning"):
-            events.append(StreamEvent(kind="reasoning", text=delta["reasoning"]))
-        if delta.get("refusal"):
-            self.refusal += delta["refusal"]
-        if delta.get("content"):
-            event, stop = self._on_text(delta["content"])
+        reasoning = _message_text(delta.get("reasoning"))
+        if reasoning:
+            events.append(StreamEvent(kind="reasoning", text=reasoning))
+        self.refusal += _message_text(delta.get("refusal"))
+        content = _message_text(delta.get("content"))
+        if content:
+            event, stop = self._on_text(content)
             events.append(event)
-        reason = choice.get("finish_reason")
+        if not isinstance(reason, str):
+            reason = None
         if reason and self.finish is None:
             self.finish = reason
             if reason == "error":
@@ -255,8 +271,7 @@ class _StreamState:
         """A chunk inside the grace window after the sentinel; returns whether to stop reading."""
         if chunk.get("error"):
             return True  # the segment is already complete; a late error only costs the usage chunk
-        for choice in (chunk.get("choices") or [])[:1]:
-            self.after_sentinel += len((choice.get("delta") or {}).get("content") or "")
+        self.after_sentinel += len(_message_text(_first_choice(chunk)[0].get("content")))
         return self.usage is not None or self.after_sentinel > SENTINEL_GRACE_CHARS
 
     def _on_text(self, piece: str) -> tuple[StreamEvent, bool]:
@@ -448,10 +463,12 @@ class OpenRouterBackend:
         response is closed as soon as the usage chunk arrives, more than :data:`SENTINEL_GRACE_CHARS` of further
         content arrive, or :data:`SENTINEL_GRACE_S` seconds have passed. Failures inside the grace window do not
         fail the segment. For think segments of a ``model.cancellable`` model the response is also closed once the
-        text exceeds ``req.hard_cut_chars * 1.5`` characters (``"cut"``). A non-cancellable model's overflow is
-        read on (closing would not stop its billing, and the usage chunk comes last); the caller bounds it. Leaving
-        the ``async for`` early also closes the response. ``done.usage`` carries ``generation_id`` (the
-        ``X-Generation-Id`` header, else the chunks' ``id``) when known.
+        text exceeds ``req.hard_cut_chars * 1.5`` characters plus the length of the notes (an echo of them comes
+        first; ``"cut"``). A non-cancellable model's overflow is read on (closing would not stop its billing, and
+        the usage chunk comes last); the caller bounds it. Leaving the ``async for`` early also closes the response.
+        ``done.usage`` carries ``generation_id`` (the ``X-Generation-Id`` header, else the chunks' ``id``) when
+        known; so does ``usage`` of the first ``text`` or ``reasoning`` event, so a caller that closes the stream
+        itself (before ``done``) still has the id.
         HTTP and connection errors raise :class:`BackendError` before the first event; afterwards failures are
         reported as an ``error`` event followed by ``done`` with finish_reason ``"error"``.
         """
@@ -469,11 +486,17 @@ class OpenRouterBackend:
                 except httpx.HTTPError as e:
                     raise _transport_error(e, model) from e
                 raise _http_error(response, model)
-            cut = req.hard_cut_chars * CUT_FACTOR if req.phase == "think" and model.cancellable else None
+            cut = None
+            if req.phase == "think" and model.cancellable:
+                cut = req.hard_cut_chars * CUT_FACTOR + len(notes_echo_window(req.segments))
             state = _StreamState(req.sentinel, cut, response.headers.get("x-generation-id"))
+            tagged = False  # the generation id rides on the first text/reasoning event (StreamEvent has no field for it)
             try:
                 async with contextlib.aclosing(self._read_events(response, state)) as events:
                     async for event in events:
+                        if not tagged and event.kind in ("text", "reasoning") and state.generation_id is not None:
+                            event.usage = {"generation_id": state.generation_id}
+                            tagged = True
                         yield event
             except (httpx.HTTPError, ValueError) as e:
                 if not state.sentinel_seen:  # after the sentinel the segment is complete; only the usage is lost

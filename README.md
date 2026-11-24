@@ -42,7 +42,7 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
   vorn**. Mit echten Modellen und diesem Index schreibt deshalb meist Sol, und die anderen kommen nur durch das
   Sampling zum Zug. „Immer Sol“ ist damit die Baseline, die das Routing schlagen muss.
 - **Themen-Umkehrungen** (z. B. Fable bei KI-Themen, Neon bei Raumfahrt) lassen sich erst mit einem neuen,
-  themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 961 Wikidata-Ereignisse dafür liegen in
+  themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 953 Wikidata-Ereignisse dafür liegen in
   `data/events/`. Der Lauf kostet Geld (siehe unten) und wird nur mit Freigabe gestartet.
 - **Wechsel pro Abschnitt, nicht pro Token.** Die Modelle teilen über diese APIs keine nativen Thinking-Tokens: Jeder
   Aufruf denkt verborgen, und dieses Denken wird verworfen. Geteilt wird ein **sichtbarer Notizstrom**. Jeder Abschnitt
@@ -167,7 +167,7 @@ relay:
 
 ```bash
 cutoffmix bench import-kc --out runs/kc                                   # öffentliche Bench-Daten
-cutoffmix bench build-wikidata --out runs/wikidata_events.jsonl           # optional; 961 Ereignisse liegen bereits in data/events/
+cutoffmix bench build-wikidata --out runs/wikidata_events.jsonl           # optional; 953 Ereignisse liegen bereits in data/events/
 cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl \
     --probes current_d mcq --dry-run                                      # zuerst nur Kosten schätzen
 cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl --probes current_d mcq

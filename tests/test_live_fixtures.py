@@ -363,7 +363,7 @@ async def test_fable_reasoning_never_reaches_the_server_streams():
 
     fable = CAPTURES[FABLE]
     backend, transport, client = fixture_backend()
-    app = create_app(relay_cfg(1, policy=f"fixed:{FABLE}"), backend=backend)
+    app = create_app(relay_cfg(1, policy=f"fixed:{FABLE}"), backend=backend, allowed_hosts=("test",))
     question = {"role": "user", "content": QUESTION}
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:

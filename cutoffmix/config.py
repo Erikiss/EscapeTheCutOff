@@ -61,6 +61,9 @@ class RelayConfig:
     inject_date: bool = True
     max_retries: int = 2
     disable_after_refusals: int = 2  # a model that refuses this often is excluded for the rest of the run
+    # wall-clock budget of one attempt, which keep-alive comments cannot reset (then a retryable error)
+    first_content_timeout_s: float = 60.0  # until the first visible text (hidden reasoning comes first)
+    segment_timeout_s: float = 120.0  # the whole stream of a think segment, draft or answer
 
     def __post_init__(self) -> None:
         _require(self.segment_tokens >= 1, f"relay.segment_tokens must be >= 1, got {self.segment_tokens}")
@@ -78,6 +81,8 @@ class RelayConfig:
         _require(self.max_retries >= 0, f"relay.max_retries must be >= 0, got {self.max_retries}")
         _require(self.disable_after_refusals >= 1,
                  f"relay.disable_after_refusals must be >= 1, got {self.disable_after_refusals}")
+        for name in ("first_content_timeout_s", "segment_timeout_s"):
+            _require(getattr(self, name) > 0, f"relay.{name} must be > 0, got {getattr(self, name)}")
 
 
 @dataclass
@@ -96,6 +101,7 @@ class RouterConfig:
     probe_preference: tuple[str, ...] = ("current_d", "current", "recall", "mcq")
     classifier: str = "auto"  # auto | keyword | linear | embedding
     classifier_path: str | None = None
+    gate_path: str | None = None  # trained time-sensitivity gate (router train: gate_linear.npz); None -> lexical
     seed: int | None = None
 
     def __post_init__(self) -> None:

@@ -73,6 +73,15 @@ def answer_user_blocks(question: str, segments: list[str]) -> list[dict]:
 # --------------------------------------------------------------------------------------
 
 _OVERLAP_WINDOW = 2000  # longest echoed overlap we look for, in characters
+# How much of the notes (their end) a model may repeat before its new paragraph. Real segments are 400-600 chars,
+# and models sometimes echo the last two or three notes, or all of them, before continuing.
+ECHO_WINDOW_CHARS = 8000
+
+
+def notes_echo_window(segments: list[str]) -> str:
+    """The end of the notes (at most :data:`ECHO_WINDOW_CHARS`) that a model may repeat before its new paragraph:
+    the segments joined as the request shows them (blank line between), whitespace at both ends stripped."""
+    return "\n\n".join(s.strip() for s in segments)[-ECHO_WINDOW_CHARS:]
 
 
 def trim_overlap(notes_tail: str, new: str, min_len: int = 12) -> str:
@@ -149,6 +158,19 @@ def trim_to_sentence(text: str, max_chars: int) -> str:
     return text[:best].rstrip()
 
 
+def complete_sentences(text: str) -> str:
+    """``text`` up to its last sentence end (same rules as :func:`trim_to_sentence`), or ``""`` if it has none.
+
+    For a paragraph that was cut off (``finish_reason`` ``length``): the dangling half sentence is dropped.
+    """
+    text = text.strip()
+    best = 0
+    for m in _SENTENCE_END.finditer(text):
+        if _is_sentence_end(text, m):
+            best = m.end()
+    return text[:best].rstrip()
+
+
 _FENCE_OPEN = re.compile(r"^```[\w+.-]*[ \t]*(?:\n|$)")
 _FENCE_CLOSE = re.compile(r"(?:^|\n)[ \t]*```[ \t]*$")
 _LABEL = re.compile(
@@ -203,7 +225,9 @@ def _sentinel_pattern(sentinel: str) -> re.Pattern[str] | None:
     return re.compile(r"[<\[]{1,2}[ \t]*" + core_re + r"[ \t]*[>\]]{0,2}", re.IGNORECASE)
 
 
-def _cut_at_sentinel(raw: str, sentinel: str) -> tuple[str, bool]:
+def cut_at_sentinel(raw: str, sentinel: str) -> tuple[str, bool]:
+    """``(text before the first exact or mangled sentinel, whether one was found)``; a truncated sentinel at the very
+    end (a stream cut inside it) is removed too, but does not count as found."""
     idx = raw.find(sentinel)
     if idx >= 0:
         return raw[:idx], True
@@ -224,7 +248,7 @@ def clean_segment(raw: str, notes_tail: str, *, sentinel: str, hard_cut_chars: i
     Steps: cut at the sentinel (also tolerating mangled forms and a truncated sentinel at the end), strip preambles,
     remove an echoed overlap with ``notes_tail``, hard-cut to ``hard_cut_chars`` and trim to a sentence end.
     """
-    text, saw = _cut_at_sentinel(raw, sentinel)
+    text, saw = cut_at_sentinel(raw, sentinel)
     text = strip_preamble(text)
     text = trim_overlap(notes_tail, text)
     return trim_to_sentence(text, hard_cut_chars), saw

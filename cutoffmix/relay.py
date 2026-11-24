@@ -13,15 +13,19 @@ Event protocol of :meth:`Relay.run` (every attempt that streams from a backend i
   be stripped, and nothing at or after the sentinel (or, while taking notes, the final-answer marker) is ever shown.
 - ``segment_end`` closes the attempt. Its ``text`` is authoritative (clients replace the streamed text with it).
   A failed attempt ends with ``data["dropped"] = True`` and a ``reason`` (refused | error | length | empty) and is not
-  part of the trace.
+  part of the trace. ``finish_reason`` is the backend's, or why the relay closed the stream itself (``marker``,
+  ``mangled``, ``overflow``, ``sentinel`` for a runaway past it, ``timeout``).
 - ``error`` when no model is left, then always one final ``done`` whose ``data`` is ``trace.to_dict()`` plus
   ``usage`` (per model), ``usage_total``, ``latency``, ``status`` and bookkeeping. A stream closed before its usage
-  chunk (cut, marker, overflow, a runaway after the sentinel) has no token counts or cost: such calls are listed in
-  ``usage_missing`` (with the backend's ``generation_id`` when it reported one) and ``usage_complete`` is then
-  False, so ``usage_total`` is a lower bound.
+  chunk (cut, marker, overflow, a runaway after the sentinel, a timeout) has no token counts or cost: such calls are
+  listed in ``usage_missing`` (with the ``generation_id`` the backend reported on its first event or in ``done``)
+  and ``usage_complete`` is then False, so ``usage_total`` is a lower bound.
+- Every attempt has a wall-clock budget that keep-alive comments cannot reset: ``relay.first_content_timeout_s``
+  until the first text, ``relay.segment_timeout_s`` for the whole stream (drafts included). An attempt that runs out
+  of it fails as a retryable ``error`` (unless its segment was already complete, e.g. after the sentinel).
 - When every model left for a think segment returns nothing usable (``empty``: it stopped at once, wrote only the
-  sentinel, or only echoed the notes) and the notes are not empty, the notes count as concluded and the answer phase
-  runs instead of failing the run.
+  sentinel, or only repeated the notes) and the notes are not empty, the notes count as concluded and the answer
+  phase runs instead of failing the run.
 
 The trace holds exactly the committed segments (one per non-dropped ``segment_end``, the answer as a segment with
 phase ``"answer"``), so it always agrees with the event stream.
@@ -40,7 +44,15 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from cutoffmix.prompts import clean_segment, split_final, strip_preamble, trim_overlap
+from cutoffmix.prompts import (
+    clean_segment,
+    complete_sentences,
+    cut_at_sentinel,
+    notes_echo_window,
+    split_final,
+    strip_preamble,
+    trim_overlap,
+)
 from cutoffmix.types import (
     Backend,
     ContinuationRequest,
@@ -54,6 +66,7 @@ from cutoffmix.types import (
 
 if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
+    from cutoffmix.router.gate import TimeSensitivityGate
     from cutoffmix.router.index import CutoffIndex
     from cutoffmix.router.router import RouteDecision, Router
 
@@ -74,6 +87,10 @@ _MAX_BACKOFF_S = 30.0
 _ECHO_MIN_CHARS = 12  # same minimum as prompts.trim_overlap
 _USAGE_COUNT_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
 _CLOSED_FINISHES = ("sentinel", "cut")  # finish reasons of a stream the backend may close before the provider finished
+_TRUNCATED_FINISHES = ("length", "cut", "overflow")  # a think paragraph that may end mid-sentence
+# Policies that rank drafts by their look-ahead scores. The others (fixed, round_robin, random) pick the same model
+# with or without drafts, so speculative drafting with them would only pay for drafts that are thrown away.
+_DRAFT_POLICIES = frozenset({"softmax", "thompson", "argmax"})
 
 Outcome = Literal["ok", "refused", "error", "length", "empty"]
 
@@ -150,24 +167,51 @@ def _new_run_id() -> str:
 # --------------------------------------------------------------------------------------
 
 
+class _Echo:
+    """The notes a think attempt may repeat before its new paragraph, and how to recognise such a repeat.
+
+    Models sometimes echo one or more earlier notes verbatim (or just the end of the last one) before continuing.
+    :meth:`strip` removes complete notes repeated at the start (in any order) and then a repeated end of the notes;
+    :meth:`repeats` tells whether a text is (still) nothing but a piece of the notes, e.g. an echo in progress or
+    one that was cut off.
+    """
+
+    def __init__(self, segments: Sequence[str]) -> None:
+        self.context = notes_echo_window(list(segments))
+        self._notes = sorted({n.strip() for n in segments if len(n.strip()) >= _ECHO_MIN_CHARS}, key=len,
+                             reverse=True)
+
+    def strip(self, text: str) -> str:
+        body = text.lstrip()
+        while True:
+            note = next((n for n in self._notes if body.startswith(n)), None)
+            if note is None:
+                return trim_overlap(self.context, body) if self.context else body
+            body = body[len(note):].lstrip()
+
+    def repeats(self, text: str) -> bool:
+        return len(text) >= _ECHO_MIN_CHARS and text in self.context
+
+
 class _StreamFilter:
     """Turns the raw text of one streamed attempt into display deltas.
 
-    - Holds back the first :data:`BUFFER_CHARS` characters (longer while they still look like an echo of the notes)
-      and then strips a preamble / echoed overlap once, fixing where display text starts.
+    - Holds back the first :data:`BUFFER_CHARS` characters (longer while they are still a repeat of the notes) and
+      then strips a preamble / echoed notes once, fixing where display text starts.
     - Never emits text at or after the sentinel (exact or mangled) or, in the think phase, the final-answer marker.
     - Lags the end of the received text by a few characters, so a sentinel or marker split across deltas is
       recognised before any of it could be shown.
-    - Caps think-phase display text at ``hard_cut_chars``.
+    - Caps think-phase display text at ``hard_cut_chars``, counted from where the display text starts (an echo
+      of the notes before it does not count; while the start is open, up to the length of the notes is allowed).
 
     ``stop_reason`` tells the caller why the remaining stream is no longer needed (``"sentinel"``, ``"mangled"``,
     ``"marker"`` or ``"overflow"``).
     """
 
-    def __init__(self, *, phase: Phase, notes_tail: str, sentinel: str, final_marker: str, hard_cut_chars: int,
+    def __init__(self, *, phase: Phase, echo: _Echo, sentinel: str, final_marker: str, hard_cut_chars: int,
                  stop_at_marker: bool) -> None:
         self.phase = phase
-        self.notes_tail = notes_tail
+        self.echo = echo
         self.sentinel = sentinel
         self.final_marker = final_marker
         self.hard_cut: int | None = hard_cut_chars if phase == "think" else None
@@ -188,6 +232,10 @@ class _StreamFilter:
         """The stream is over: return the display text still held back."""
         return self._advance(final=True)
 
+    def excess(self, length: int) -> int:
+        """Characters of ``length`` beyond where the display text starts (beyond a possible echo while open)."""
+        return length - (self.start if self.start is not None else len(self.echo.context))
+
     def _visible(self) -> tuple[str, bool]:
         """The raw text that may ever be displayed, and whether it is closed (nothing more will be added)."""
         raw = self.raw
@@ -206,7 +254,7 @@ class _StreamFilter:
                 text, closed = notes, True
                 if self.stop_at_marker and reason is None:
                     reason = "marker"
-        if reason is None and self.hard_cut is not None and len(text) - (self.start or 0) > self.hard_cut * _CUT_FACTOR:
+        if reason is None and self.hard_cut is not None and self.excess(len(text)) > self.hard_cut * _CUT_FACTOR:
             reason = "overflow"
         if reason is not None and self.stop_reason is None:
             self.stop_reason = reason
@@ -217,11 +265,11 @@ class _StreamFilter:
             return None
         s = strip_preamble(text)
         if self.phase == "think":
-            s = trim_overlap(self.notes_tail, s).lstrip()
-            echo_window = self.hard_cut if self.hard_cut is not None else BUFFER_CHARS
-            if (not done and len(text) < echo_window and len(s) >= _ECHO_MIN_CHARS
-                    and s in self.notes_tail):
-                return None  # still repeating the notes: wait until the echo ends
+            s = self.echo.strip(s).lstrip()
+            # (so far) only a repeat of the notes: wait until the echo ends (while open, also on a short piece,
+            # e.g. the first characters of the next echoed note); a finished repeat is never shown
+            if s and s in self.echo.context and (not done or self.echo.repeats(s)):
+                return len(text) if done else None
         else:
             notes, answer = split_final(s, self.final_marker)
             if answer is not None and not notes.strip():
@@ -250,17 +298,23 @@ class _StreamFilter:
         return out
 
 
-def _finalize_think(raw: str, notes_tail: str, *, sentinel: str, final_marker: str,
+def _finalize_think(raw: str, echo: _Echo, *, sentinel: str, final_marker: str,
                     hard_cut_chars: int) -> tuple[str, str | None, bool]:
-    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel)`` of a think attempt."""
-    cut = raw.find(sentinel)
-    pre = raw[:cut] if cut >= 0 else raw
+    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel)`` of a think attempt.
+
+    Nothing after the first sentinel counts, also a mangled one (a final marker written after it is not an answer).
+    Notes repeated before the new paragraph are removed, and a text that is only a piece of the notes (an echo,
+    possibly cut off) becomes ``""``.
+    """
+    pre, saw = cut_at_sentinel(raw, sentinel)
     notes, answer = split_final(pre, final_marker)
-    text, saw = clean_segment(notes if answer is not None else pre, notes_tail, sentinel=sentinel,
-                              hard_cut_chars=hard_cut_chars)
+    body = echo.strip(strip_preamble(notes if answer is not None else pre))
+    text = clean_segment(body, echo.context, sentinel=sentinel, hard_cut_chars=hard_cut_chars)[0]
+    if echo.repeats(text):
+        text = ""
     if answer is not None:
         answer = clean_segment(answer, "", sentinel=sentinel, hard_cut_chars=_NO_LIMIT)[0]
-    return text, answer, saw or cut >= 0
+    return text, answer, saw
 
 
 def _finalize_answer(raw: str, *, sentinel: str, final_marker: str) -> str:
@@ -295,6 +349,8 @@ class _Attempt:
     saw_sentinel: bool = False
     aborted: bool = False  # the stream was closed (by the relay or the backend) before the provider finished
     streamed: bool = False  # the backend yielded at least one event (a call that failed before it is not billed)
+    timed_out: bool = False  # the relay gave up waiting (the provider may have billed it: its usage is unknown)
+    generation_id: str | None = None  # reported by the backend on its first event, before any close
     started_at: float = 0.0
     ended_at: float = 0.0
     ttft_s: float | None = None  # time to the first text from the model
@@ -352,7 +408,7 @@ class _RunState:
         acc["calls"] += 1
         if att.usage:
             _add_usage(acc, att.usage)
-        if att.streamed and not _has_counts(att.usage):  # closed before the usage chunk: tokens and cost unknown
+        if (att.streamed or att.timed_out) and not _has_counts(att.usage):  # closed before the usage chunk
             self.usage_missing.append({
                 "index": att.index, "model": att.model, "phase": att.phase, "attempt": att.attempt,
                 "finish_reason": att.finish, "generation_id": (att.usage or {}).get("generation_id")})
@@ -493,11 +549,12 @@ class Relay:
         yield RelayEvent(type="done", data=st.done_data("error" if st.error is not None else "ok"))
 
     async def _think(self, st: _RunState, index: int, window: str, out: _Produced) -> AsyncGenerator[RelayEvent, None]:
-        """One think segment: speculative drafting when the gate opens, else the sequential path."""
+        """One think segment: speculative drafting when the gate opens (and the policy ranks drafts by their scores),
+        else the sequential path."""
         rc = self.cfg.relay
         decision: RouteDecision | None = None
         update = True
-        if rc.strategy == "speculative":
+        if rc.strategy == "speculative" and self.cfg.router.policy in _DRAFT_POLICIES:
             avail = st.available()
             if len(avail) > 1:
                 decision = self.router.decide(window, current=st.current, available=avail)
@@ -664,20 +721,39 @@ class Relay:
 
     async def _stream(self, st: _RunState, spec: ModelSpec, req: ContinuationRequest, att: _Attempt, *,
                       emit: bool) -> AsyncGenerator[RelayEvent, None]:
-        """Stream one call into ``att``; yields display ``delta`` events when ``emit`` (drafts stay silent)."""
+        """Stream one call into ``att``; yields display ``delta`` events when ``emit`` (drafts stay silent).
+
+        Each event is awaited within the attempt's remaining wall-clock budget (``first_content_timeout_s`` until the
+        first text, ``segment_timeout_s`` in total), so a provider that only sends keep-alive comments, or trickles,
+        cannot hold the segment.
+        """
         rc = self.cfg.relay
-        notes_tail = "\n\n".join(req.segments[-3:])
-        filt = _StreamFilter(phase=req.phase, notes_tail=notes_tail, sentinel=rc.sentinel,
+        echo = _Echo(req.segments if req.phase == "think" else ())
+        filt = _StreamFilter(phase=req.phase, echo=echo, sentinel=rc.sentinel,
                              final_marker=rc.final_marker, hard_cut_chars=rc.hard_cut_chars,
                              stop_at_marker=rc.answer_mode == "routed")
         runaway = rc.hard_cut_chars * _RUNAWAY_FACTOR if req.phase == "think" else None
+        loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
+        begin = loop.time()
         att.started_at = time.time()
         stream: Any = None
         try:
             stream = self.backend.stream_continuation(spec, req)
-            async for ev in stream:
+            while True:
+                budget = rc.segment_timeout_s if att.ttft_s is not None else min(rc.first_content_timeout_s,
+                                                                                  rc.segment_timeout_s)
+                try:
+                    ev = await asyncio.wait_for(stream.__anext__(), max(0.0, begin + budget - loop.time()))
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    self._time_out(att, filt, budget)
+                    break
                 att.streamed = True
+                if att.generation_id is None and ev.kind != "done" and ev.usage:
+                    gid = ev.usage.get("generation_id")
+                    att.generation_id = gid if isinstance(gid, str) and gid else None
                 if ev.kind == "text":
                     if att.error is not None or filt.stop_reason == "sentinel":
                         continue  # nothing after an error or the sentinel is used
@@ -690,8 +766,9 @@ class Relay:
                                          text=piece)
                     if filt.stop_reason is not None and (
                             (filt.stop_reason != "sentinel" and spec.cancellable)
-                            or (runaway is not None and len(filt.raw) > runaway)):
+                            or (runaway is not None and filt.excess(len(filt.raw)) > runaway)):
                         att.aborted = True  # closing the stream stops generation (and billing)
+                        att.finish = filt.stop_reason
                         break
                 elif ev.kind == "error":
                     att.error = ev.error or "the backend reported a stream error"
@@ -710,14 +787,18 @@ class Relay:
         finally:
             if stream is not None:
                 await _aclose(stream)
+            if att.generation_id is not None:  # closed before ``done`` (or without its id): keep the first event's
+                att.usage = {"generation_id": att.generation_id} | (att.usage or {})
             att.duration_s = round(time.perf_counter() - t0, 4)
             att.ended_at = time.time()
             st.count_call(att)
         att.raw = filt.raw
         if req.phase == "think":
             att.text, att.answer, att.saw_sentinel = _finalize_think(
-                filt.raw, notes_tail, sentinel=rc.sentinel, final_marker=rc.final_marker,
+                filt.raw, echo, sentinel=rc.sentinel, final_marker=rc.final_marker,
                 hard_cut_chars=rc.hard_cut_chars)
+            if att.answer is None and not att.saw_sentinel and att.finish in _TRUNCATED_FINISHES:
+                att.text = complete_sentences(att.text)  # cut off: drop the dangling half sentence
         else:
             att.text = _finalize_answer(filt.raw, sentinel=rc.sentinel, final_marker=rc.final_marker)
             att.saw_sentinel = filt.stop_reason in ("sentinel", "mangled")
@@ -726,6 +807,18 @@ class Relay:
             if tail:
                 st.mark_delta()
                 yield RelayEvent(type="delta", segment=att.index, model=spec.key, phase=req.phase, text=tail)
+
+    @staticmethod
+    def _time_out(att: _Attempt, filt: _StreamFilter, budget: float) -> None:
+        """The attempt ran out of its wall-clock budget; the stream is closed next."""
+        att.aborted = True
+        if filt.stop_reason is not None:  # the paragraph was already complete (sentinel, marker, overflow): keep it
+            att.finish = att.finish or filt.stop_reason
+            return
+        att.timed_out = True
+        att.finish = "timeout"
+        what = "no text" if att.ttft_s is None else "the stream did not end"
+        att.error = f"timeout: {what} within {budget:g} s"
 
     # ---- commit / drop -----------------------------------------------------------------------------
 
@@ -810,7 +903,7 @@ RouterFactory = Callable[["AppConfig"], "Router"]
 
 
 class RelayRuntime:
-    """What every run needs, set up once: config, backend, cutoff index and topic classifier.
+    """What every run needs, set up once: config, backend, cutoff index, topic classifier and time-sensitivity gate.
 
     :meth:`relay` builds a fresh Router and Relay per run (a router keeps per-run state), so one runtime can serve
     concurrent requests. The index and classifier are loaded on first use. With ``mock=True`` and no
@@ -830,6 +923,7 @@ class RelayRuntime:
         self.backend: Backend = backend
         self.router_factory: RouterFactory = router_factory or self._default_router
         self._routing: tuple[CutoffIndex | None, str | None, Any] | None = None
+        self._gate: TimeSensitivityGate | None = None
 
     # ---- routing components ----
 
@@ -859,11 +953,21 @@ class RelayRuntime:
         """Where the index came from: a path, ``"mock truths"`` or None."""
         return self._load_routing()[1]
 
+    @property
+    def gate(self) -> TimeSensitivityGate:
+        """The time-sensitivity gate: the trained one at ``router.gate_path``, else the lexical baseline."""
+        if self._gate is None:
+            from cutoffmix.router.gate import load_gate
+
+            self._gate = load_gate(self.cfg.router.gate_path, today=self.cfg.today_str())
+        return self._gate
+
     def _default_router(self, cfg: AppConfig) -> Router:
         from cutoffmix.router.router import Router
 
         index, _, classifier = self._load_routing()
-        return Router(cfg.model_keys(), index=index, classifier=classifier, cfg=cfg.router, seed=cfg.router.seed)
+        return Router(cfg.model_keys(), index=index, classifier=classifier, gate=self.gate, cfg=cfg.router,
+                      seed=cfg.router.seed)
 
     # ---- per run ----
 

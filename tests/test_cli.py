@@ -177,8 +177,8 @@ def test_serve_passes_the_allowed_origins_to_the_app(monkeypatch):
 
     seen: dict[str, Any] = {}
 
-    def fake_create_app(cfg, *, mock=False, allowed_origins=()):
-        seen.update(mock=mock, allowed_origins=list(allowed_origins))
+    def fake_create_app(cfg, *, mock=False, allowed_origins=(), allowed_hosts=()):
+        seen.update(mock=mock, allowed_origins=list(allowed_origins), allowed_hosts=list(allowed_hosts))
         return "app"
 
     monkeypatch.setattr(server, "create_app", fake_create_app)

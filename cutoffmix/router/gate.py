@@ -4,14 +4,18 @@ r(W) in [0, 1] sets the routing temperature (``T = T0 / max(r, r_min)``): time-i
 timeless facts) mix the models almost uniformly, time-sensitive windows ("Who is the current CEO of X?", "Wer ist
 aktuell Bundeskanzler?") route sharply to the model with the freshest topic knowledge.
 
-The default is a transparent lexical logistic score over bilingual (EN/DE) cues: temporal words, the years
-2024-2027, office/role nouns, present-state questions, capitalised-entity density, acronyms and news-topic keyword
-mass (from :class:`~cutoffmix.router.topics.KeywordTopicClassifier`), minus math/logic cues. Optionally a logistic
-regression on hashed features is trained (:meth:`TimeSensitivityGate.train`) and blended with the lexical score.
+The default is a transparent lexical logistic score over bilingual (EN/DE) cues: temporal words, years near today
+(two back to one ahead), office/role nouns, present-state questions, capitalised-entity density, acronyms and
+news-topic keyword mass (from :class:`~cutoffmix.router.topics.KeywordTopicClassifier`), minus math/logic cues. A
+mention of the current or the previous year ("missions launched in 2026") counts like "this year", a strong temporal
+cue, unless the text has math cues (years as numbers in a puzzle). Optionally a logistic regression on hashed
+features is trained (:meth:`TimeSensitivityGate.train`) and blended with the lexical score; :func:`load_gate` gives
+the configured gate (``router.gate_path``).
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 import math
 import re
 from collections.abc import Sequence
@@ -22,7 +26,9 @@ import numpy as np
 from cutoffmix.router.features import DEFAULT_DIM, WORD_RE, SparseSoftmaxRegression, hashed_features
 from cutoffmix.router.topics import KeywordTopicClassifier, detect_language, stem
 
-__all__ = ["TimeSensitivityGate"]
+__all__ = ["TimeSensitivityGate", "load_gate"]
+
+DateLike = str | _dt.date | None
 
 
 def _stem_set(words: str) -> frozenset[str]:
@@ -69,7 +75,7 @@ _PRESENT_QUESTION = re.compile(
     r"(?:latest|newest|current|most\s+recent|neueste\w*|aktuelle\w*)\b"
     r"|\b(?:is|are|ist|sind|lebt)\s+\w+(?:\s+\w+)?\s+(?:still|noch)\b"
 )
-_YEAR = re.compile(r"\b202[4-7]\b")
+_YEAR = re.compile(r"\b(20\d\d)\b")
 _OPERATOR = re.compile(r"[=+*/^<>≤≥≠∑∫√±×÷]")
 _SENTENCE_BREAK = ".!?:;\n\"'(["
 
@@ -117,11 +123,19 @@ def _entity_density(text: str, matches: Sequence[re.Match[str]], lang: str) -> f
     return names / len(matches)
 
 
+def _year_of(today: DateLike) -> int:
+    if today is None:
+        return _dt.date.today().year
+    if isinstance(today, _dt.date):
+        return today.year
+    return _dt.date.fromisoformat(today[:10]).year
+
+
 class TimeSensitivityGate:
     """Score r(W) in [0, 1]: lexical baseline, optionally blended with a trained logistic regression.
 
     ``score = learned_weight * p_learned + (1 - learned_weight) * p_lexical`` when a model is present, else
-    ``p_lexical``.
+    ``p_lexical``. ``today`` (ISO date or date; default: the current date) sets which years are recent.
     """
 
     _KIND = "gate_linear"
@@ -132,6 +146,7 @@ class TimeSensitivityGate:
         *,
         learned_weight: float = 0.5,
         keywords: KeywordTopicClassifier | None = None,
+        today: DateLike = None,
     ):
         if not 0.0 <= learned_weight <= 1.0:
             raise ValueError(f"learned_weight must lie in [0, 1], got {learned_weight}")
@@ -140,6 +155,7 @@ class TimeSensitivityGate:
         self.model = model
         self.learned_weight = learned_weight
         self._keywords = keywords or KeywordTopicClassifier()
+        self.year = _year_of(today)
 
     def cues(self, text: str) -> dict[str, float]:
         """Raw lexical cue counts/densities of ``text`` (inputs of :meth:`lexical_score`)."""
@@ -148,18 +164,22 @@ class TimeSensitivityGate:
         stems = [stem(t) for t in lower]
         padded = " " + " ".join(lower) + " "
         padded_stems = " " + " ".join(stems) + " "
+        years = [int(y) for y in _YEAR.findall(text)]
+        math_cues = sum(1 for s in stems if s in _MATH) + len(_OPERATOR.findall(text)) / 2
+        # the current or previous year names the present like "this year" does (not in a puzzle's numbers)
+        recent_years = sum(1 for y in years if self.year - 1 <= y <= self.year) if not math_cues else 0
         return {
             "strong_temporal": sum(1 for s in stems if s in _STRONG_TEMPORAL)
-            + _padded_count(padded, _STRONG_TEMPORAL_PHRASES),
+            + _padded_count(padded, _STRONG_TEMPORAL_PHRASES) + recent_years,
             "weak_temporal": sum(1 for s in stems if s in _WEAK_TEMPORAL),
-            "years": len(_YEAR.findall(text)),
+            "years": sum(1 for y in years if self.year - 2 <= y <= self.year + 1),
             "roles": sum(1 for s in stems if s in _ROLES)
             + _padded_count(padded_stems, _ROLE_PHRASES),
             "present_question": len(_PRESENT_QUESTION.findall(text.lower())),
             "entity_density": _entity_density(text, matches, detect_language(lower)),
             "acronyms": sum(1 for m in matches if len(m.group()) >= 2 and m.group().isupper()),
             "news": float(sum(self._keywords.evidence(text))),
-            "math": sum(1 for s in stems if s in _MATH) + len(_OPERATOR.findall(text)) / 2,
+            "math": math_cues,
         }
 
     def lexical_score(self, text: str) -> float:
@@ -225,10 +245,16 @@ class TimeSensitivityGate:
             )
 
     @classmethod
-    def load(cls, path: str | Path) -> TimeSensitivityGate:
+    def load(cls, path: str | Path, *, today: DateLike = None) -> TimeSensitivityGate:
         """Load a gate written by :meth:`save`."""
         with np.load(Path(path), allow_pickle=False) as z:
             kind = str(z["kind"]) if "kind" in z.files else ""
             if kind != cls._KIND:
                 raise ValueError(f"{path} is not a TimeSensitivityGate file (kind={kind!r})")
-            return cls(SparseSoftmaxRegression.from_arrays(z), learned_weight=float(z["learned_weight"]))
+            return cls(SparseSoftmaxRegression.from_arrays(z), learned_weight=float(z["learned_weight"]), today=today)
+
+
+def load_gate(path: str | Path | None = None, *, today: DateLike = None) -> TimeSensitivityGate:
+    """The configured gate: the trained one at ``path`` (``cutoffmix router train`` writes ``gate_linear.npz``;
+    ``router.gate_path``), else the lexical baseline."""
+    return TimeSensitivityGate.load(path, today=today) if path else TimeSensitivityGate(today=today)
