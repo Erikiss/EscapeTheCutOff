@@ -1,0 +1,196 @@
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"I'm rec","reasoning_details":[{"type":"reasoning.text","text":"I'm rec","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"alling that Alar Kar","reasoning_details":[{"type":"reasoning.text","text":"alling that Alar Kar","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"is took office on","reasoning_details":[{"type":"reasoning.text","text":"is took office on","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" 11 October 2021,","reasoning_details":[{"type":"reasoning.text","text":" 11 October 2021,","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" so his five-year term run","reasoning_details":[{"type":"reasoning.text","text":" so his five-year term run","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"s out","reasoning_details":[{"type":"reasoning.text","text":"s out","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" in October 2026,","reasoning_details":[{"type":"reasoning.text","text":" in October 2026,","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" with the","reasoning_details":[{"type":"reasoning.text","text":" with the","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" election","reasoning_details":[{"type":"reasoning.text","text":" election","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" due","reasoning_details":[{"type":"reasoning.text","text":" due","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" in the autumn. I don","reasoning_details":[{"type":"reasoning.text","text":" in the autumn. I don","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"'t know the result","reasoning_details":[{"type":"reasoning.text","text":"'t know the result","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":", and","reasoning_details":[{"type":"reasoning.text","text":", and","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" I'm unsure whether","reasoning_details":[{"type":"reasoning.text","text":" I'm unsure whether","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" he's said","reasoning_details":[{"type":"reasoning.text","text":" he's said","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" he won","reasoning_details":[{"type":"reasoning.text","text":" he won","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"'t seek a","reasoning_details":[{"type":"reasoning.text","text":"'t seek a","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" second term, so I'll","reasoning_details":[{"type":"reasoning.text","text":" second term, so I'll","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" keep that part","reasoning_details":[{"type":"reasoning.text","text":" keep that part","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" v","reasoning_details":[{"type":"reasoning.text","text":" v","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"ague.","reasoning_details":[{"type":"reasoning.text","text":"ague.","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"\n\n","reasoning_details":[{"type":"reasoning.text","text":"\n\n","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"I'm no","reasoning_details":[{"type":"reasoning.text","text":"I'm no","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"ting the u","reasoning_details":[{"type":"reasoning.text","text":"ting the u","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"ncertainty about","reasoning_details":[{"type":"reasoning.text","text":"ncertainty about","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" the August","reasoning_details":[{"type":"reasoning.text","text":" the August","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" or","reasoning_details":[{"type":"reasoning.text","text":" or","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" September 2026 election","reasoning_details":[{"type":"reasoning.text","text":" September 2026 election","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" out","reasoning_details":[{"type":"reasoning.text","text":" out","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"come, since I don't know","reasoning_details":[{"type":"reasoning.text","text":"come, since I don't know","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" it and","reasoning_details":[{"type":"reasoning.text","text":" it and","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" would","reasoning_details":[{"type":"reasoning.text","text":" would","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" need to","reasoning_details":[{"type":"reasoning.text","text":" need to","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" ver","reasoning_details":[{"type":"reasoning.text","text":" ver","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"ify it.","reasoning_details":[{"type":"reasoning.text","text":"ify it.","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" The answ","reasoning_details":[{"type":"reasoning.text","text":" The answ","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"er should be written in German.","reasoning_details":[{"type":"reasoning.text","text":"er should be written in German.","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"\n\n","reasoning_details":[{"type":"reasoning.text","text":"\n\n","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning_details":[{"type":"reasoning.text","signature":"CAQSiwkKEAgUGAI4AUIIdGhpbmtpbmcSDJ66v3fpRX395IXjKhoMu58xhenbZ/9EuIgGIjCKpM6kvctDxLbMU0dkDrr+ElQpUgXESN4iMNIbYN14oD/KgxFLrU67QkGreE27JiUqqAgZchEO6HF6S8xI61WGc/wS2mTpeOMziwJ/IPULjALoydT1v0LyFlWKT+lEfrdFEjFi4ehQJyov5Q4vz34xSq3oTusxp8TCx67fpZ+6Eb84iLcQcfk3bCKarke2xB9HUoAGK4pZVXk5g1t7AqhNMvEm0I330Lyth/Sc0Qtk5/YBK+Yb5lihMuh2WGLTgxPQtkmlFvumi1q8I9D5UU02TVg8zUOLkSI6oQmYC7i8zI+9T/2Zv6ugzjjC2Ax8wj+P7kXEsG9gAVpXE8GgxqDsaWV8SWiSK7D9OahD8q7oPYrkgklueH9yQ9rGj3FWeWZlX7psiyWY6fsJG2mYBdtMz+BMWBo9wKPeYvfJolfLN4Df0rKzdPQiMhNMGFKY0AOY4goPZ91LHGBKp6fhiEVXWTRElAwhsAQIZBFj+rGV9cIlrTxwoGp5NK9DrmxvpjA4C20ryCgLXPB8cx2zWbs8kG2IrYeI3IjUOOn67BwBsOGBzGCfkBhgA0y/4pE5XPMpzAhlYU99kbGAby/GC7H/JQkrUEIy4UkyZKU/qA4GxwH/r61vHoYXtyWyw3/oSbLeTP0hX5uxgyNm4xLuxIUX9n1ssvUq/PVOQMWKzF8Bh7YpNDd9KABOlNh7PpkdZ5KS0Kz3x1zxHSEkLB6eA36Fh8Jzh+3PaDJMvSBzyfRv60vbiafngBC7XsqQyNtJA60dE75TOfhRWarsf5ygbUpDBXLC4ixR09Wr6Hi5hbF0MNiQ3wzmS6s2ElqIm4aD+1CTYhOQXA7GAdD0V9XVe7kvBPUkAkdYh5THo7K3yfXYrFrwN5eOd348zNIvVbafxTVBQDgUsD5NLS6uFd2yjEus983Mxv3a9FLM9xqTI6yLDwZVotRg3JnagqblHEToidhidl+NSRHqbZLf87zqezgXYhyUfg4WJl2gzRSfRJoHG51aUmetuFdvAeFvXtPiiSvj/fLwDWTIiqArIwSjmuNQ2ast2ChRdO5eac2Lw72zyk4QGjgnsrQfqJxN5SL3f/UdLdwTmFiyN3agcbTuQm7R0KriY3mhYXRVNeoKwY1uHyDlTeqmAyo9PFcR1GO2YLHwTNtmRnWnm9NY7GvGyazgNHdzMhPI1OZ5faBefD8RTiGpCH96huWfFEuSO+7R0QFS+fPpjmDHurPZ54FKTHhgK1HRA66IQa5CmUSjlQKnbL8Ph0TQNYY4p4JALSRgXjHwvLX/IYdiJFcDUdIz4r32kc0uOv6fRlj305SkKLB8qTfS0gor2QFrtexV8EheYyD+VGtl4NSI4Im+jd1Gs/+KeKALsVYZHtcSMgasC1URRFl2JsQF0YEwuB2GuNuYFZ8yS2LyHPhPD1k+NS1mm8Qcnlk/RRQxuFw9sJhsLah+40XWuy6Kgt8JsWY8OJzUYK4b7qywQjy3fGcZAxgB.eyJlbmRwb2ludF9zbHVnIjoiYW50aHJvcGljL2NsYXVkZS1mYWJsZS01LjItMjAyNjExMDl8YW50aHJvcGljIn0","format":"anthropic-claude-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"Alar Karis w","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"urde am 31","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":". August 2021 vom","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Riigikogu gew","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ählt und trat s","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ein Amt am 11.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Oktober 2021 ","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"an. B","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ei fünfjähriger","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Amtszeit l","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ief di","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ese som","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"it im Oktober 2","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"026 aus; die tur","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"nusmäßige Prä","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"sidentenwahl (","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"Riigikogu,","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" ggf. Wahl","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"k","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ollegium) dürfte","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" im Sp","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ätsommer/","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"Herbst 2026 ","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"stattgefunden haben","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":". Zum heutigen","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Datum ","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ist also ent","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"weder","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Karis n","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ach","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Wiederwahl we","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"iter im Amt,","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" oder ein Nachf","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"olger h","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"at das Amt üb","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ernommen. Das","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Ergebnis die","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ser Wahl ist m","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ir nicht gesichert","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" bekannt; der letz","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"te m","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ir sicher bekannte","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Amtsinhaber","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" ist Kar","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"is.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" Das","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":" muss an","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"hand a","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"ktueller Quellen ge","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"prüft werden.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"\n\n","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"stop","native_finish_reason":"stop_sequence"}]}
+
+data: {"id":"gen-1795548966-LpzrjtKh2jYbzHQitA1x","object":"chat.completion.chunk","created":1795548966,"model":"anthropic/claude-fable-5.2","provider":"Anthropic","service_tier":"default","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop_sequence"}],"usage":{"prompt_tokens":351,"completion_tokens":491,"total_tokens":842,"cost":0.022448,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.022448,"upstream_inference_prompt_cost":0.002808,"upstream_inference_completions_cost":0.01964},"completion_tokens_details":{"reasoning_tokens":189,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

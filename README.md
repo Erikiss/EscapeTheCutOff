@@ -17,14 +17,26 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
 ## Ehrlicher Stand
 
 - **Mit simulierten Modellen (`--mock`) läuft alles:** Relay, Router, Web-UI, OpenAI-kompatible API, Benchmark-Pipeline,
-  Schätzer. Es gibt über 550 Tests, alle offline.
-- **Gegen die echten Modelle wurde noch nichts ausgeführt**, weil kein API-Key vorlag. Folgendes ist sorgfältig
-  aus Doku und Endpunkt-Metadaten gebaut, aber unbestätigt:
-  - die Request-Formate pro Modell;
-  - Abbruch und Abrechnung;
-  - das Verhalten bei Verweigerungen.
+  Schätzer. Alle Tests laufen offline.
+- **Live geprüft am 24.11.2026** über OpenRouter:
+  - Alle drei Modelle wurden einzeln aufgerufen. Request-Format, Provider-Pinning und Stopp am Sentinel funktionieren,
+    und die Kosten kommen pro Aufruf an.
+  - Ein voller Relay-Lauf mit dem Prior-Index (Policy `softmax`): Erwartungsgemäß schrieb nur Sol, nach 17 s lag eine
+    deutsche Antwort vor.
+  - Ein Lauf mit Rotation über alle drei Modelle (Policy `round_robin`): 6 Abschnitte, 5 Wechsel, 57 s, 0,15 $. Die
+    Modelle greifen die Notizen der anderen auf und korrigieren sie. Bei Artemis II (April 2026) brachte Fable Details
+    ein, die Sol und Neon zunächst als unbelegt markiert hatten.
+  - Die echten SSE-Mitschnitte liegen als Test-Fixtures in `tests/fixtures/live_sse/`.
+- **Latenz (live gemessen):**
 
-  Der erste Live-Lauf ist ein kurzer Smoke-Test (Kosten im Cent-Bereich).
+  | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
+  |---|---|---|---|
+  | GPT-6.2 Sol | ≈ 1,1 s | ≈ 4,7 s | ≈ 0,4–0,8 ct |
+  | Claude Fable 5.2 | ≈ 6,3 s | ≈ 9,8 s | ≈ 1,7–2,2 ct |
+  | Gemini 4 Neon | ≈ 7,2 s | ≈ 9,2 s | ≈ 0,9–1,6 ct |
+
+  Alle drei denken vor jeder Ausgabe verdeckt; die niedrigste mögliche Stufe ist `low`. Ein Wechsel kostet deshalb
+  jedes Mal diese Anlaufzeit. Schneller als ein Wechsel pro Abschnitt geht über diese APIs nicht.
 - **Der mitgelieferte Index ist ein Prior, keine themenaufgelöste Messung.** Er ist aus den öffentlichen Daten des
   Knowledge-Cutoff-Bench gefittet. Diese Daten enden im **Juni 2026**, und GPT-6.2 Sol liegt dort **in jedem Thema
   vorn**. Mit echten Modellen und diesem Index schreibt deshalb meist Sol, und die anderen kommen nur durch das
@@ -63,7 +75,8 @@ Frage ──► [Abschnitt 1: Modell A] ─► [Abschnitt 2: Modell B] ─► �
      `U_m = Σ_z π_z·τ_mz − κ·√(Σ_z π_z²·Var_mz) − λ·Σ_z π_z·H_mz`
 
      Dabei ist τ der virtuelle Cutoff in Monaten, Var dessen Unsicherheit und H die Rate veralteter oder falscher
-     Behauptungen nach dem Cutoff.
+     Behauptungen nach dem Cutoff. Standardwerte sind κ = 1 und λ = 0,5. Der H-Term entscheidet damit nur bei fast
+     gleichen Cutoffs und überstimmt keinen echten Vorsprung.
 4. **Sampling** für die feinen relativen Unterschiede:
    - Die Standard-Policy `softmax` zieht mit P ∝ exp((U_m + β·[aktuelles Modell]) / T), mit T = T₀ / max(r, r_min).
      Bei hoher Zeitsensitivität entscheidet sie also scharf und bei zeitlosen Fenstern locker, und der Bonus β
@@ -163,6 +176,15 @@ cutoffmix bench fit --events runs/kc/kc_events.jsonl data/events/wikidata_events
 ```
 
 Der Lauf kann unterbrochen und fortgesetzt werden. Danach `router.index_path` auf `runs/index.json` setzen.
+
+**Kosten und Abdeckung:**
+
+- Für 953 Ereignisse × 3 Modelle × 2 Sonden schätzt `--dry-run` **≈ 51 $**. Die Obergrenze liegt bei ≈ 330 $, wenn
+  jeder Aufruf `max_tokens` ausschöpft; Judge-Aufrufe sind nicht eingerechnet.
+- Erst einen Pilotlauf mit `--limit 20` machen und die echten Token-Zahlen ansehen.
+- Die Wikidata-Ereignisse decken nur 7 der 15 Themen ab, mit Schwerpunkt Sport (606), Regierung (169) und Wahlen (96).
+- Für KI, Software, Raumfahrt, Gesundheit, Konflikte und Unglücke braucht es zusätzlich das Wikipedia-Current-events-Set
+  (`bench build-wikipedia --probe-model …`). Dessen Fragen erzeugt ein Modell, was ebenfalls Geld kostet.
 
 ## Optionales Training (≤ 1 h)
 

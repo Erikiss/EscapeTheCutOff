@@ -1,0 +1,55 @@
+{
+ "status": 200,
+ "headers": {
+  "content-type": "text/event-stream",
+  "x-generation-id": "gen-1795548973-X90mvCGcaoultUmDoOE0"
+ },
+ "body": {
+  "model": "openai/gpt-6.2-sol",
+  "messages": [
+   {
+    "role": "system",
+    "content": [
+     {
+      "type": "text",
+      "text": "Several analysts are jointly working through the problem in the user message; their shared notes so far are included. Contribute the next intermediate result: state it and the evidence or calculation that supports it, in about 128 tokens, written so it can be appended to the notes as the next paragraph. Use the same language as the notes (or as the problem if there are no notes yet). If an earlier note is wrong, start with 'Correction:' and fix it. Prefer the most recent facts you know and say when a fact may have changed. Output only that paragraph, then <<END_STEP>>. If the notes already reach a conclusion, write 'FINAL ANSWER:' followed by the answer. Today's date: 2026-11-24."
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "PROBLEM:\nWer ist aktuell Pr\u00e4sident von Estland?\n\nSHARED NOTES SO FAR:\n\n"
+     },
+     {
+      "type": "text",
+      "text": "Die Frage betrifft das estnische Staatsoberhaupt zum 24. November 2026; die Amtszeit betr\u00e4gt f\u00fcnf Jahre.\n\n"
+     },
+     {
+      "type": "text",
+      "text": "END OF THE SHARED NOTES. Write the next paragraph."
+     }
+    ]
+   }
+  ],
+  "stream": true,
+  "max_tokens": 2176,
+  "reasoning": {
+   "effort": "low",
+   "exclude": true
+  },
+  "provider": {
+   "only": [
+    "openai",
+    "azure"
+   ]
+  },
+  "prompt_cache_key": "capture1:gpt-6.2-sol",
+  "session_id": "capture1:gpt-6.2-sol",
+  "verbosity": "low"
+ },
+ "bytes": 32010,
+ "secs": 4.98
+}
