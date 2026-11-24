@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, TextIO
 
 from cutoffmix import __version__
 from cutoffmix.relay import RelayRuntime, to_jsonable
+from cutoffmix.taxonomy import argmax_topic
 from cutoffmix.timeutil import month_label
 from cutoffmix.types import ModelSpec, RelayEvent
 
@@ -156,8 +157,8 @@ class TerminalPrinter:
         if "r" in data:
             bits.append(f"r={data['r']:.2f}")
         if ev.topic_posterior:
-            topic, p = max(ev.topic_posterior.items(), key=lambda kv: kv[1])
-            bits.append(f"{topic} {p:.0%}")
+            topic = argmax_topic(ev.topic_posterior)  # None: flat posterior, no topic to name
+            bits.append(f"{topic} {ev.topic_posterior[topic]:.0%}" if topic else "topic ?")
         if ev.phase == "answer":
             bits.insert(0, "answer")
         meta = " · ".join(b for b in bits if b)

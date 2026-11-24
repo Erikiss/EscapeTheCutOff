@@ -79,6 +79,7 @@ from cutoffmix.prompts import (
     vs_menu_messages,
     word3gram_jaccard,
 )
+from cutoffmix.taxonomy import argmax_topic
 from cutoffmix.types import (
     Backend,
     ChatRequest,
@@ -228,7 +229,8 @@ def _lacks(missing: Sequence[str]) -> str:
 
 
 def _argmax(posterior: Mapping[str, float]) -> str | None:
-    return max(posterior, key=lambda t: posterior[t]) if posterior else None
+    """The clear argmax topic, or None for an empty or flat posterior (:func:`cutoffmix.taxonomy.argmax_topic`)."""
+    return argmax_topic(posterior)
 
 
 def _entropy_bits(weights: Mapping[str, float]) -> float:

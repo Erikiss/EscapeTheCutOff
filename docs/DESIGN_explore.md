@@ -232,7 +232,8 @@ information theory, machine learning, economics; far = game theory, military log
 systems, law, linguistics, music theory, arts, sports science. Tiers are sampled mid 0.55 / far 0.35 / near 0.10
 (far 0.50 when stagnating); fields are sampled **without replacement within a run** (Shen Y. 2026: the models
 themselves would reuse two clusters). `current_topic` is the argmax of the router's smoothed posterior before the
-segment. The 15 x 15 distance can later be replaced by 1 - cosine of embedded topic descriptions.
+segment, or None when that posterior is flat (`taxonomy.argmax_topic`; the keyword classifier matched nothing):
+then every field is `mid`. The 15 x 15 distance can later be replaced by 1 - cosine of embedded topic descriptions.
 
 ### 4.4 Exact instruction texts (English; Fable-safe)
 

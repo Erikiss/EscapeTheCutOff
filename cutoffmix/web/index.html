@@ -414,6 +414,15 @@ const topicName = (id) => S.topics[id] || String(id).replace(/_/g, " ");
 const chip = (k) => h("span", { class: "chip", style: `--m:${modelColor(k)}` }, h("i"), modelName(k));
 const badge = (d) => h("span", { class: "badge " + (d || ""), title: DECISIONS[d] || "" }, d || "?");
 const topN = (obj, n) => Object.entries(obj || {}).filter(([, v]) => isFinite(v)).sort((a, b) => b[1] - a[1]).slice(0, n);
+/* the topic a posterior clearly favours, or null when it is flat (all equal, or the top probability below 1.5x the
+   smallest one): the same rule as taxonomy.argmax_topic, so a flat posterior never shows up as the first topic */
+function clearTopic(post) {
+  const entries = topN(post, Infinity);
+  if (!entries.length) return null;
+  const hi = entries[0][1], lo = entries[entries.length - 1][1];
+  if (entries.length > 1 && (hi - lo < 1e-9 || hi < 1.5 * lo)) return null;
+  return entries[0][0];
+}
 
 function bars(entries, opts = {}) {
   return h("div", { class: "bars" }, entries.map(([label, value, extra]) =>
@@ -583,14 +592,14 @@ function follow(stick) { if (stick && S.running) window.scrollTo({ top: document
 function startSegment(ev) {
   const stick = nearBottom();
   const rec = recordFrom(ev);
-  const top = topN(rec.posterior, 1)[0];
+  const top = clearTopic(rec.posterior); /* null: flat posterior, shown as "—" (no clear topic) */
   rec.textEl = h("div", { class: "seg-text" });
   rec.xbadge = exploreBadge(rec);
   rec.el = h("article", { class: "seg streaming", tabindex: "0", style: `--m:${modelColor(rec.model)}`,
       "aria-label": `Segment ${rec.index + 1} by ${modelName(rec.model)}` },
     h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision), rec.xbadge,
-      h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on" },
-        `#${rec.index + 1}` + (top ? ` · ${topicName(top[0])}` : ""))),
+      h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on (— = no clear topic: the posterior is flat)" },
+        `#${rec.index + 1}` + (top ? ` · ${topicName(top)}` : topN(rec.posterior, 1).length ? " · —" : ""))),
     rec.textEl);
   rec.el.addEventListener("mouseenter", () => { if (canHover.matches && !narrow.matches) select(rec); });
   rec.el.addEventListener("click", () => select(rec, true));
@@ -780,8 +789,10 @@ function chipInline(m) { return h("span", {}, h("i", { style: `display:inline-bl
 function updateWindow(rec) {
   const post = topN(rec.posterior, 5);
   if (!post.length) return;
-  S.windowTopic = post[0][0];
-  const kids = [bars(post.map(([t, p]) => [topicName(t), p]))];
+  S.windowTopic = clearTopic(rec.posterior); /* null: no index row is highlighted */
+  const kids = [];
+  if (!S.windowTopic) kids.push(h("p", { class: "insp-note" }, "No clear topic: the posterior of the window is flat, so no row of the index is highlighted and the lens tiers fall back to mid."));
+  kids.push(bars(post.map(([t, p]) => [topicName(t), p])));
   kids.push(h("div", { class: "window-model" }, rec.phase === "answer" ? "answer by" : "next segment:", chip(rec.model), badge(rec.decision)));
   $("window").replaceChildren(...kids);
   $("win-r").textContent = rec.r != null ? `r(W) ${rec.r.toFixed(2)}` : "";

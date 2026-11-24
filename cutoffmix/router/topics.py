@@ -5,7 +5,11 @@
   (plurals, German case endings, feminine ``-in``), German compound heads (``Landtagswahl`` -> ``wahl``),
   case-sensitive acronyms (``WHO`` the organisation vs. the pronoun ``who``) and per-language false friends
   (German ``war`` = "was"). Generic words that also occur in math/logic text carry a low weight, so pure reasoning
-  text gets a near-uniform posterior.
+  text gets a near-uniform posterior. The taxonomy keywords cover news vocabulary *and* the research vocabulary of
+  the technical topics (battery chemistry, superconductivity, genetics, neuroscience, climate science, ML
+  architectures, cryptography, astrophysics ...), so an ordinary science question gets a clear topic; words that
+  are ambiguous across topics (``cell``, ``reaction``, ``theory``, ``drug``, ``algorithm`` ...) stay low-weight and
+  a flat posterior is reported as *no topic* by :func:`cutoffmix.taxonomy.argmax_topic`.
 * :class:`LinearTopicClassifier` -- multinomial logistic regression on hashed features (numpy, CPU), ``.npz`` I/O.
 * :class:`EmbeddingTopicClassifier` -- optional sentence-transformers prototype classifier.
 * :func:`load_classifier` -- pick one from a config ``kind``/``path``.
@@ -95,7 +99,9 @@ def detect_language(tokens: Sequence[str]) -> str:
 # --------------------------------------------------------------------------------------------------------------------
 
 # Acronyms that are ordinary words in lowercase: they only match in upper case in the original text.
-_CASED_ACRONYMS: dict[str, str] = {"who": "WHO", "iss": "ISS", "esa": "ESA", "ema": "EMA", "ki": "KI", "ai": "AI"}
+_CASED_ACRONYMS: dict[str, str] = {
+    "who": "WHO", "iss": "ISS", "esa": "ESA", "ema": "EMA", "ki": "KI", "ai": "AI", "ev": "EV",
+}
 # Taxonomy keywords that are word prefixes ("fine-tun" -> fine-tuning/fine-tuned, "cop3" -> COP30/COP31).
 _PREFIX_KEYWORDS = frozenset({"fine-tun", "cop3"})
 # Additional terms the taxonomy lacks (EN "president", German compounds, sport names, ...).
@@ -121,11 +127,14 @@ api kernel windows pixel rust react hack browser chrome start spiel finale serie
 umsatz negotiations investigation charged appointed succeeded resigned candidate polls cancer virus carbon climate
 fusion inflation earnings investor valuation gpu moon satellite rocket mars front agreement meister turnier verein
 roman autor
+cell zelle reaction reaktion theory theorie paper journal science lab research temperature temperatur theorem proof
+equation gleichung simulation chemical chemisch biological biologisch drug stroke diet depression environment
+algorithm algorithmus computer token alignment reichweite
 """.split())
 # Function-like words of other languages that collide with a keyword: ignored as single tokens in that language.
 _FALSE_FRIENDS: dict[str, frozenset[str]] = {
-    "de": frozenset({"war"}),
-    "en": frozenset({"front", "brand", "start", "roman", "spiel"}),
+    "de": frozenset({"war", "dose"}),  # "Dose" = tin/can
+    "en": frozenset({"front", "brand", "start", "roman", "spiel", "gen", "wetter", "lunge"}),  # "gen" = generation
 }
 # Phrases that contain keywords but are about the reasoning itself: consumed with zero weight.
 _STOP_PHRASES: tuple[str, ...] = (
@@ -134,7 +143,7 @@ _STOP_PHRASES: tuple[str, ...] = (
 # German compounds: a long token whose stem ends with a (non-generic, >= 5 letter) keyword stem counts for that
 # keyword's topics ("Bürgerkrieg" -> krieg). Short heads allowed explicitly; known false compounds blocked.
 _COMPOUND_MIN_HEAD = 5
-_COMPOUND_SHORT_HEADS = frozenset({"wahl"})
+_COMPOUND_SHORT_HEADS = frozenset({"wahl", "akku"})
 _COMPOUND_BLOCK = frozenset({"auswahl", "beispiel", "vorurteil"})
 _COMPOUND_WEIGHT = 0.8
 _GENERIC_WEIGHT = 0.2

@@ -242,6 +242,11 @@ class KeywordTopicClassifier:      # zero-training default; implements types.Top
     def __init__(self, topics=TOPICS, *, prior: float = 0.3, sharpness: float = 1.5)
     topics: list[str]
     def posterior(self, text: str) -> list[float]         # keyword+seed matching with smoothing; uniform if no signal
+    # the taxonomy keywords cover news vocabulary and the research vocabulary of the technical topics (battery
+    # chemistry, superconductivity, genetics, climate science, ML architectures, cryptography, astrophysics ...)
+# taxonomy.py
+def argmax_topic(posterior: Mapping[str, float]) -> str | None   # the clear argmax; None for a flat posterior
+    # (relay current_topic / explore metrics, CLI header "topic ?", web UI "—" / "No clear topic")
 class LinearTopicClassifier:       # multinomial logistic regression on hashed features (numpy, CPU)
     topics: list[str]
     @classmethod
@@ -715,7 +720,9 @@ else:
 
 `exclude` only narrows `available` when another model remains. The lens decision is made with `update=False` (the
 router's EMA ignores it); lens notes are left out of the routing window (`lens.exclude_from_window`, also for the
-answer decision), check notes stay in. `current_topic` = argmax of the last committed think segment's posterior.
+answer decision), check notes stay in. `current_topic` = argmax of the last committed think segment's posterior,
+or None when that posterior is flat (`taxonomy.argmax_topic`: all equal, or the maximum below 1.5x the minimum),
+so a question the classifier cannot place never counts as the taxonomy's first topic; every lens field is `mid` then.
 After a committed lens: `pending_check`, `lens_writer`, `lenses_used += 1`, the field is used up. After a committed
 check: `cooldown = lens.cooldown`, decremented by every other committed think segment. A check never waits for a
 continuation: a pending forcing is consumed by the check (the check continues the line, the concluding model is
