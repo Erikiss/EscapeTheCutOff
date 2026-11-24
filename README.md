@@ -27,6 +27,17 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
     Modelle greifen die Notizen der anderen auf und korrigieren sie. Bei Artemis II (April 2026) brachte Fable Details
     ein, die Sol und Neon zunächst als unbelegt markiert hatten.
   - Die echten SSE-Mitschnitte liegen als Test-Fixtures in `tests/fixtures/live_sse/`.
+  - Ein Lauf mit dem **Explore-Preset** (`--policy round_robin`, Frage zu Lithium-Ionen-Akkus bei Kälte): 11 Abschnitte,
+    139 s, 0,29 $. Fable brachte einen weiten Blickwinkel ein (Erzähltheorie: der „unzuverlässige Erzähler“ als Bild
+    für die Reichweitenanzeige bei Kälte), Sol prüfte ihn und behielt ihn mit einer konkreten Testidee, Sol korrigierte
+    später eine zu starre 0-°C-Grenze für Lithium-Plating, Neon schrieb die Antwort mit `Basis:` und `Not resolved:`.
+  - **Beobachtung zu Fable im Explore-Modus:** Anthropics Eingangsfilter sperrte 2 von 4 Fable-Aufrufen mit der
+    Kategorie „reverse engineering or duplicating model outputs“. Das Relay hat jeweils umgeroutet und Fable nach der
+    zweiten Verweigerung für den Lauf deaktiviert. 17 Cent-Aufrufe zur Eingrenzung zeigen: Der Standard-Prompt geht
+    immer durch, auch mit derselben Frage; die Explore-Vorgabe (beschriftete Punkte, Liste der noch fehlenden Punkte)
+    löst die Sperre fast immer aus, mit vorhandenen Notizen seltener. Welches Wort genau, ließ sich nicht isolieren;
+    es wirkt wie ein Schwellenwert-Klassifikator, den die Schema-Anweisung überschreitet. Deshalb bekommt Fable im
+    Explore-Modus eine abgeschwächte Vorgabe (siehe unten).
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |

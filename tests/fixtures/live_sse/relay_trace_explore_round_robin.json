@@ -1,0 +1,1203 @@
+{
+  "question": "Warum verlieren Lithium-Ionen-Akkus bei Kälte an Kapazität, und was folgt daraus für Elektroautos im Winter?",
+  "segments": [
+    {
+      "index": 0,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "text": "Claim: Bei Kälte sinkt vor allem die vorübergehend nutzbare Kapazität. Der Ionentransport und die Ladungsübertragung an den Elektroden werden langsamer; dadurch fällt die Klemmenspannung unter Last stärker ab, und der Akku erreicht seine Entladeschlussgrenze früher, obwohl noch Ladung vorhanden ist.\n\nEvidence: Die Übersichtsarbeit von Jaguemont, Boulon und Dubé (*Applied Energy*, 2016) dokumentiert für Lithium-Ionen-Akkus in Elektrofahrzeugen bei niedrigen Temperaturen eine höhere Impedanz sowie geringere verfügbare Energie und Leistung. Entscheidend ist dabei die Temperatur der Zellen, nicht allein die Außentemperatur.\n\nAlternative set aside: „Weniger Reichweite bedeutet, dass der Akku dauerhaft gealtert ist“ verwechselt einen reversiblen Kälteeffekt mit Alterung. Für die Winterreichweite kommt außerdem der Heizbedarf hinzu; ein Reichweitenverlust lässt sich deshalb nicht direkt in einen Kapazitätsverlust umrechnen.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0131,
+        "international_relations": 0.0131,
+        "government": 0.0131,
+        "elections": 0.0131,
+        "law_crime": 0.0131,
+        "accidents": 0.0131,
+        "natural_disasters_climate": 0.0131,
+        "health_medicine": 0.0131,
+        "business_economy": 0.1182,
+        "ai_ml": 0.0131,
+        "computing_software": 0.0131,
+        "space_astronomy": 0.0131,
+        "science_research": 0.7113,
+        "sports": 0.0131,
+        "arts_entertainment": 0.0131
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.608,
+        "gemini-4-neon": 26.007
+      },
+      "started_at": 1795559311.8569038,
+      "ended_at": 1795559321.4441342,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559312-GROyAuveFqV8QnzUOMBj",
+        "prompt_tokens": 518,
+        "completion_tokens": 312,
+        "total_tokens": 830,
+        "cost": 0,
+        "is_byok": true,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.004156,
+          "upstream_inference_prompt_cost": 0.001036,
+          "upstream_inference_completions_cost": 0.00312
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "sentinel",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Claim": 1,
+          "Evidence": 1,
+          "Alternative set aside": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 1,
+      "model": "gemini-4-neon",
+      "phase": "think",
+      "text": "Principle: Nach der Arrhenius-Gleichung aus der physikalischen Chemie nehmen die Geschwindigkeit elektrochemischer Reaktionen und die Beweglichkeit von Ionen mit sinkender Temperatur exponentiell ab. Im Akku steigt zudem die Viskosität des flüssigen Elektrolyten, was den Innenwiderstand stark erhöht und den ersten Claim physikalisch begründet.\n\nClaim: Während der reine Kälte-Kapazitätsverlust reversibel ist, droht beim Laden kalter Zellen unter etwa 0 °C sogenanntes Lithium-Plating an der Graphitanode, was die Zelle dauerhaft schädigt. Deshalb drosselt das Batteriemanagementsystem (BMS) im Winter sowohl die Schnellladeleistung als auch die Rekuperation, bis die Zellen erwärmt sind.\n\nOpen question: Wie stark unterscheiden sich gängige Zellchemien (etwa LFP gegenüber NMC) beim Kälteverlust und der Ladegeschwindigkeit, und welche aktuellen Wintertests (z. B. NAF oder ADAC) liefern belastbare Vergleichswerte?",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0089,
+        "international_relations": 0.0089,
+        "government": 0.0089,
+        "elections": 0.0089,
+        "law_crime": 0.0089,
+        "accidents": 0.0089,
+        "natural_disasters_climate": 0.0089,
+        "health_medicine": 0.0089,
+        "business_economy": 0.0856,
+        "ai_ml": 0.0089,
+        "computing_software": 0.0089,
+        "space_astronomy": 0.0089,
+        "science_research": 0.7984,
+        "sports": 0.0089,
+        "arts_entertainment": 0.0089
+      },
+      "scores": {
+        "claude-fable-5.2": 25.545,
+        "gpt-6.2-sol": 27.552,
+        "gemini-4-neon": 25.963
+      },
+      "started_at": 1795559321.4463005,
+      "ended_at": 1795559333.348198,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559321-uhXVpfwKPxjWtjCWocDz",
+        "prompt_tokens": 743,
+        "completion_tokens": 1331,
+        "total_tokens": 2074,
+        "cost": 0.022194,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.022194,
+          "upstream_inference_prompt_cost": 0.002229,
+          "upstream_inference_completions_cost": 0.019965
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1047,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Principle": 1,
+          "Claim": 1,
+          "Open question": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 2,
+      "model": "claude-fable-5.2",
+      "phase": "think",
+      "text": "Evidence: Der norwegische Wintertest „El Prix“ von NAF und Motor zeigt nach meiner Erinnerung Reichweitenabweichungen gegenüber WLTP von grob 5 bis über 30 Prozent, je nach Modell; genaue Zahlen der jüngsten Durchgänge sollten nachgeschlagen werden, sie können sich geändert haben.\n\nInference: Weil der reversible Zelleffekt (Notiz 1) und der Heizbedarf sich überlagern und die Streuung zwischen Modellen groß ist, entscheidet das Thermomanagement (Wärmepumpe, Akkuvorkonditionierung) über den Winterverlust stärker als die Zellchemie allein.\n\nClaim: Zur offenen Frage: LFP-Zellen gelten als kälteempfindlicher als NMC, vor allem beim Laden; die flache Spannungskennlinie erschwert zudem die Ladezustandsschätzung. Im Fahrzeug wird dieser Unterschied durch Vorheizen teilweise ausgeglichen.\n\nNext: Praktische Folgerungen für Fahrer bündeln: Vorheizen am Netz, Vorkonditionierung vor Schnellladung, Kurzstreckenmehrverbrauch, Ladeplanung.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0056,
+        "international_relations": 0.0056,
+        "government": 0.0056,
+        "elections": 0.0056,
+        "law_crime": 0.0056,
+        "accidents": 0.0056,
+        "natural_disasters_climate": 0.0056,
+        "health_medicine": 0.0056,
+        "business_economy": 0.056,
+        "ai_ml": 0.0056,
+        "computing_software": 0.0056,
+        "space_astronomy": 0.0056,
+        "science_research": 0.8707,
+        "sports": 0.0056,
+        "arts_entertainment": 0.0056
+      },
+      "scores": {
+        "claude-fable-5.2": 25.502,
+        "gpt-6.2-sol": 27.503,
+        "gemini-4-neon": 25.926
+      },
+      "started_at": 1795559333.3512704,
+      "ended_at": 1795559342.0647135,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559333-PC5BJmYYVv1FqBIJELTK",
+        "prompt_tokens": 1617,
+        "completion_tokens": 602,
+        "total_tokens": 2219,
+        "cost": 0.040068,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 1526,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.040068,
+          "upstream_inference_prompt_cost": 0.015988,
+          "upstream_inference_completions_cost": 0.02408
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Evidence": 1,
+          "Inference": 1,
+          "Claim": 1,
+          "Next": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 3,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "text": "Inference: Wenn das Auto noch am Stromnetz hängt, kann es den Innenraum und je nach Modell auch den Akku vorwärmen, ohne dafür die gesamte Energie aus dem Fahrakku zu ziehen. Auf vielen kurzen Fahrten mit Abkühlpausen fällt das erneute Aufheizen pro Kilometer stärker ins Gewicht als auf einer langen Fahrt.\n\nClaim: Für einen geplanten Schnellladestopp lohnt es sich bei vielen Modellen, die Ladesäule im bordeigenen Navi als Ziel zu wählen: Unterstützt das Fahrzeug diese Funktion, kann es den Akku bereits unterwegs auf eine günstigere Ladetemperatur bringen. Das kostet Energie, kann aber die Ladezeit verkürzen; ein warmer Innenraum ist kein Beleg für einen warmen Akku.\n\nAlternative set aside: Ein pauschaler Winterabschlag auf die WLTP-Reichweite eignet sich nicht als verlässliche Ladeplanung, weil Tempo, Fahrtlänge, Wind und nasse oder verschneite Straßen den Verbrauch verändern.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0039,
+        "international_relations": 0.0039,
+        "government": 0.0039,
+        "elections": 0.0039,
+        "law_crime": 0.0039,
+        "accidents": 0.0039,
+        "natural_disasters_climate": 0.0039,
+        "health_medicine": 0.0039,
+        "business_economy": 0.0405,
+        "ai_ml": 0.0052,
+        "computing_software": 0.0039,
+        "space_astronomy": 0.0039,
+        "science_research": 0.907,
+        "sports": 0.0039,
+        "arts_entertainment": 0.0039
+      },
+      "scores": {
+        "claude-fable-5.2": 25.479,
+        "gpt-6.2-sol": 27.477,
+        "gemini-4-neon": 25.907
+      },
+      "started_at": 1795559342.0683138,
+      "ended_at": 1795559350.0166636,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559342-Cert8kYFKur70PmtFJFv",
+        "prompt_tokens": 1141,
+        "completion_tokens": 284,
+        "total_tokens": 1425,
+        "cost": 0,
+        "is_byok": true,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 1138,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.005691,
+          "upstream_inference_prompt_cost": 0.002851,
+          "upstream_inference_completions_cost": 0.00284
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "sentinel",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Inference": 1,
+          "Claim": 1,
+          "Alternative set aside": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 4,
+      "model": "gemini-4-neon",
+      "phase": "think",
+      "text": "Claim: Im Winter empfiehlt sich, direkt nach einer Fahrt zu laden, solange der Akku noch Restwärme besitzt, und einen größeren Ladezustandspuffer einzuplanen. Bei niedrigem Ladezustand verstärkt der kältebedingte Spannungsabfall (Notiz 1) das Risiko plötzlicher Leistungsbegrenzungen oder ungenauer Restreichweitenanzeigen, besonders bei LFP-Zellen.\n\nInference: Weil das BMS bei kaltem Akku die Rekuperation drosselt (Notiz 2), verliert das Fahrzeug im Stadt- und Gefälleverkehr an Effizienz und das gewohnte Ein-Pedal-Verzögern fällt schwächer aus; Fahrer müssen daher früher mechanisch bremsen.\n\nNext: Die physikalischen Ursachen, BMS-Schutzmaßnahmen und praktischen Fahrfolgen kompakt zusammenführen und dabei kurz prüfen, wie stark Wärmepumpen bei sehr tiefen Temperaturen an Effizienz verlieren.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0032,
+        "international_relations": 0.0032,
+        "government": 0.0032,
+        "elections": 0.0032,
+        "law_crime": 0.0032,
+        "accidents": 0.0032,
+        "natural_disasters_climate": 0.0032,
+        "health_medicine": 0.0032,
+        "business_economy": 0.0503,
+        "ai_ml": 0.0065,
+        "computing_software": 0.0032,
+        "space_astronomy": 0.0032,
+        "science_research": 0.9045,
+        "sports": 0.0032,
+        "arts_entertainment": 0.0032
+      },
+      "scores": {
+        "claude-fable-5.2": 25.483,
+        "gpt-6.2-sol": 27.484,
+        "gemini-4-neon": 25.909
+      },
+      "started_at": 1795559350.0209777,
+      "ended_at": 1795559362.6890259,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559350-Qw7RszJHDPQ7FW9zbl7X",
+        "prompt_tokens": 1374,
+        "completion_tokens": 1375,
+        "total_tokens": 2749,
+        "cost": 0.024747,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.024747,
+          "upstream_inference_prompt_cost": 0.004122,
+          "upstream_inference_completions_cost": 0.020625
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1069,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Claim": 1,
+          "Inference": 1,
+          "Next": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 5,
+      "model": "claude-fable-5.2",
+      "phase": "think",
+      "text": "Lens (narrative and visual arts): Der unzuverlässige Erzähler aus der Erzähltheorie: Die Geschichte (Fabel) bleibt gleich, aber der Erzähler gibt sie verzerrt wieder. Zuordnung: Die tatsächlich gespeicherte Ladung spielt die Rolle der Fabel; Klemmenspannung unter Last und die daraus abgeleitete Restreichweitenanzeige sind der Erzähler; die Zelltemperatur ist der Umstand, der seine Zuverlässigkeit bestimmt.\n\nInference: Als Arbeitsanalogie, nicht als Beleg: Wenn Kälte vor allem die „Erzählung“ verzerrt, sollte die angezeigte Reichweite nach dem Erwärmen des Akkus ohne Nachladen teilweise wieder steigen; das ist am Fahrzeug prüfbar und trennt den reversiblen Zelleffekt vom echten Mehrverbrauch durch Heizen.\n\nClaim: Zur Prüfbitte aus Notiz 5: Wärmepumpen verlieren bei sehr tiefen Temperaturen an Leistungszahl und nähern sich dem Widerstandsheizer an; ihr Vorteil ist bei mildem Frost am größten, genaue Werte sind modellabhängig.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0037,
+        "international_relations": 0.0037,
+        "government": 0.0037,
+        "elections": 0.0037,
+        "law_crime": 0.0037,
+        "accidents": 0.0037,
+        "natural_disasters_climate": 0.0037,
+        "health_medicine": 0.0037,
+        "business_economy": 0.0754,
+        "ai_ml": 0.011,
+        "computing_software": 0.0037,
+        "space_astronomy": 0.0037,
+        "science_research": 0.8692,
+        "sports": 0.0037,
+        "arts_entertainment": 0.0037
+      },
+      "scores": {
+        "claude-fable-5.2": 25.507,
+        "gpt-6.2-sol": 27.515,
+        "gemini-4-neon": 25.928
+      },
+      "started_at": 1795559362.692954,
+      "ended_at": 1795559371.6551301,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559362-3f3vuRzmOCh1nSUDFlrH",
+        "prompt_tokens": 3137,
+        "completion_tokens": 664,
+        "total_tokens": 3801,
+        "cost": 0.0423452,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 1526,
+          "cache_write_tokens": 1296,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0423452,
+          "upstream_inference_prompt_cost": 0.0157852,
+          "upstream_inference_completions_cost": 0.02656
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "lens",
+        "field": "narrative and visual arts",
+        "tier": "far",
+        "labels": {
+          "Lens": 1,
+          "Inference": 1,
+          "Claim": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": true,
+        "cue": null
+      }
+    },
+    {
+      "index": 6,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "text": "Lens kept: Die gespeicherte Ladung entspricht der Fabel, der Spannungseinbruch verändert, was davon unter Last sichtbar wird. Anders als ein unzuverlässiger Erzähler verfälscht die Kälte aber nicht bloß die Darstellung: Die Abschaltgrenze beschränkt tatsächlich die abrufbare Energie. Der vorgeschlagene Erwärmungstest bleibt sinnvoll, wenn man die abrufbare Energie statt nur der Reichweitenanzeige vergleicht.\n\nEvidence: Die von Jaguemont, Boulon und Dubé (2016) beschriebene höhere Impedanz erklärt, warum der Unterschied bei hoher Leistungsanforderung deutlicher ausfällt. Für den Test wären daher vergleichbare Akkus mit gleichem anfänglichem Ladezustand, identischer Last und derselben Abschaltgrenze nötig; die Erwärmung sollte von außen erfolgen.\n\nInference: Liefert der erwärmte Akku unter diesen Bedingungen mehr Energie, zeigt das, dass ein Teil des Kälteverlusts ohne Nachladen rückgängig ist.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0037,
+        "international_relations": 0.0037,
+        "government": 0.0037,
+        "elections": 0.0037,
+        "law_crime": 0.0037,
+        "accidents": 0.0037,
+        "natural_disasters_climate": 0.0037,
+        "health_medicine": 0.0037,
+        "business_economy": 0.0754,
+        "ai_ml": 0.011,
+        "computing_software": 0.0037,
+        "space_astronomy": 0.0037,
+        "science_research": 0.8692,
+        "sports": 0.0037,
+        "arts_entertainment": 0.0037
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.515,
+        "gemini-4-neon": 25.928
+      },
+      "started_at": 1795559371.6590302,
+      "ended_at": 1795559379.568049,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559371-7KPAO53AOCpxPf77RzVZ",
+        "prompt_tokens": 1867,
+        "completion_tokens": 301,
+        "total_tokens": 2168,
+        "cost": 0,
+        "is_byok": true,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 1864,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.007676,
+          "upstream_inference_prompt_cost": 0.004666,
+          "upstream_inference_completions_cost": 0.00301
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "sentinel",
+      "explore": {
+        "kind": "check",
+        "field": "narrative and visual arts",
+        "tier": null,
+        "labels": {
+          "Lens kept": 1,
+          "Evidence": 1,
+          "Inference": 1
+        },
+        "has_wws": false,
+        "lens_verdict": "kept",
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 7,
+      "model": "gemini-4-neon",
+      "phase": "think",
+      "text": "Inference: Weil sich im Elektroauto drei Effekte überlagern – der reversible Spannungsabfall durch höhere Zellimpedanz (Notizen 1–2), der Energiebedarf für Kabinen- und Akkuheizung sowie die gedrosselte Rekuperation –, ist der Winterreichweitenverlust kein reiner Kapazitätsverlust, sondern das Ergebnis aus Elektrochemie, Thermomanagement und Fahrprofil.\n\nClaim: Für den Alltag folgen vier klare Konsequenzen: am Netz vorheizen, vor Schnellladungen per Navi vorkonditionieren, möglichst direkt nach der Fahrt mit Restwärme laden und mehr Ladezustandspuffer sowie früheres mechanisches Bremsen bei schwächerer Rekuperation einplanen.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0039,
+        "international_relations": 0.0039,
+        "government": 0.0039,
+        "elections": 0.0039,
+        "law_crime": 0.0039,
+        "accidents": 0.0039,
+        "natural_disasters_climate": 0.0202,
+        "health_medicine": 0.0039,
+        "business_economy": 0.0867,
+        "ai_ml": 0.0131,
+        "computing_software": 0.0039,
+        "space_astronomy": 0.0039,
+        "science_research": 0.8373,
+        "sports": 0.0039,
+        "arts_entertainment": 0.0039
+      },
+      "scores": {
+        "claude-fable-5.2": 25.526,
+        "gpt-6.2-sol": 27.536,
+        "gemini-4-neon": 25.944
+      },
+      "started_at": 1795559379.5741134,
+      "ended_at": 1795559395.6551425,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559379-GfrROfCFj4oWjsWcKNro",
+        "prompt_tokens": 2003,
+        "completion_tokens": 1717,
+        "total_tokens": 3720,
+        "cost": 0.031764,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.031764,
+          "upstream_inference_prompt_cost": 0.006009,
+          "upstream_inference_completions_cost": 0.025755
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1454,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Inference": 1,
+          "Claim": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 8,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "text": "Correction:\nClaim: Schwächere Rekuperation bedeutet nicht bei jedem Auto, dass man früher bremsen muss: Manche Modelle gleichen sie durch die Reibbremse aus. Entscheidend ist, ob das Fahrzeug beim Lupfen des Fahrpedals tatsächlich schwächer verzögert; darauf sollte man sich besonders bei Gefälle einstellen.\n\nPrinciple: In der Elektrochemie ist Lithium-Plating keine Frage einer festen Nullgradgrenze. Ob sich metallisches Lithium abscheidet, hängt neben der Zelltemperatur unter anderem vom Ladestrom, vom Ladezustand und vom Zellaufbau ab. Die zuvor genannten 0 °C sind daher nur eine grobe Orientierung, keine allgemeine Grenze für sicheres Laden.\n\nInference: Restwärme nach einer Fahrt ist vor allem dann nützlich, wenn die Akkutemperatur die gewünschte Ladeleistung begrenzt. Nach einer kurzen Fahrt kann der Akku noch kalt sein; für langsames AC-Laden muss man dagegen nicht allein wegen der Kälte auf eine längere Fahrt warten, weil das Batteriemanagement den zulässigen Ladestrom regelt.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0041,
+        "international_relations": 0.0041,
+        "government": 0.0041,
+        "elections": 0.0041,
+        "law_crime": 0.0041,
+        "accidents": 0.0041,
+        "natural_disasters_climate": 0.0334,
+        "health_medicine": 0.0041,
+        "business_economy": 0.0755,
+        "ai_ml": 0.0149,
+        "computing_software": 0.0041,
+        "space_astronomy": 0.0041,
+        "science_research": 0.8309,
+        "sports": 0.0041,
+        "arts_entertainment": 0.0041
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.533,
+        "gemini-4-neon": 25.947
+      },
+      "started_at": 1795559402.5642045,
+      "ended_at": 1795559410.7856925,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559402-KAui6Q5XMUFqhIlNx6zv",
+        "prompt_tokens": 2114,
+        "completion_tokens": 283,
+        "total_tokens": 2397,
+        "cost": 0,
+        "is_byok": true,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 2111,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.0081135,
+          "upstream_inference_prompt_cost": 0.0052835,
+          "upstream_inference_completions_cost": 0.00283
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "sentinel",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Correction": 1,
+          "Claim": 1,
+          "Principle": 1,
+          "Inference": 1
+        },
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 9,
+      "model": "gemini-4-neon",
+      "phase": "think",
+      "text": "Claim: Neben Elektrochemie und Heizbedarf erhöhen auch äußere Fahrwiderstände den Winterverbrauch: Kalte Luft ist dichter und steigert den Luftwiderstand, Winterreifen sowie nasse Fahrbahnen erhöhen den Rollwiderstand (ergänzt Notiz 8).\n\nPrinciple: Nach der chemischen Kinetik (Arrhenius, Notiz 2) verlangsamt Kälte auch unerwünschte Nebenreaktionen. Die kalendarische Alterung eines ruhenden Akkus sinkt bei Kälte sogar; schädlich ist erst das Laden mit zu hohem Strom im kalten Zustand.\n\nNext: Ursachen, BMS-Eingriffe und Praxistipps für die Schlussantwort kompakt strukturieren.\n\nWhere we stand: Kälte mindert die nutzbare Akkukapazität reversibel über höheren Innenwiderstand und Spannungsabfall, weshalb Elektroautos im Winter zusammen mit Heizbedarf, gedrosselter Rekuperation und Fahrwiderständen an Reichweite und Ladeleistung verlieren (Konfidenz: hoch; schwächste Annahme: genaue Anteile einzelner Faktoren ohne aktuelle Modell-Messdaten).",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0041,
+        "international_relations": 0.0041,
+        "government": 0.0041,
+        "elections": 0.0041,
+        "law_crime": 0.0041,
+        "accidents": 0.0041,
+        "natural_disasters_climate": 0.0334,
+        "health_medicine": 0.0041,
+        "business_economy": 0.0755,
+        "ai_ml": 0.015,
+        "computing_software": 0.0041,
+        "space_astronomy": 0.0041,
+        "science_research": 0.8308,
+        "sports": 0.0041,
+        "arts_entertainment": 0.0041
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.533,
+        "gemini-4-neon": 25.947
+      },
+      "started_at": 1795559410.7899678,
+      "ended_at": 1795559425.4870863,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559411-q6PoYDeGaeoJNy3oTDDD",
+        "prompt_tokens": 2365,
+        "completion_tokens": 1649,
+        "total_tokens": 4014,
+        "cost": 0.03183,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.03183,
+          "upstream_inference_prompt_cost": 0.007095,
+          "upstream_inference_completions_cost": 0.024735
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1411,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {
+          "Claim": 1,
+          "Principle": 1,
+          "Next": 1,
+          "Where we stand": 1
+        },
+        "has_wws": true,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 10,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "text": "",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.004,
+        "international_relations": 0.004,
+        "government": 0.004,
+        "elections": 0.004,
+        "law_crime": 0.004,
+        "accidents": 0.004,
+        "natural_disasters_climate": 0.0187,
+        "health_medicine": 0.004,
+        "business_economy": 0.0881,
+        "ai_ml": 0.0136,
+        "computing_software": 0.004,
+        "space_astronomy": 0.004,
+        "science_research": 0.8352,
+        "sports": 0.004,
+        "arts_entertainment": 0.004
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.538,
+        "gemini-4-neon": 25.945
+      },
+      "started_at": 1795559425.49086,
+      "ended_at": 1795559426.814879,
+      "aborted": true,
+      "usage": {
+        "generation_id": "gen-1795559425-QjIPT2T24HyQAKnaTGf6"
+      },
+      "note": "marker",
+      "explore": {
+        "kind": "main",
+        "field": null,
+        "tier": null,
+        "labels": {},
+        "has_wws": false,
+        "lens_verdict": null,
+        "lens_prefix_ok": null,
+        "cue": null
+      }
+    },
+    {
+      "index": 11,
+      "model": "gemini-4-neon",
+      "phase": "answer",
+      "text": "### Warum verlieren Lithium-Ionen-Akkus bei Kälte an Kapazität?\n\nBei Kälte verliert ein Lithium-Ionen-Akku vor allem **vorübergehend nutzbare** Kapazität – es handelt sich um einen reversiblen physikalischen Effekt, nicht um dauerhafte Alterung (im Ruhezustand verlangsamt Kälte die kalendarische Alterung sogar).\n\nDie Ursache liegt in der Elektrochemie: Mit sinkender Temperatur verlangsamen sich die elektrochemischen Reaktionen an den Elektroden und die Beweglichkeit der Lithium-Ionen (gemäß der Arrhenius-Gleichung); zudem wird der flüssige Elektrolyt zähflüssiger. Dadurch steigt der Innenwiderstand (die Impedanz) der Zellen stark an. Unter Last fällt die Klemmenspannung dadurch deutlich tiefer ab, sodass der Akku seine Entladeschlussgrenze früher erreicht, obwohl noch Ladung gespeichert ist. Erwärmt sich der Akku wieder, steht ein Teil dieser zuvor nicht abrufbaren Energie ohne Nachladen wieder zur Verfügung.\n\nEntscheidend ist dabei immer die **Zelltemperatur**, nicht allein die Außentemperatur. LFP-Zellen gelten insgesamt als kälteempfindlicher als NMC-Zellen (vor allem beim Laden), und ihre flache Spannungskennlinie erschwert bei Kälte zusätzlich die genaue Schätzung des Ladezustands.\n\n---\n\n### Schutzmaßnahmen im Auto: Laden und Rekuperation\n\nKälte allein schädigt den Akku nicht, wohl aber das Laden kalter Zellen mit zu hohem Strom. Dabei droht sogenanntes **Lithium-Plating** – die dauerhafte Abscheidung von metallischem Lithium an der Graphitanode. Ob es dazu kommt, hängt nicht von einer starren Grenze (etwa 0 °C) ab, sondern vom Zusammenspiel aus Zelltemperatur, Ladestrom, Ladezustand und Zellaufbau.\n\nUm die Zellen zu schützen, drosselt das Batteriemanagementsystem (BMS) bei kaltem Akku sowohl die **Schnellladeleistung** als auch die **Rekuperation** (Energierückgewinnung beim Verzögern), bis die Zellen ausreichend erwärmt sind.\n\n---\n\n### Was folgt daraus für Elektroautos im Winter?\n\nDer Reichweitenverlust im Winter ist kein reiner Kapazitätsverlust, sondern das Ergebnis mehrerer überlagerter Effekte:\n* **Reversibler Zelleffekt** durch höheren Innenwiderstand.\n* **Heizbedarf** für Innenraum und Akku (Wärmepumpen arbeiten bei mildem Frost deutlich effizienter als reine Widerstandsheizer, verlieren bei sehr tiefen Temperaturen aber an Leistungszahl).\n* **Gedrosselte Rekuperation**, was besonders im Stadt- und Gefälleverkehr Effizienz kostet.\n* **Höhere Fahrwiderstände** durch dichtere kalte Luft, Winterreifen sowie nasse oder verschneite Straßen.\n\nWeil Thermomanagement, Modell und Fahrprofil stark variieren, ist ein pauschaler Winterabschlag auf die WLTP-Reichweite unzuverlässig. Vor allem viele kurze Fahrten mit Abkühlpausen erhöhen den Verbrauch pro Kilometer deutlich.\n\n**Praktische Konsequenzen für den Alltag:**\n1. **Am Stromnetz vorheizen:** Innenraum – und je nach Modell auch den Akku – vor der Abfahrt an der Wallbox oder Steckdose vorwärmen, um die Fahrbatterie zu schonen.\n2. **Vor dem Schnellladen vorkonditionieren:** Die Schnellladesäule im bordeigenen Navi als Ziel eingeben, damit das Fahrzeug den Akku unterwegs auf eine günstige Ladetemperatur bringen kann. Ein warmer Innenraum ist kein Zeichen für einen warmen Akku.\n3. **Restwärme sinnvoll nutzen:** Direkt nach einer längeren Fahrt an den Schnelllader zu fahren spart Ladezeit. Für langsames AC-Laden muss man hingegen nicht extra vorher fahren, da das BMS den Ladestrom ohnehin sicher begrenzt.\n4. **Mehr Puffer einplanen und Bremsverhalten prüfen:** Einen größeren Ladezustandspuffer lassen, da bei niedrigem Akkustand und Kälte eher Leistungsbegrenzungen oder ungenaue Restreichweiten auftreten (besonders bei LFP-Akkus). Da die Rekuperation bei kaltem Akku schwächer ausfallen kann, sollte man – sofern das Fahrzeug dies nicht automatisch über die Reibbremse ausgleicht – insbesondere bei Gefälle auf eine geringere Verzögerung beim Gaswegnehmen gefasst sein.\n\n---\n\n**Basis:**\n* Physikalische Chemie / Arrhenius-Gleichung (exponentielle Verlangsamung von Ionentransport, Reaktionskinetik und Alterungs-Nebenreaktionen bei Kälte; Viskositätsanstieg des Elektrolyten).\n* Jaguemont, Boulon & Dubé (*Applied Energy*, 2016) zur höheren Impedanz sowie geringeren verfügbaren Energie und Leistung von Lithium-Ionen-Akkus bei niedrigen Temperaturen.\n* Elektrochemische Grundlagen zu Lithium-Plating (Abhängigkeit von Temperatur, Ladestrom, Ladezustand und Zellaufbau) sowie BMS-Schutzfunktionen (Drosselung von Ladeleistung und Rekuperation).\n* Allgemeine Physik der Fahrwiderstände (Luftdichte, Rollwiderstand) und Thermomanagement-Eigenschaften (Wärmepumpen-Effizienz bei tiefen Temperaturen, Vorkonditionierung, LFP- vs. NMC-Verhalten).\n* Grobe Größenordnung der modellabhängigen Winter-Reichweitenabweichungen aus norwegischen NAF/Motor-Wintertests („El Prix“, grob 5 bis über 30 % gegenüber WLTP; genaue aktuelle Werte können sich geändert haben).\n\n**Not resolved:**\n* Belastbare, aktuelle Vergleichswerte aus den jüngsten Wintertests (z. B. NAF „El Prix“ oder ADAC) für aktuelle Fahrzeugmodelle.\n* Die exakte quantitative Aufteilung des Winter-Reichweitenverlusts zwischen Zellchemie (LFP vs. NMC), Thermomanagement/Wärmepumpe bei sehr tiefen Temperaturen und äußeren Fahrwiderständen je nach Modell.",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0026,
+        "international_relations": 0.0026,
+        "government": 0.0026,
+        "elections": 0.0026,
+        "law_crime": 0.0026,
+        "accidents": 0.0026,
+        "natural_disasters_climate": 0.015,
+        "health_medicine": 0.0026,
+        "business_economy": 0.0726,
+        "ai_ml": 0.0098,
+        "computing_software": 0.0026,
+        "space_astronomy": 0.0026,
+        "science_research": 0.8734,
+        "sports": 0.0026,
+        "arts_entertainment": 0.0026
+      },
+      "scores": {
+        "gpt-6.2-sol": 27.512,
+        "gemini-4-neon": 25.926
+      },
+      "started_at": 1795559426.8217146,
+      "ended_at": 1795559447.9032905,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795559427-3ky9LHufP0tIrNbcRoEu",
+        "prompt_tokens": 2330,
+        "completion_tokens": 2416,
+        "total_tokens": 4746,
+        "cost": 0.04323,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.04323,
+          "upstream_inference_prompt_cost": 0.00699,
+          "upstream_inference_completions_cost": 0.03624
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1141,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": null
+    }
+  ],
+  "answer": "### Warum verlieren Lithium-Ionen-Akkus bei Kälte an Kapazität?\n\nBei Kälte verliert ein Lithium-Ionen-Akku vor allem **vorübergehend nutzbare** Kapazität – es handelt sich um einen reversiblen physikalischen Effekt, nicht um dauerhafte Alterung (im Ruhezustand verlangsamt Kälte die kalendarische Alterung sogar).\n\nDie Ursache liegt in der Elektrochemie: Mit sinkender Temperatur verlangsamen sich die elektrochemischen Reaktionen an den Elektroden und die Beweglichkeit der Lithium-Ionen (gemäß der Arrhenius-Gleichung); zudem wird der flüssige Elektrolyt zähflüssiger. Dadurch steigt der Innenwiderstand (die Impedanz) der Zellen stark an. Unter Last fällt die Klemmenspannung dadurch deutlich tiefer ab, sodass der Akku seine Entladeschlussgrenze früher erreicht, obwohl noch Ladung gespeichert ist. Erwärmt sich der Akku wieder, steht ein Teil dieser zuvor nicht abrufbaren Energie ohne Nachladen wieder zur Verfügung.\n\nEntscheidend ist dabei immer die **Zelltemperatur**, nicht allein die Außentemperatur. LFP-Zellen gelten insgesamt als kälteempfindlicher als NMC-Zellen (vor allem beim Laden), und ihre flache Spannungskennlinie erschwert bei Kälte zusätzlich die genaue Schätzung des Ladezustands.\n\n---\n\n### Schutzmaßnahmen im Auto: Laden und Rekuperation\n\nKälte allein schädigt den Akku nicht, wohl aber das Laden kalter Zellen mit zu hohem Strom. Dabei droht sogenanntes **Lithium-Plating** – die dauerhafte Abscheidung von metallischem Lithium an der Graphitanode. Ob es dazu kommt, hängt nicht von einer starren Grenze (etwa 0 °C) ab, sondern vom Zusammenspiel aus Zelltemperatur, Ladestrom, Ladezustand und Zellaufbau.\n\nUm die Zellen zu schützen, drosselt das Batteriemanagementsystem (BMS) bei kaltem Akku sowohl die **Schnellladeleistung** als auch die **Rekuperation** (Energierückgewinnung beim Verzögern), bis die Zellen ausreichend erwärmt sind.\n\n---\n\n### Was folgt daraus für Elektroautos im Winter?\n\nDer Reichweitenverlust im Winter ist kein reiner Kapazitätsverlust, sondern das Ergebnis mehrerer überlagerter Effekte:\n* **Reversibler Zelleffekt** durch höheren Innenwiderstand.\n* **Heizbedarf** für Innenraum und Akku (Wärmepumpen arbeiten bei mildem Frost deutlich effizienter als reine Widerstandsheizer, verlieren bei sehr tiefen Temperaturen aber an Leistungszahl).\n* **Gedrosselte Rekuperation**, was besonders im Stadt- und Gefälleverkehr Effizienz kostet.\n* **Höhere Fahrwiderstände** durch dichtere kalte Luft, Winterreifen sowie nasse oder verschneite Straßen.\n\nWeil Thermomanagement, Modell und Fahrprofil stark variieren, ist ein pauschaler Winterabschlag auf die WLTP-Reichweite unzuverlässig. Vor allem viele kurze Fahrten mit Abkühlpausen erhöhen den Verbrauch pro Kilometer deutlich.\n\n**Praktische Konsequenzen für den Alltag:**\n1. **Am Stromnetz vorheizen:** Innenraum – und je nach Modell auch den Akku – vor der Abfahrt an der Wallbox oder Steckdose vorwärmen, um die Fahrbatterie zu schonen.\n2. **Vor dem Schnellladen vorkonditionieren:** Die Schnellladesäule im bordeigenen Navi als Ziel eingeben, damit das Fahrzeug den Akku unterwegs auf eine günstige Ladetemperatur bringen kann. Ein warmer Innenraum ist kein Zeichen für einen warmen Akku.\n3. **Restwärme sinnvoll nutzen:** Direkt nach einer längeren Fahrt an den Schnelllader zu fahren spart Ladezeit. Für langsames AC-Laden muss man hingegen nicht extra vorher fahren, da das BMS den Ladestrom ohnehin sicher begrenzt.\n4. **Mehr Puffer einplanen und Bremsverhalten prüfen:** Einen größeren Ladezustandspuffer lassen, da bei niedrigem Akkustand und Kälte eher Leistungsbegrenzungen oder ungenaue Restreichweiten auftreten (besonders bei LFP-Akkus). Da die Rekuperation bei kaltem Akku schwächer ausfallen kann, sollte man – sofern das Fahrzeug dies nicht automatisch über die Reibbremse ausgleicht – insbesondere bei Gefälle auf eine geringere Verzögerung beim Gaswegnehmen gefasst sein.\n\n---\n\n**Basis:**\n* Physikalische Chemie / Arrhenius-Gleichung (exponentielle Verlangsamung von Ionentransport, Reaktionskinetik und Alterungs-Nebenreaktionen bei Kälte; Viskositätsanstieg des Elektrolyten).\n* Jaguemont, Boulon & Dubé (*Applied Energy*, 2016) zur höheren Impedanz sowie geringeren verfügbaren Energie und Leistung von Lithium-Ionen-Akkus bei niedrigen Temperaturen.\n* Elektrochemische Grundlagen zu Lithium-Plating (Abhängigkeit von Temperatur, Ladestrom, Ladezustand und Zellaufbau) sowie BMS-Schutzfunktionen (Drosselung von Ladeleistung und Rekuperation).\n* Allgemeine Physik der Fahrwiderstände (Luftdichte, Rollwiderstand) und Thermomanagement-Eigenschaften (Wärmepumpen-Effizienz bei tiefen Temperaturen, Vorkonditionierung, LFP- vs. NMC-Verhalten).\n* Grobe Größenordnung der modellabhängigen Winter-Reichweitenabweichungen aus norwegischen NAF/Motor-Wintertests („El Prix“, grob 5 bis über 30 % gegenüber WLTP; genaue aktuelle Werte können sich geändert haben).\n\n**Not resolved:**\n* Belastbare, aktuelle Vergleichswerte aus den jüngsten Wintertests (z. B. NAF „El Prix“ oder ADAC) für aktuelle Fahrzeugmodelle.\n* Die exakte quantitative Aufteilung des Winter-Reichweitenverlusts zwischen Zellchemie (LFP vs. NMC), Thermomanagement/Wärmepumpe bei sehr tiefen Temperaturen und äußeren Fahrwiderständen je nach Modell.",
+  "started_at": 1795559308.782618,
+  "ended_at": 1795559447.9053483,
+  "switches": 10,
+  "share_by_model": {
+    "gpt-6.2-sol": 0.41825950078704743,
+    "gemini-4-neon": 0.3710366539239937,
+    "claude-fable-5.2": 0.21070384528895886
+  },
+  "explore": {
+    "preset": "explore",
+    "seed": 7,
+    "seed_source": "run",
+    "config": {
+      "enabled": true,
+      "seed": null,
+      "min_segments": 6,
+      "require_labels": [
+        "Evidence:",
+        "Alternative set aside:",
+        "Open question:"
+      ],
+      "where_we_stand_window": 2,
+      "max_forced_continuations": 3,
+      "loop_overlap_jaccard": 0.5,
+      "cues": [
+        "Alternatively, ",
+        "One thing not yet checked: ",
+        "The strongest objection to the current conclusion is ",
+        "Perhaps the missing piece is ",
+        "Before closing, the weakest assumption above is "
+      ],
+      "lens": {
+        "p": 0.25,
+        "p_stagnation": 0.5,
+        "min": 1,
+        "max": 2,
+        "first_index": 2,
+        "cooldown": 2,
+        "tiers": {
+          "mid": 0.55,
+          "far": 0.35,
+          "near": 0.1
+        },
+        "exclude_from_window": true,
+        "check_other_model": true
+      },
+      "vs_menu": "off",
+      "answer_basis": true
+    },
+    "think_segments": 11,
+    "main_line_segments": 9,
+    "lens_segments": 1,
+    "check_segments": 1,
+    "continue_segments": 0,
+    "kinds": [
+      "main",
+      "main",
+      "main",
+      "main",
+      "main",
+      "lens",
+      "check",
+      "main",
+      "main",
+      "main",
+      "main"
+    ],
+    "topics": [
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research",
+      "science_research"
+    ],
+    "topics_visited": {
+      "all": 1,
+      "main_line": 1
+    },
+    "topic_entropy_bits": {
+      "mean_posterior": 1.0831,
+      "argmax_histogram": 0.0
+    },
+    "topic_switches": 0,
+    "lens": {
+      "offered": 1,
+      "written": 1,
+      "ignored": 0,
+      "kept": 1,
+      "dropped": 0,
+      "unverified": 0,
+      "fields": [
+        "narrative and visual arts"
+      ],
+      "tiers": [
+        "far"
+      ],
+      "keep_rate": 1.0
+    },
+    "labels": {
+      "counts": {
+        "Claim": 9,
+        "Evidence": 3,
+        "Alternative set aside": 2,
+        "Principle": 3,
+        "Open question": 1,
+        "Inference": 7,
+        "Next": 3,
+        "Lens": 1,
+        "Lens kept": 1,
+        "Correction": 1,
+        "Where we stand": 1
+      },
+      "coverage": {
+        "two_or_more_items": 1.0,
+        "where_we_stand": 0.1
+      }
+    },
+    "wws_lines": [
+      "Kälte mindert die nutzbare Akkukapazität reversibel über höheren Innenwiderstand und Spannungsabfall, weshalb Elektroautos im Winter zusammen mit Heizbedarf, gedrosselter Rekuperation und Fahrwiderständen an Reichweite und Ladeleistung verlieren (Konfidenz: hoch; schwächste Annahme: genaue Anteile einzelner Faktoren ohne aktuelle Modell-Messdaten)."
+    ],
+    "answer_flips": 0,
+    "premature_finals": [],
+    "forced_continuations": 0,
+    "first_final_index": 10,
+    "gate_open": true,
+    "gate_missing_at_final": null,
+    "loop_stop": false,
+    "ngram_overlap_last2": 0.0,
+    "notes_chars": 8894,
+    "notes_tokens_est": 2223,
+    "garble": 0,
+    "vs_menu": {
+      "mode": "off",
+      "calls": 0,
+      "parsed": 0,
+      "chosen_p": [],
+      "menus": [],
+      "errors": [],
+      "skipped": null
+    }
+  },
+  "usage": {
+    "claude-fable-5.2": {
+      "calls": 4,
+      "prompt_tokens": 9641,
+      "completion_tokens": 1650,
+      "total_tokens": 11291,
+      "cost": 0.1405336,
+      "prompt_tokens_details": {
+        "cached_tokens": 2088,
+        "cache_write_tokens": 6846,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.1405336,
+        "upstream_inference_prompt_cost": 0.0745336,
+        "upstream_inference_completions_cost": 0.066
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "gpt-6.2-sol": {
+      "calls": 5,
+      "prompt_tokens": 5640,
+      "completion_tokens": 1180,
+      "total_tokens": 6820,
+      "cost": 0,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 5113,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.0256365,
+        "upstream_inference_prompt_cost": 0.0138365,
+        "upstream_inference_completions_cost": 0.011800000000000001
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "gemini-4-neon": {
+      "calls": 5,
+      "prompt_tokens": 8815,
+      "completion_tokens": 8488,
+      "total_tokens": 17303,
+      "cost": 0.15376499999999999,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.15376499999999999,
+        "upstream_inference_prompt_cost": 0.026445,
+        "upstream_inference_completions_cost": 0.12732
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 6122,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    }
+  },
+  "latency": {
+    "total_s": 139.1228,
+    "first_delta_s": 5.7086,
+    "segments": [
+      {
+        "index": 0,
+        "model": "gpt-6.2-sol",
+        "phase": "think",
+        "ttft_s": 2.4929,
+        "duration_s": 9.5872
+      },
+      {
+        "index": 1,
+        "model": "gemini-4-neon",
+        "phase": "think",
+        "ttft_s": 9.5802,
+        "duration_s": 11.9019
+      },
+      {
+        "index": 2,
+        "model": "claude-fable-5.2",
+        "phase": "think",
+        "ttft_s": 2.8596,
+        "duration_s": 8.7134
+      },
+      {
+        "index": 3,
+        "model": "gpt-6.2-sol",
+        "phase": "think",
+        "ttft_s": 1.5252,
+        "duration_s": 7.9483
+      },
+      {
+        "index": 4,
+        "model": "gemini-4-neon",
+        "phase": "think",
+        "ttft_s": 10.2012,
+        "duration_s": 12.668
+      },
+      {
+        "index": 5,
+        "model": "claude-fable-5.2",
+        "phase": "think",
+        "ttft_s": 2.4529,
+        "duration_s": 8.9622
+      },
+      {
+        "index": 6,
+        "model": "gpt-6.2-sol",
+        "phase": "think",
+        "ttft_s": 1.2705,
+        "duration_s": 7.909
+      },
+      {
+        "index": 7,
+        "model": "gemini-4-neon",
+        "phase": "think",
+        "ttft_s": 13.931,
+        "duration_s": 16.081
+      },
+      {
+        "index": 8,
+        "model": "gpt-6.2-sol",
+        "phase": "think",
+        "ttft_s": 1.7252,
+        "duration_s": 8.2215
+      },
+      {
+        "index": 9,
+        "model": "gemini-4-neon",
+        "phase": "think",
+        "ttft_s": 12.7533,
+        "duration_s": 14.6971
+      },
+      {
+        "index": 10,
+        "model": "gpt-6.2-sol",
+        "phase": "think",
+        "ttft_s": 1.3218,
+        "duration_s": 1.324
+      },
+      {
+        "index": 11,
+        "model": "gemini-4-neon",
+        "phase": "answer",
+        "ttft_s": 10.4346,
+        "duration_s": 21.0816
+      }
+    ],
+    "per_model": {
+      "gpt-6.2-sol": {
+        "segments": 5,
+        "mean_ttft_s": 1.6671,
+        "mean_duration_s": 6.998
+      },
+      "gemini-4-neon": {
+        "segments": 5,
+        "mean_ttft_s": 11.3801,
+        "mean_duration_s": 15.2859
+      },
+      "claude-fable-5.2": {
+        "segments": 2,
+        "mean_ttft_s": 2.6562,
+        "mean_duration_s": 8.8378
+      }
+    }
+  },
+  "usage_total": {
+    "calls": 14,
+    "prompt_tokens": 24096,
+    "completion_tokens": 11318,
+    "total_tokens": 35414,
+    "cost": 0.29429859999999997,
+    "prompt_tokens_details": {
+      "cached_tokens": 2088,
+      "cache_write_tokens": 11959,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.31993510000000003,
+      "upstream_inference_prompt_cost": 0.1148151,
+      "upstream_inference_completions_cost": 0.20512
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 6122,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  },
+  "usage_complete": false,
+  "usage_missing": [
+    {
+      "index": 10,
+      "model": "gpt-6.2-sol",
+      "phase": "think",
+      "attempt": 0,
+      "finish_reason": "marker",
+      "generation_id": "gen-1795559425-QjIPT2T24HyQAKnaTGf6"
+    }
+  ],
+  "run_id": "5513d931e0234096",
+  "status": "ok",
+  "dropped": [
+    {
+      "index": 0,
+      "model": "claude-fable-5.2",
+      "phase": "think",
+      "attempt": 0,
+      "reason": "refused",
+      "finish_reason": "content_filter",
+      "error": "refused: This request was blocked as it seems to violate Anthropic's Terms of Service restrictions on reverse engineering or duplicating model outputs. To learn more, visit https://www.anthropic.com/legal/commercial-terms."
+    },
+    {
+      "index": 8,
+      "model": "claude-fable-5.2",
+      "phase": "think",
+      "attempt": 0,
+      "reason": "refused",
+      "finish_reason": "content_filter",
+      "error": "refused: This request was blocked as it seems to violate Anthropic's Terms of Service restrictions on reverse engineering or duplicating model outputs. To learn more, visit https://www.anthropic.com/legal/commercial-terms."
+    }
+  ],
+  "refusals": {
+    "claude-fable-5.2": 2
+  },
+  "disabled": [
+    "claude-fable-5.2"
+  ]
+}
