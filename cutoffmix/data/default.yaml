@@ -115,3 +115,4 @@ explore:
     check_other_model: true       # the check is routed away from the lens writer
   vs_menu: "off"                  # off | stagnation | every_lens; the side call always runs on gpt-6.2-sol
   answer_basis: true              # the answer ends with 'Basis:' and 'Not resolved:'
+  light_schema_models: []         # default system prompt + tail without the label checklist (Fable's input filter)

@@ -207,6 +207,7 @@ Das Preset setzt deshalb auf Protokoll statt Sampling:
 | **Abschluss-Sperre** | `FINAL ANSWER` wird erst akzeptiert, wenn mindestens 6 Hauptabschnitte vorliegen und das Protokoll `Evidence:`, `Alternative set aside:` und `Open question:` enthält. |
 | **Fortsetzung statt „Wait“** (`continue`) | Schließt ein Modell zu früh ab, bleibt sein Notizteil erhalten, die Antwort wird verworfen, und ein anderes Modell setzt mit einem inhaltlichen Einstieg fort („Alternatively, …“, „The strongest objection to the current conclusion is …“). Höchstens dreimal; bei Wiederholung wird die Antwort akzeptiert. |
 | **Sol** | `verbosity: medium` für Notizen, `low` für die Antwort, fester `seed` pro Abschnitt. |
+| **Fable: abgeschwächte Vorgabe** (`light_schema_models`) | Fable bekommt den Standard-Systemprompt und einen Schlussblock ohne die Liste beschrifteter Punkte; Nummer der Notiz, Blickwinkel-/Prüf-/Fortsetzungsanweisung und die Freigabe zum Abschluss bleiben. Beides ist live nachgewiesen durchgelassen (erster Abschnitt und Blickwinkel-Abschnitt mit Notizen). Fables Notizen tragen deshalb meist keine Labels; die Checkliste wird von Sol und Neon erfüllt. |
 | **Optional** `vs_menu: stagnation` | Bei festgefahrener Kette fragt ein Nebenaufruf an Sol fünf Richtungen mit Wahrscheinlichkeiten ab (Verbalized Sampling) und der Client wählt eine unwahrscheinliche. Standardmäßig aus. |
 
 **Messwerte** stehen in `done.explore` bzw. im Trace: besuchte Themen und ihre Entropie, Blickwinkel

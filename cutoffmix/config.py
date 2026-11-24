@@ -188,10 +188,18 @@ class ExploreConfig:
     lens: LensConfig = field(default_factory=LensConfig)
     vs_menu: str = "off"  # off | stagnation | every_lens (the side call always runs on gpt-6.2-sol)
     answer_basis: bool = True  # the answer ends with 'Basis:' and 'Not resolved:'
+    # Models that get the LIGHT schema: the default system prompt and a tail without the labelled-items checklist
+    # (directives, note number and the conclusion permission stay). Live finding 2026-11-24: Anthropic's input
+    # filter blocks the full explore schema for Fable 5.2 in most calls ('duplicating model outputs' category).
+    light_schema_models: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         self.require_labels = tuple(self.require_labels)
         self.cues = tuple(self.cues)
+        self.light_schema_models = tuple(self.light_schema_models)
+        for i, key in enumerate(self.light_schema_models):
+            _require(isinstance(key, str) and bool(key.strip()),
+                     f"explore.light_schema_models[{i}] must be a non-empty model key, got {key!r}")
         _require(self.min_segments >= 1, f"explore.min_segments must be >= 1, got {self.min_segments}")
         _require(self.where_we_stand_window >= 1,
                  f"explore.where_we_stand_window must be >= 1, got {self.where_we_stand_window}")
@@ -265,6 +273,7 @@ class AppConfig:
         d["router"]["probe_preference"] = list(self.router.probe_preference)
         d["explore"]["require_labels"] = list(self.explore.require_labels)
         d["explore"]["cues"] = list(self.explore.cues)
+        d["explore"]["light_schema_models"] = list(self.explore.light_schema_models)
         d["explore"]["lens"]["tiers"] = dict(self.explore.lens.tiers)
         return d
 

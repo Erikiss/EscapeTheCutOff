@@ -225,7 +225,8 @@ async def test_requests_carry_the_explore_prompts_tail_and_seed():
     system = relay_system_prompt_explore(64, "2026-11-24", SENTINEL, "FINAL ANSWER:")
     assert all(r.system_override == system for r in reqs)
     assert [r.metadata for r in reqs] == [
-        {"segment": i, "phase": "think", "segment_index": i, "seed": 11, "kind": "main"} for i in range(3)]
+        {"segment": i, "phase": "think", "segment_index": i, "seed": 11, "kind": "main", "light": False}
+        for i in range(3)]
     # note 1: the whole checklist is missing; note 2: one more main-line note; note 3: the record is complete
     missing_all = ["two more main-line notes", "an 'Evidence:' item that names its source",
                    "an 'Alternative set aside:' item", "an 'Open question:' item",

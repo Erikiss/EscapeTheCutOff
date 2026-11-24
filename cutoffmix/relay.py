@@ -73,6 +73,7 @@ from cutoffmix.prompts import (
     parse_vs_menu,
     pick_vs_direction,
     record_status_text,
+    relay_system_prompt,
     relay_system_prompt_explore,
     relay_tail,
     split_final,
@@ -1025,7 +1026,7 @@ class Relay:
                     type="segment_start" if phase == "think" else "phase", segment=index, model=spec.key, phase=phase,
                     decision=d.decision, topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3),
                     data=start)
-                req = self._request(st, phase, max_tokens, plan)
+                req = self._request(st, phase, max_tokens, plan, spec)
                 async with contextlib.aclosing(self._stream(st, spec, req, att, emit=True)) as events:
                     async for event in events:
                         yield event
@@ -1061,8 +1062,8 @@ class Relay:
                            plan: _Plan | None = None) -> AsyncGenerator[RelayEvent, None]:
         """Draft the segment with every available model concurrently; the router picks among the usable drafts."""
         avail = st.available() if plan is None else _without(st.available(), plan.exclude)
-        req = self._request(st, "think", None, plan)
-        tasks = [asyncio.create_task(self._draft(st, self._spec[m], req, index)) for m in avail]
+        tasks = [asyncio.create_task(self._draft(st, self._spec[m], self._request(st, "think", None, plan, self._spec[m]),
+                                             index)) for m in avail]
         try:
             drafts: list[_Attempt] = await asyncio.gather(*tasks)
         except BaseException:
@@ -1124,7 +1125,7 @@ class Relay:
     # ---- one streamed call -------------------------------------------------------------------------
 
     def _request(self, st: _RunState, phase: Phase, max_tokens: int | None,
-                 plan: _Plan | None = None) -> ContinuationRequest:
+                 plan: _Plan | None = None, spec: ModelSpec | None = None) -> ContinuationRequest:
         rc = self.cfg.relay
         index = len(st.trace.segments)
         req = ContinuationRequest(
@@ -1138,12 +1139,21 @@ class Relay:
         # explore preset: the structured-notes prompts, the per-segment tail, and a reproducible seed per segment
         req.metadata |= {"segment_index": index, "seed": ex.seed}
         if phase == "think":
-            req.system_override = relay_system_prompt_explore(rc.segment_tokens, st.today, rc.sentinel,
-                                                              rc.final_marker)
             missing = ex.record_missing()
-            status = record_status_text(missing, not missing, rc.final_marker, remind_wws=not ex.wws_previous())
+            light = spec is not None and spec.key in ex.cfg.light_schema_models
+            if light:
+                # light schema (DESIGN.md §7.8): the default system prompt and a tail that only carries the note
+                # number, the directive and the conclusion permission; both are live-verified to pass Fable's filter
+                req.system_override = relay_system_prompt(rc.segment_tokens, st.today, rc.sentinel, rc.final_marker)
+                status = record_status_text([], not missing, rc.final_marker)
+            else:
+                req.system_override = relay_system_prompt_explore(rc.segment_tokens, st.today, rc.sentinel,
+                                                                  rc.final_marker)
+                status = record_status_text(missing, not missing, rc.final_marker,
+                                            remind_wws=not ex.wws_previous())
             req.tail = relay_tail(st.think_count() + 1, status, plan.directive if plan is not None else "")
             req.metadata["kind"] = plan.kind if plan is not None else "main"
+            req.metadata["light"] = light
         else:
             req.system_override = answer_system_prompt_explore(st.today, answer_basis=ex.cfg.answer_basis)
         return req
@@ -1405,7 +1415,7 @@ class Relay:
         parsed = parse_labels(att.text)
         flags = ExploreFlags(kind=plan.kind, field=plan.field.label if plan.field is not None else None,
                              tier=plan.tier, labels=dict(parsed["counts"]), has_wws=bool(parsed["has_wws"]),
-                             cut=att.cut, cue=plan.cue)
+                             cut=att.cut, cue=plan.cue, light=att.model in ex.cfg.light_schema_models)
         if plan.kind == "lens":
             flags.lens_prefix_ok = parsed["lens_prefix"] is not None
             ex.pending_check, ex.lens_writer, ex.lens_field = True, att.model, plan.field

@@ -176,6 +176,7 @@ class ExploreFlags:
     lens_verdict: Literal["kept", "dropped"] | None = None  # check segments
     lens_prefix_ok: bool | None = None  # lens segments: the note opened with 'Lens (field):'
     cue: str | None = None  # continuation segments: the opening phrase asked for
+    light: bool = False  # written under the light schema (default system prompt, no label checklist in the tail)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
