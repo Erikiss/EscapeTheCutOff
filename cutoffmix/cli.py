@@ -3,7 +3,7 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-    cutoffmix serve [--host H] [--port P] [--mock]
+    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...]
     cutoffmix index show [--path FILE] [--probe P]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
@@ -221,7 +221,7 @@ class TerminalPrinter:
         if usage.get("total_tokens"):
             parts.append(f"tokens {usage['total_tokens']}")
         if usage.get("cost"):
-            parts.append(f"cost ${usage['cost']:.4f}")
+            parts.append(f"cost ${usage['cost']:.4f}" + ("" if data.get("usage_complete", True) else " (partial)"))
         return " · ".join(parts)
 
 
@@ -300,6 +300,8 @@ def _progress(stream: TextIO) -> Callable[[int, int, Any], None]:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    if not args.question.strip():
+        raise CLIError("the question must not be empty")
     relay_over: dict[str, Any] = {}
     if args.strategy:
         relay_over["strategy"] = args.strategy
@@ -358,7 +360,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     cfg = _load_cfg(args)
     if not args.mock:
         _require_key(cfg, "'cutoffmix serve'")
-    app = create_app(cfg, mock=args.mock)
+    app = create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin)
     print(f"cutoffmix {'(simulated models) ' if args.mock else ''}on http://{args.host}:{args.port}/", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
@@ -640,6 +642,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--mock", action="store_true", help="use the simulated models")
+    serve.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
+                       help="a browser origin (scheme://host[:port]) besides the server's own that may POST to the "
+                            "API, e.g. the public URL of a reverse proxy; repeatable")
     _add_config(serve)
     serve.set_defaults(func=_cmd_serve)
 

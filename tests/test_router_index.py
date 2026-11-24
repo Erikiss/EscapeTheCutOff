@@ -175,3 +175,20 @@ def test_load_index(tmp_path, monkeypatch):
     assert load_index(str(packaged)).models == MODELS
     with pytest.raises(FileNotFoundError):
         load_index(str(tmp_path / "nope.json"))
+
+
+def test_sample_scores_subtract_the_hazard_penalty():
+    # Thompson draws must carry the same -lam*H term as scores(), or the policies rank one window differently
+    for draws in (True, False):
+        idx = make_index(draws=draws)
+        post = {"government": 0.5, "sports": 0.3, "space_astronomy": 0.2}  # includes mass on an absent topic
+        pi = np.array([0.0, 0.3, 0.5])
+        pure = idx.sample_scores(post, np.random.default_rng(4))
+        assert pure == idx.sample_scores(post, np.random.default_rng(4), lam=0.0)  # default: pure cutoff draw
+        penalised = idx.sample_scores(post, np.random.default_rng(4), lam=2.0)
+        for i, m in enumerate(MODELS):
+            expected_haz = HAZ[i] @ pi + 0.2 * HAZ[i].mean()
+            assert penalised[m] == pytest.approx(pure[m] - 2.0 * expected_haz)
+        # the hazard shift equals the one in scores()
+        shift = {m: idx.scores(post, kappa=0.0, lam=2.0)[m] - idx.scores(post, kappa=0.0, lam=0.0)[m] for m in MODELS}
+        assert {m: penalised[m] - pure[m] for m in MODELS} == pytest.approx(shift)

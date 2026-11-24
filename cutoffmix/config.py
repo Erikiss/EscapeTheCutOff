@@ -88,7 +88,7 @@ class RouterConfig:
     T0: float = 0.5  # months
     beta: float = 0.25  # stickiness bonus for the current model, months
     kappa: float = 1.0  # uncertainty penalty
-    lam: float = 2.0  # stale-assertion hazard penalty, months per unit hazard
+    lam: float = 0.5  # stale-assertion hazard penalty, months per unit hazard (a tie-breaker: at most T0)
     r_min: float = 0.05
     delta: float = 0.5  # argmax hysteresis margin, months
     ema: float = 0.5  # topic-posterior EMA weight on the newest window
@@ -284,6 +284,8 @@ def _build(cls: type, data: Any, where: str, skip: tuple[str, ...] = ()) -> dict
 
 def config_from_dict(data: Mapping[str, Any]) -> AppConfig:
     """Build a validated :class:`AppConfig` from a complete plain mapping (the YAML structure)."""
+    if isinstance(data.get("today"), _dt.date):  # YAML reads an unquoted ISO date as a date
+        data = {**data, "today": data["today"].isoformat()}
     top = _build(AppConfig, data, "config", skip=("models", "relay", "router"))
     raw_models = data.get("models")
     if not isinstance(raw_models, list) or not raw_models:

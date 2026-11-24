@@ -110,6 +110,7 @@ def events_for_printer() -> list[RelayEvent]:
     ["run", "Wer ist aktuell Kanzler?", "--mock", "--policy", "argmax", "--strategy", "speculative", "--segments",
      "5", "--json", "out.json", "--config", "c.yaml"],
     ["serve", "--host", "0.0.0.0", "--port", "9000", "--mock"],
+    ["serve", "--allow-origin", "https://a.example", "--allow-origin", "https://b.example"],
     ["index", "show", "--path", "i.json", "--probe", "mcq"],
     ["bench", "import-kc", "--out", "data/kc"],
     ["bench", "build-wikidata", "--out", "wd.jsonl"],
@@ -159,6 +160,31 @@ def test_run_without_api_key_explains_what_to_do(monkeypatch, capsys):
     code = main(["run", "Who is it?"])
     err = capsys.readouterr().err
     assert code == 2 and "OPENROUTER_API_KEY" in err and "--mock" in err
+
+
+@pytest.mark.parametrize("question", ["", "   ", "\n\t"])
+def test_run_rejects_an_empty_question_without_a_traceback(monkeypatch, capsys, question):
+    monkeypatch.setattr(cli, "RelayRuntime", fake_runtime)
+    code = main(["run", "--mock", question])
+    err = capsys.readouterr().err
+    assert code == 2 and "question must not be empty" in err and "Traceback" not in err
+
+
+def test_serve_passes_the_allowed_origins_to_the_app(monkeypatch):
+    uvicorn = pytest.importorskip("uvicorn")
+    pytest.importorskip("fastapi")
+    from cutoffmix import server
+
+    seen: dict[str, Any] = {}
+
+    def fake_create_app(cfg, *, mock=False, allowed_origins=()):
+        seen.update(mock=mock, allowed_origins=list(allowed_origins))
+        return "app"
+
+    monkeypatch.setattr(server, "create_app", fake_create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(app=app, **kw))
+    assert main(["serve", "--mock", "--port", "8123", "--allow-origin", "https://notes.example"]) == 0
+    assert seen["allowed_origins"] == ["https://notes.example"] and seen["app"] == "app" and seen["port"] == 8123
 
 
 def test_run_reports_invalid_configuration(monkeypatch, capsys):

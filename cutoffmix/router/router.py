@@ -131,7 +131,8 @@ class Router:
             index = self.index
 
             def sampler() -> dict[str, float]:
-                return index.sample_scores(posterior, self._np_rng, probe=self.probe, models=avail)
+                return index.sample_scores(posterior, self._np_rng, probe=self.probe, lam=self.cfg.lam,
+                                           models=avail)
 
         choice = self.policy.choose(scores, current=current, r=r, available=avail, rng=self.rng, sample_scores=sampler)
         return RouteDecision(choice.model, choice.decision, choice.probs, scores, posterior, r)

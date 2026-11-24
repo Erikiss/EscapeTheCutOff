@@ -15,7 +15,13 @@ Event protocol of :meth:`Relay.run` (every attempt that streams from a backend i
   A failed attempt ends with ``data["dropped"] = True`` and a ``reason`` (refused | error | length | empty) and is not
   part of the trace.
 - ``error`` when no model is left, then always one final ``done`` whose ``data`` is ``trace.to_dict()`` plus
-  ``usage`` (per model), ``usage_total``, ``latency``, ``status`` and bookkeeping.
+  ``usage`` (per model), ``usage_total``, ``latency``, ``status`` and bookkeeping. A stream closed before its usage
+  chunk (sentinel, cut, marker, overflow) has no token counts or cost: such calls are listed in ``usage_missing``
+  (with the backend's ``generation_id`` when it reported one) and ``usage_complete`` is then False, so
+  ``usage_total`` is a lower bound.
+- When every model left for a think segment returns nothing usable (``empty``: it stopped at once, wrote only the
+  sentinel, or only echoed the notes) and the notes are not empty, the notes count as concluded and the answer phase
+  runs instead of failing the run.
 
 The trace holds exactly the committed segments (one per non-dropped ``segment_end``, the answer as a segment with
 phase ``"answer"``), so it always agrees with the event stream.
@@ -66,6 +72,8 @@ _RUNAWAY_FACTOR = 4  # safety: stop reading even a non-cancellable stream that k
 _NO_LIMIT = 1_000_000_000  # "no hard cut" for clean_segment on answers
 _MAX_BACKOFF_S = 30.0
 _ECHO_MIN_CHARS = 12  # same minimum as prompts.trim_overlap
+_USAGE_COUNT_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
+_CLOSED_FINISHES = ("sentinel", "cut")  # finish reasons of a stream the backend closed before the provider finished
 
 Outcome = Literal["ok", "refused", "error", "length", "empty"]
 
@@ -111,6 +119,11 @@ def _add_usage(acc: dict[str, Any], usage: Mapping[str, Any]) -> None:
             if not isinstance(sub, dict):
                 sub = acc[key] = {}
             _add_usage(sub, value)
+
+
+def _has_counts(usage: Mapping[str, Any] | None) -> bool:
+    """Whether ``usage`` holds token counts or a cost (not just a ``generation_id``)."""
+    return usage is not None and any(key in usage for key in _USAGE_COUNT_KEYS)
 
 
 def _sentinel_regex(sentinel: str) -> re.Pattern[str] | None:
@@ -278,7 +291,8 @@ class _Attempt:
     retry_after: float | None = None
     note: str | None = None  # the backend's done.error, e.g. "refused: ..."
     saw_sentinel: bool = False
-    aborted: bool = False  # the relay stopped reading before the backend finished
+    aborted: bool = False  # the stream was closed (by the relay or the backend) before the provider finished
+    streamed: bool = False  # the backend yielded at least one event (a call that failed before it is not billed)
     started_at: float = 0.0
     ended_at: float = 0.0
     ttft_s: float | None = None  # time to the first text from the model
@@ -303,6 +317,7 @@ class _Produced:
     attempt: _Attempt | None = None
     error: str | None = None
     excluded: set[str] = field(default_factory=set)
+    outcomes: dict[str, Outcome] = field(default_factory=dict)  # last failed outcome per model
 
 
 @dataclass
@@ -318,6 +333,7 @@ class _RunState:
     disabled: set[str] = field(default_factory=set)
     refusals: dict[str, int] = field(default_factory=dict)
     usage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    usage_missing: list[dict[str, Any]] = field(default_factory=list)
     dropped: list[dict[str, Any]] = field(default_factory=list)
     timings: list[dict[str, Any]] = field(default_factory=list)
     first_delta_s: float | None = None
@@ -329,11 +345,15 @@ class _RunState:
     def think_count(self) -> int:
         return sum(1 for s in self.trace.segments if s.phase == "think")
 
-    def count_call(self, model: str, usage: Mapping[str, Any] | None) -> None:
-        acc = self.usage.setdefault(model, {"calls": 0})
+    def count_call(self, att: _Attempt) -> None:
+        acc = self.usage.setdefault(att.model, {"calls": 0})
         acc["calls"] += 1
-        if usage:
-            _add_usage(acc, usage)
+        if att.usage:
+            _add_usage(acc, att.usage)
+        if att.streamed and not _has_counts(att.usage):  # closed before the usage chunk: tokens and cost unknown
+            self.usage_missing.append({
+                "index": att.index, "model": att.model, "phase": att.phase, "attempt": att.attempt,
+                "finish_reason": att.finish, "generation_id": (att.usage or {}).get("generation_id")})
 
     def mark_delta(self) -> None:
         if self.first_delta_s is None:
@@ -365,6 +385,8 @@ class _RunState:
             "usage": self.usage,
             "latency": latency,
             "usage_total": total,
+            "usage_complete": not self.usage_missing,
+            "usage_missing": self.usage_missing,
             "run_id": self.run_id,
             "status": status,
             "dropped": self.dropped,
@@ -450,6 +472,8 @@ class Relay:
                 async for event in events:
                     yield event
             if out.attempt is None:
+                if st.notes and out.outcomes and all(o == "empty" for o in out.outcomes.values()):
+                    break  # no model has anything to add: the notes are concluded, answer from them
                 st.error = out.error or f"segment {index} failed"
             elif out.attempt.answer is not None:
                 final = out.attempt
@@ -515,7 +539,7 @@ class Relay:
         """Decide, stream, and handle refusals/length/errors until one attempt is committed or no model is left."""
         rc = self.cfg.relay
         excluded = set(out.excluded)
-        reasons: dict[str, str] = {}
+        reasons: dict[str, str] = {m: str(o) for m, o in out.outcomes.items()}
         attempt_no = 0
         while True:
             avail = st.available(excluded)
@@ -552,6 +576,7 @@ class Relay:
                     return
                 yield self._drop(st, att, result)
                 reasons[spec.key] = result if att.error is None else f"{result}: {att.error}"
+                out.outcomes[spec.key] = result
                 if result == "length" and not length_retried:
                     length_retried = True
                     max_tokens = 2 * base_tokens
@@ -588,6 +613,7 @@ class Relay:
                 ok[att.model] = att
                 continue
             failed[att.model] = result
+            out.outcomes[att.model] = result
             self._record_drop(st, att, result)
             if result == "refused":
                 self._count_refusal(st, att.model)
@@ -649,6 +675,7 @@ class Relay:
         try:
             stream = self.backend.stream_continuation(spec, req)
             async for ev in stream:
+                att.streamed = True
                 if ev.kind == "text":
                     if att.error is not None or filt.stop_reason == "sentinel":
                         continue  # nothing after an error or the sentinel is used
@@ -670,6 +697,7 @@ class Relay:
                     att.finish = ev.finish_reason
                     att.usage = dict(ev.usage) if ev.usage else None
                     att.note = ev.error
+                    att.aborted = att.aborted or ev.finish_reason in _CLOSED_FINISHES
                     break
         except Exception as e:  # noqa: BLE001 -- any backend failure is handled by the retry/exclude policy
             att.error = f"{type(e).__name__}: {e}"
@@ -681,7 +709,7 @@ class Relay:
                 await _aclose(stream)
             att.duration_s = round(time.perf_counter() - t0, 4)
             att.ended_at = time.time()
-            st.count_call(spec.key, att.usage)
+            st.count_call(att)
         att.raw = filt.raw
         if req.phase == "think":
             att.text, att.answer, att.saw_sentinel = _finalize_think(

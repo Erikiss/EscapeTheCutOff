@@ -150,12 +150,13 @@ async def test_concurrency_is_bounded(tmp_path: Path) -> None:
         await run_probes(backend, [FABLE], events, ["current"], tmp_path / "r2.jsonl", concurrency=0)
 
 
-async def test_batch_variant_changes_only_the_provider_id(tmp_path: Path) -> None:
+async def test_batch_variant_is_refused_before_any_call(tmp_path: Path) -> None:
+    # OpenRouter serves ':batch' ids only on /api/v1/batches, never on /chat/completions (BENCH-2)
     backend = ScriptedBackend()
-    results = await run_probes(backend, [FABLE, SOL], [make_event(0)], ["current"], tmp_path / "r.jsonl",
-                               use_batch_variant=True)
-    assert sorted(pid for pid, _ in backend.calls) == ["anthropic/claude-fable-5.2:batch", "openai/gpt-6.2-sol:batch"]
-    assert sorted(r.model for r in results) == ["fable", "sol"]
+    with pytest.raises(ValueError, match="Batch API"):
+        await run_probes(backend, [FABLE, SOL], [make_event(0)], ["current"], tmp_path / "r.jsonl",
+                         use_batch_variant=True)
+    assert backend.calls == [] and not (tmp_path / "r.jsonl").exists()
 
 
 async def test_judges_are_called_only_for_unsure_answers(tmp_path: Path) -> None:
@@ -252,8 +253,14 @@ def test_estimate_cost_uses_builtin_list_prices() -> None:
 def test_estimate_cost_custom_pricing_batch_discount_and_missing_prices() -> None:
     events = [make_event(0)]
     custom = estimate_cost([FABLE], events, ["current"], pricing={"fable": {"input": 1.0, "output": 2.0}},
-                           out_tokens=1000, in_tokens=1000, batch=True)
-    assert custom["per_model"]["fable"]["usd"] == pytest.approx((1000 * 1.0 + 1000 * 2.0) / 1e6 * 0.5)
+                           out_tokens=1000, in_tokens=1000, batch=True, max_tokens=3000)
+    # no batch discount: run_probes cannot use ':batch' ids (BENCH-2)
+    assert custom["per_model"]["fable"]["usd"] == pytest.approx((1000 * 1.0 + 1000 * 2.0) / 1e6)
+    assert "not applied" in custom["assumptions"]["batch"]
+    # the max_tokens bound is reported next to the guess (BENCH-10)
+    assert custom["per_model"]["fable"]["max_usd"] == pytest.approx((1000 * 1.0 + 3000 * 2.0) / 1e6)
+    assert custom["max_usd"] == custom["per_model"]["fable"]["max_usd"]
+    assert custom["assumptions"]["max_tokens"] == 3000 and custom["assumptions"]["out_tokens_measured"] is False
     by_provider = estimate_cost([SOL], events, ["current"], pricing={"openai/gpt-6.2-sol": (4.0, 4.0)})
     assert by_provider["per_model"]["sol"]["usd_per_m_out"] == 4.0
     with pytest.raises(ValueError, match="no price"):

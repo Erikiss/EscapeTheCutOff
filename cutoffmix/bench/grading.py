@@ -167,6 +167,16 @@ _NEGATION = re.compile(
 _SUCCESSION_BEFORE = re.compile(
     r"(?<!\w)(?:succeed\w*|replac\w*|after|following|former\w*|previous\w*|predecessor\w*|outgoing|ousted|ex|"
     r"nachfolge\w*|folgte|vorganger\w*|ehemalig\w*|abgelost|ersetzt\w*|loste)(?!\w)")
+# The same cues without "after"/"following", for current (correct) names: "her predecessor was X" or "Y replaced
+# X" makes X history; "after the election, X became ..." does not.
+_SUCCESSION_BEFORE_STRICT = re.compile(
+    r"(?<!\w)(?:succeed\w*|replac\w*|former\w*|previous\w*|predecessor\w*|outgoing|ousted|ex|"
+    r"nachfolge\w*|folgte|vorganger\w*|ehemalig\w*|abgelost|ersetzt\w*|loste)(?!\w)")
+_BY_END = re.compile(r"(?<!\w)(?:by|durch|von)\W*$")
+# Any succession cue anywhere in a response ("succeeding", "replaced", "predecessor", "took over from").
+_SUCCESSION_ANY = re.compile(
+    r"(?<!\w)(?:succeed\w*|replac\w*|predecessor\w*|took over from|nachfolge\w*|vorganger\w*|abgelost|"
+    r"ersetzt\w*)(?!\w)")
 _SUCCESSION_AFTER = re.compile(
     r"^\W*(?:\w+\W+){0,3}?(?:stepped down|resigned|left|was replaced|was succeeded|was ousted|was removed|lost|"
     r"died|retired|trat zuruck|zurucktrat|abgelost|ersetzt)(?!\w)")
@@ -313,9 +323,15 @@ def _hits(text: str, patterns: Mapping[str, Sequence[re.Pattern[str]]],
             for pat in pats:
                 for m in pat.finditer(segment):
                     plain = asserted and not _negated(segment, m.start(), m.end())
-                    if plain and outcome == "outdated":
+                    if plain and outcome in ("outdated", "correct") and pat not in (_DIED, _ALIVE):
+                        # a name in succession context is history ("Y, who replaced X"; "her predecessor was X"),
+                        # not the current state; for current names "after"/"following" do not count as cues
                         before = " ".join(segment[: m.start()].split()[-5:])
-                        plain = not (_SUCCESSION_BEFORE.search(before) or _SUCCESSION_AFTER.search(segment[m.end():]))
+                        if outcome == "outdated":
+                            history = bool(_SUCCESSION_BEFORE.search(before))
+                        else:  # "Bob was replaced by Alice" names Alice as the successor, not as history
+                            history = bool(_SUCCESSION_BEFORE_STRICT.search(before)) and not _BY_END.search(before)
+                        plain = not (history or _SUCCESSION_AFTER.search(segment[m.end():]))
                     if plain and pat is _DIED and outcome == "correct":
                         death_years.update(_YEAR.findall(segment))
                         death_months.update(_MONTHS[x] for x in _MONTH.findall(segment))
@@ -331,10 +347,11 @@ def _hits(text: str, patterns: Mapping[str, Sequence[re.Pattern[str]]],
     return strong, weak
 
 
-def _names_someone_new(response: str, event: Event) -> bool:
+def _names_someone_new(response: str, event: Event, extra: Iterable[str] = ()) -> bool:
     """True if the response contains a capitalised multi-word name whose words are not in the question/subject
-    (e.g. it names an office holder we have no alias for), i.e. it is more than a plain refusal."""
-    known = set(normalize_text(" ".join([event.question_current, event.question_recall, event.subject])).split())
+    (or in ``extra``, e.g. the known answer forms), e.g. it names an office holder we have no alias for."""
+    known = set(normalize_text(" ".join([event.question_current, event.question_recall, event.subject,
+                                         *extra])).split())
     for run in _CAPITALISED_RUN.findall(response):
         words = [w for w in normalize_text(run).split() if w not in _COMMON_CAPITALISED and len(w) > 2]
         if any(w not in known for w in words):
@@ -368,6 +385,10 @@ def grade_rule(event: Event, probe: str, response: str) -> tuple[Grade, bool] | 
         outcome = cast(Grade, next(iter(strong)))
         if outcome == "correct" and abstain and not _is_death(event) and not _is_control(event):
             return None  # a current name next to "I'm not aware of / cannot verify" is usually speculation
+        if (outcome == "correct" and _SUCCESSION_ANY.search(text) and not _is_death(event)
+                and not _is_control(event)
+                and _names_someone_new(response, event, [*event.aliases, *event.reject_aliases])):
+            return None  # the expected name next to an unknown name and a succession cue: who succeeded whom?
         return outcome, bool(_HEDGE.search(text)) or abstain
     if (not strong and not weak and abstain and not _GUESS_OR_CONTRAST.search(text)
             and not _names_someone_new(response, event)):
@@ -378,7 +399,9 @@ def grade_rule(event: Event, probe: str, response: str) -> tuple[Grade, bool] | 
 # ------------------------------------------------------------------------------------------------- judges
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
-_LABEL_FIELD = re.compile(r"""["']?label["']?\s*[:=]\s*["']?([A-Za-z_\-]+)""", re.IGNORECASE)
+# the captured label must end the value: "correct|outdated|..." (an echoed template) is not a label
+_LABEL_FIELD = re.compile(r"""["']?label["']?\s*[:=]\s*["']?([A-Za-z_\-]+)(?=["'\s,;}]|$)([^,;}\n]*)""",
+                          re.IGNORECASE)
 _HEDGED_FIELD = re.compile(r"""["']?hedged["']?\s*[:=]\s*["']?(true|false|yes|no|1|0)""", re.IGNORECASE)
 _LABEL_SYNONYMS: dict[str, str] = {
     "correct": "correct", "current": "correct",
@@ -428,6 +451,9 @@ def parse_judge_output(text: str) -> tuple[Grade, bool] | None:
                 return label, _as_bool(obj.get("hedged", False))
     m = _LABEL_FIELD.search(text)
     if m and (label := _label(m.group(1))) is not None:
+        others = {_label(w) for w in re.findall(r"[A-Za-z_\-]+", m.group(2))} - {None, label}
+        if others:  # "label: correct or outdated" names two labels: no decision
+            return None
         h = _HEDGED_FIELD.search(text)
         return label, bool(h and _as_bool(h.group(1)))
     bare = _label(text.strip().strip(".\"'`*"))

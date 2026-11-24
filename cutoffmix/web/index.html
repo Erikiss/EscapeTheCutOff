@@ -205,7 +205,7 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
         <div class="controls">
           <label class="field">Strategy <select id="strategy"></select></label>
           <label class="field">Policy <select id="policy"></select></label>
-          <label class="field">Segment tokens <input id="segtok" type="number" min="16" max="1024" step="16" value="128"></label>
+          <label class="field">Segment tokens <input id="segtok" type="number" min="1" max="4096" step="1" value="128"></label>
           <div class="btns">
             <button type="button" class="btn ghost" id="stop" hidden>Stop</button>
             <button type="submit" class="btn primary" id="run">Run</button>
@@ -263,6 +263,7 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+const NOTES_HINT = "Hover or tap a segment to see why it went to that model";
 const EXAMPLES = [
   { lang: "DE", kind: "time-sensitive", q: "Wer ist aktuell Bundeskanzler von Deutschland, und seit wann ist er im Amt?" },
   { lang: "EN", kind: "time-sensitive", q: "Which AI lab released the most capable language model most recently, and what is it called?" },
@@ -352,10 +353,12 @@ async function boot() {
   }
   renderLegend();
   loadIndex();
-  const params = new URLSearchParams(location.search); /* shareable links: ?q=question[&run=1] */
+  /* shareable links: ?q=question only prefills the question. A run calls paid models, so it always needs a click
+     here: a link from another site must not be able to start one. */
+  const params = new URLSearchParams(location.search);
   if (params.get("q")) {
     $("q").value = params.get("q");
-    if (params.get("run") === "1" && S.cfg) run();
+    $("run").focus();
   }
 }
 
@@ -377,6 +380,7 @@ function resetRun() {
   $("answer").hidden = true; $("answer").classList.remove("streaming");
   $("answer-text").textContent = ""; $("answer-chip").replaceChildren();
   $("error").hidden = true;
+  $("notes-hint").textContent = NOTES_HINT;
   $("window").replaceChildren(h("p", { class: "insp-empty" }, "Waiting for the first routing decision…"));
   $("win-r").textContent = "";
   renderInspector(null);
@@ -546,7 +550,7 @@ function finish(data) {
   if (S.ttft == null && lat.first_delta_s != null) setStat("s-ttft", secs(lat.first_delta_s));
   setStat("s-sw", String(data.switches != null ? data.switches : switches()));
   const total = data.usage_total || {};
-  if (total.cost) { $("s-cost-k").textContent = "Cost"; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
+  if (total.cost) { $("s-cost-k").textContent = data.usage_complete === false ? "Cost (partial)" : "Cost"; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
   else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens"; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
   renderLegend(data.share_by_model);
   $("notes-hint").textContent = data.status === "ok"

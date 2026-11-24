@@ -123,6 +123,12 @@ def test_normalize_text_folds_accents_case_quotes() -> None:
     ("Carol White became prime minister in 2026.", None),  # unknown name: judges decide
     ("I'm not aware of an announcement; Alice Smith was mentioned as a candidate.", None),  # speculation
     ("", ("ungraded", False)),
+    # the expected name as someone's predecessor is history, not the current answer (BENCH-4)
+    ("The prime minister of Exampleland is Carol White, who replaced Alice Smith in 2026.", None),
+    ("Carol White is the prime minister; she succeeded Alice Smith.", None),
+    ("The prime minister is Carol White. Her predecessor was Alice Smith.", None),
+    ("Alice Smith is prime minister, succeeding Bob Jones; Carol White replaced the finance minister.", None),
+    ("After the March election, Alice Smith became prime minister.", ("correct", False)),
 ])
 def test_grade_rule_office_change(response: str, expected: tuple[str, bool] | None) -> None:
     assert grade_rule(OFFICE, "current", response) == expected
@@ -185,6 +191,9 @@ def test_grade_rule_mcq_and_recall_probes() -> None:
     ("label: other_wrong, hedged: false", ("incorrect", False)),
     ("Incorrect.", ("incorrect", False)),
     ('{"label": "banana"}', None), ("", None), ("{not json", None),
+    # an echoed template is not a verdict (BENCH-11)
+    ('{"label": "correct|outdated|incorrect|abstain", "hedged": true|false, "reason": "<one sentence>"}', None),
+    ("label: correct or outdated", None),
 ])
 def test_parse_judge_output(text: str, expected: tuple[str, bool] | None) -> None:
     assert parse_judge_output(text) == expected

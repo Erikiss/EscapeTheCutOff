@@ -13,8 +13,13 @@ Endpoints of :func:`create_app`:
   ``delta.content``.
 
 FastAPI is imported inside :func:`create_app`, so this module imports without the optional server dependencies.
-Each SSE stream polls for a client disconnect and stops the relay (closing the in-flight model stream) when the
-client goes away; idle streams get ``: ping`` comments so proxies keep them open.
+Every relay run (SSE or not) polls for a client disconnect and stops the relay (closing the in-flight model stream)
+when the client goes away; idle SSE streams get ``: ping`` comments so proxies keep them open.
+
+The POST endpoints start paid model calls, so they only take ``Content-Type: application/json`` (HTTP 415
+otherwise: a cross-site page can then not send them without a CORS preflight, which this server never grants) and
+refuse a request whose ``Origin`` header is neither the server's own origin (``Host`` or ``X-Forwarded-Host``) nor
+in ``allowed_origins`` (HTTP 403).
 
 (No ``from __future__ import annotations`` here: FastAPI must see the real ``Request`` class in the endpoint
 signatures defined inside :func:`create_app`; names imported only for type checking are quoted.)
@@ -24,12 +29,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from importlib import resources
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from cutoffmix import __version__
 from cutoffmix.relay import RelayRuntime, to_jsonable
@@ -60,7 +67,11 @@ _END = object()
 
 
 class RequestError(ValueError):
-    """A client error: invalid JSON, a missing field or an invalid override (HTTP 400)."""
+    """A client error: invalid JSON, a missing field or an invalid override (HTTP ``status``, default 400)."""
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # --------------------------------------------------------------------------------------
@@ -99,12 +110,34 @@ def _run_overrides(body: Mapping[str, Any]) -> dict[str, Any]:
             out[key] = value.strip()
     tokens = body.get("segment_tokens")
     if tokens is not None:
-        if isinstance(tokens, bool) or not isinstance(tokens, (int, float)) or int(tokens) != tokens:
+        if (isinstance(tokens, bool) or not isinstance(tokens, (int, float))
+                or (isinstance(tokens, float) and not math.isfinite(tokens)) or int(tokens) != tokens):
             raise RequestError("segment_tokens must be an integer")
         if not 1 <= int(tokens) <= MAX_SEGMENT_TOKENS:
             raise RequestError(f"segment_tokens must be between 1 and {MAX_SEGMENT_TOKENS}")
         out["segment_tokens"] = int(tokens)
     return out
+
+
+def _netloc(value: str, scheme: str) -> str:
+    """``host[:port]`` in lower case, without the default port of ``scheme``."""
+    value = value.strip().lower()
+    default = {"http": ":80", "https": ":443"}.get(scheme)
+    return value[:-len(default)] if default and value.endswith(default) else value
+
+
+def _origin_allowed(origin: str, headers: Mapping[str, str], allowed: frozenset[str]) -> bool:
+    """Whether a browser ``Origin`` may POST here: the server's own origin (by ``Host`` or ``X-Forwarded-Host``,
+    neither of which a cross-site page can set) or one listed in ``allowed`` (normalised ``scheme://host[:port]``)."""
+    origin = origin.strip().rstrip("/").lower()
+    if origin in allowed:
+        return True
+    parts = urlsplit(origin)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False  # "null" (sandboxed frames, file: pages) and anything else odd
+    own = {_netloc(h.split(",")[0], parts.scheme) for h in (headers.get("host"), headers.get("x-forwarded-host"))
+           if h}
+    return _netloc(parts.netloc, parts.scheme) in own
 
 
 def _content_text(content: Any) -> str:
@@ -178,7 +211,7 @@ def _ui_html() -> str:
 
 
 async def _pump_events(events: AsyncGenerator[RelayEvent, None],
-                       request: "Request") -> AsyncIterator[RelayEvent | None]:
+                       request: "Request") -> AsyncGenerator[RelayEvent | None, None]:
     """Run the relay in its own task and hand its events over (``None`` = heartbeat due).
 
     Stops when the relay ends or the client disconnects; leaving early cancels the relay task, which closes the
@@ -198,22 +231,30 @@ async def _pump_events(events: AsyncGenerator[RelayEvent, None],
             queue.put_nowait(_END)
 
     task = asyncio.create_task(pump())
-    idle = 0.0
+    loop = asyncio.get_running_loop()
+    last_check = last_yield = loop.time()
     try:
         while True:
+            timed_out = False
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=POLL_S)
             except asyncio.TimeoutError:  # the builtin TimeoutError on Python >= 3.11
+                item, timed_out = None, True
+            now = loop.time()
+            # Checked every POLL_S even while events flow: a non-stream response sends nothing until the end, so
+            # a failing send can never reveal that its client went away.
+            if timed_out or now - last_check >= POLL_S:
+                last_check = now
                 if await request.is_disconnected():
                     return
-                idle += POLL_S
-                if idle >= HEARTBEAT_S:
-                    idle = 0.0
-                    yield None
-                continue
             if item is _END:
                 return
-            idle = 0.0
+            if item is None:
+                if now - last_yield >= HEARTBEAT_S:
+                    last_yield = now
+                    yield None
+                continue
+            last_yield = now
             yield item
     finally:
         task.cancel()
@@ -238,6 +279,7 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
     done: dict[str, Any] | None = None
     error: str | None = None
     need_separator = False  # a committed notes segment was streamed: separate the next one by a blank line
+    streamed = False  # the open think attempt has streamed reasoning text
     async for event in events:
         if event is None:
             yield ": ping\n\n"
@@ -248,6 +290,7 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
             else:
                 text = ("\n\n" if need_separator else "") + event.text
                 need_separator = False
+                streamed = True
                 yield chunk({"reasoning": text,
                              "cutoffmix": {"type": "delta", "segment": event.segment, "model": event.model}})
             continue
@@ -256,9 +299,16 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
             continue
         if event.type == "error":
             error = event.text
-        if (event.type == "segment_end" and event.phase == "think" and event.text
-                and not (event.data or {}).get("dropped")):
-            need_separator = True
+        if event.type == "segment_end" and event.phase == "think":
+            data = event.data or {}
+            if data.get("dropped"):
+                if streamed:  # streamed text cannot be taken back: close it visibly, the retry starts anew
+                    yield chunk({"reasoning": f" [segment dropped: {data.get('reason') or 'failed'}]",
+                                 "cutoffmix": {"type": "delta", "segment": event.segment, "model": event.model}})
+                    need_separator = True
+            elif event.text:
+                need_separator = True
+            streamed = False
         meta = event.to_dict()
         if event.type == "segment_end":
             meta.pop("data", None)  # keep chunks small; the full trace arrives with the final chunk
@@ -277,9 +327,12 @@ async def _sse_openai(events: AsyncIterator[RelayEvent | None], *, completion_id
 # --------------------------------------------------------------------------------------
 
 
-def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None, mock: bool = False) -> "FastAPI":
+def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None, mock: bool = False,
+               allowed_origins: Sequence[str] = ()) -> "FastAPI":
     """Build the FastAPI app. ``cfg`` defaults to the packaged config; ``backend`` defaults to OpenRouter (or the
-    mock backend with ``mock=True``). A backend created here is closed when the app shuts down."""
+    mock backend with ``mock=True``). A backend created here is closed when the app shuts down.
+    ``allowed_origins`` (``scheme://host[:port]``) may POST besides the server's own origin, e.g. the public origin
+    of a reverse proxy that rewrites ``Host`` without setting ``X-Forwarded-Host``."""
     try:
         from fastapi import FastAPI, Request
         from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -290,6 +343,7 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
     config = cfg if cfg is not None else load_config()
     runtime = RelayRuntime(config, backend=backend, mock=mock)
     index_cache: dict[str, dict[str, Any]] = {}
+    origins = frozenset(o.strip().rstrip("/").lower() for o in allowed_origins if o.strip())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -302,13 +356,21 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
     def json_response(body: Any, status: int = 200) -> Response:
         return Response(_dumps(body), status_code=status, media_type="application/json")
 
-    def bad_request(message: str) -> Response:
-        return json_response({"detail": message}, 400)
+    def bad_request(message: str, status: int = 400) -> Response:
+        return json_response({"detail": message}, status)
 
     def openai_error(status: int, message: str, kind: str, code: str | int | None = None) -> Response:
         return json_response({"error": {"message": message, "type": kind, "code": code}}, status)
 
     async def json_body(request: Request) -> dict[str, Any]:
+        origin = request.headers.get("origin")
+        if origin is not None and not _origin_allowed(origin, request.headers, origins):
+            raise RequestError(f"cross-origin request from {origin} refused; to allow it, start the server with "
+                               f"--allow-origin {origin}", status=403)
+        media = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if media != "application/json":
+            raise RequestError("the request body must be JSON sent with Content-Type: application/json",
+                               status=415)
         try:
             body = await request.json()
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -370,7 +432,7 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                 raise RequestError(f"question is longer than {MAX_QUESTION_CHARS} characters")
             relay = runtime.relay(run_config(_run_overrides(body)))
         except RequestError as e:
-            return bad_request(str(e))
+            return bad_request(str(e), e.status)
         events = relay.run(question, run_id=uuid.uuid4().hex[:16])
         return sse(_sse_relay(_pump_events(events, request)))
 
@@ -393,9 +455,12 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                 return openai_error(404, str(e), "invalid_request_error", "model_not_found")
             overrides |= _run_overrides(body)
             question = flatten_messages(body.get("messages"))
+            if len(question) > MAX_QUESTION_CHARS:
+                raise RequestError(f"the conversation is longer than {MAX_QUESTION_CHARS} characters once "
+                                   f"flattened ({len(question)}); shorten it or start a new chat")
             relay = runtime.relay(run_config(overrides))
         except RequestError as e:
-            return openai_error(400, str(e), "invalid_request_error")
+            return openai_error(e.status, str(e), "invalid_request_error")
         run_id = uuid.uuid4().hex[:24]
         completion_id, created = f"chatcmpl-{run_id}", int(time.time())
         events = relay.run(question, run_id=run_id)
@@ -404,12 +469,18 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                                    model_id=model_id))
         done: dict[str, Any] | None = None
         error: str | None = None
-        async with contextlib.aclosing(events) as it:
-            async for event in it:
+        # The relay runs through the same pump as the streams, so a client that goes away (timeout, Ctrl-C)
+        # stops it instead of leaving it to make every remaining paid call.
+        async with contextlib.aclosing(_pump_events(events, request)) as pumped:
+            async for event in pumped:
+                if event is None:
+                    continue  # heartbeat: nothing to send without a stream
                 if event.type == "done":
-                    done = event.data
+                    done = event.data or {}
                 elif event.type == "error":
                     error = event.text
+        if done is None and error is None:  # the client disconnected and the relay was cancelled
+            return openai_error(499, "the client closed the request", "client_closed_request")
         answer = (done or {}).get("answer") or ""
         if error is not None and not answer:
             return json_response({"error": {"message": error, "type": "upstream_error", "code": 502},

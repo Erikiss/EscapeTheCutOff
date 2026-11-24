@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import pytest
 
 from cutoffmix.config import AppConfig, RelayConfig, RouterConfig
@@ -665,3 +667,161 @@ async def test_integration_mock_backend_and_router_without_index(strategy):
         if strategy == "sequential":
             assert "".join(deltas_by_segment(events)[i]) == end.text
         assert SENTINEL not in end.text and "FINAL ANSWER" not in end.text
+
+
+async def test_all_empty_without_notes_or_next_to_other_failures_still_ends_with_an_error():
+    # nothing usable for the very first segment: there are no notes to answer from
+    relay, _, _ = make_relay(lambda model, req, n: [StreamEvent(kind="done", finish_reason="stop")])
+    events = await collect(relay)
+    assert events[-1].data["status"] == "error" and "no model left for segment 0" in events[-2].text
+
+    # an error next to the empty outcomes is a failure, not a sign that the notes are complete
+    def script(model, req, n):
+        if not req.segments:
+            return text_events(para(0))
+        if model == "a":
+            return [FlakyError("boom", retryable=False)]
+        return [StreamEvent(kind="done", finish_reason="stop")]
+
+    relay, _, _ = make_relay(script)
+    events = await collect(relay)
+    assert events[-1].data["status"] == "error" and "no model left for segment 1" in events[-2].text
+    assert "a: error" in events[-2].text and "b: empty" in events[-2].text
+
+
+# --------------------------------------------------------------------------------------
+# The real OpenRouter backend behind httpx.MockTransport (no network)
+# --------------------------------------------------------------------------------------
+
+FABLE_KEY, SOL_KEY, NEON_KEY = "claude-fable-5.2", "gpt-6.2-sol", "gemini-4-neon"
+OR_USAGE = {"prompt_tokens": 1000, "completion_tokens": 400, "total_tokens": 1400, "cost": 0.004}
+
+
+def or_stream(*pieces: str, refusal: str | None = None, finish: str = "stop") -> str:
+    """An OpenRouter SSE body: one chunk per piece, the finish chunk, the usage chunk (always last), [DONE]."""
+
+    def chunk(delta: dict, finish_reason: str | None = None, usage: dict | None = None) -> str:
+        out: dict[str, Any] = {"id": "gen-chunk", "object": "chat.completion.chunk",
+                               "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]}
+        if usage is not None:
+            out["usage"] = usage
+        return "data: " + json.dumps(out) + "\n\n"
+
+    body = ": OPENROUTER PROCESSING\n\n"
+    if refusal is not None:
+        body += chunk({"refusal": refusal})
+    body += "".join(chunk({"content": p}) for p in pieces)
+    body += chunk({"content": ""}, finish) + chunk({}, finish, OR_USAGE)
+    return body + "data: [DONE]\n\n"
+
+
+def real_relay(handler: Callable[[str, str, int], str], *, pick: Callable[[list[str], str | None, int], str],
+               **relay: Any) -> tuple[Relay, list[dict]]:
+    """A Relay over the real OpenRouterBackend; ``handler(model key, phase, notes so far)`` returns the SSE body.
+    Each response carries ``X-Generation-Id: gen-<call number>``."""
+    from cutoffmix.backends.openrouter import OpenRouterBackend
+    from cutoffmix.config import load_config
+    from cutoffmix.prompts import ANSWER_TAIL
+
+    cfg = load_config(overrides={"today": "2026-11-24", "relay": relay})
+    by_provider = {m.provider_id: m.key for m in cfg.models}
+    bodies: list[dict] = []
+
+    def transport(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        blocks = body["messages"][1]["content"]
+        phase = "answer" if blocks[-1]["text"] == ANSWER_TAIL else "think"
+        notes = 0 if blocks[1]["text"].startswith("(no notes") else len(blocks) - 2
+        sse = handler(by_provider[body["model"]], phase, notes)
+        return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream",
+                                                                  "x-generation-id": f"gen-{len(bodies)}"})
+
+    backend = OpenRouterBackend(api_key="test-key", client=httpx.AsyncClient(transport=httpx.MockTransport(transport)))
+    return Relay(cfg, backend, FakeRouter(cfg.model_keys(), pick=pick), retry_base_delay=0.0), bodies
+
+
+async def test_real_backend_calls_closed_before_their_usage_chunk_are_reported():
+    def handler(key, phase, notes):
+        if phase == "answer":
+            return or_stream("The answer is X.")
+        text = "The notes agree on every point. FINAL ANSWER: X" if notes >= 2 else para(notes)
+        return or_stream(text, SENTINEL, " trailing words")  # Sol has no `stop`: it writes the sentinel itself
+
+    relay, bodies = real_relay(handler, pick=lambda avail, cur, n: SOL_KEY)
+    done = (await collect(relay))[-1].data
+    assert done["status"] == "ok" and done["answer"] == "The answer is X." and len(bodies) == 4
+    # the think calls were closed before their usage chunk (twice at the sentinel, once at the final marker)
+    assert done["usage_total"]["calls"] == 4 and done["usage_total"]["cost"] == pytest.approx(0.004)
+    assert done["usage_complete"] is False
+    assert [(m["index"], m["model"], m["finish_reason"], m["generation_id"]) for m in done["usage_missing"]] == [
+        (0, SOL_KEY, "sentinel", "gen-1"), (1, SOL_KEY, "sentinel", "gen-2"), (2, SOL_KEY, None, None)]
+    segs = done["segments"]
+    assert [s["aborted"] for s in segs] == [True, True, True, False]  # the backend's sentinel close counts too
+    assert segs[0]["usage"] == {"generation_id": "gen-1"}
+    assert segs[3]["usage"] == OR_USAGE | {"generation_id": "gen-4"}
+
+
+async def test_real_backend_complete_usage_when_every_stream_ends_normally():
+    def handler(key, phase, notes):
+        if phase == "answer":
+            return or_stream("Answer.")
+        return or_stream("FINAL ANSWER: x" if notes else para(0))  # Fable's `stop` ends at the sentinel
+
+    relay, _ = real_relay(handler, pick=lambda avail, cur, n: FABLE_KEY, answer_mode="inline")
+    done = (await collect(relay))[-1].data
+    assert done["usage_complete"] is True and done["usage_missing"] == []
+    assert done["usage_total"]["cost"] == pytest.approx(2 * 0.004)
+
+
+async def test_real_backend_non_cancellable_overflow_is_read_through_for_its_usage():
+    long = "This sentence keeps the paragraph going past the cut. " * 14  # 1.5x < length < 4x the hard cut
+
+    def handler(key, phase, notes):
+        if phase == "answer":
+            return or_stream("Answer.")
+        if notes:
+            return or_stream("FINAL ANSWER: x", SENTINEL)
+        return or_stream(*(long[i:i + 50] for i in range(0, len(long), 50)))
+
+    relay, _ = real_relay(handler, pick=lambda avail, cur, n: NEON_KEY, hard_cut_chars=300)
+    done = (await collect(relay))[-1].data
+    seg = done["segments"][0]
+    assert seg["model"] == NEON_KEY and 0 < len(seg["text"]) <= 300
+    # closing would not have stopped Google's billing; reading on collected the usage chunk
+    assert seg["note"] == "stop" and seg["aborted"] is False and seg["usage"]["cost"] == pytest.approx(0.004)
+
+
+async def test_real_backend_openai_style_refusals_disable_the_model():
+    def handler(key, phase, notes):
+        if key == SOL_KEY:
+            return or_stream(refusal="I can't help with that.")  # refusal text, no content, finish "stop"
+        if phase == "answer":
+            return or_stream("Answer.")
+        return or_stream("FINAL ANSWER: x" if notes >= 2 else para(notes))
+
+    relay, bodies = real_relay(handler, pick=lambda avail, cur, n: SOL_KEY if SOL_KEY in avail else avail[0])
+    done = (await collect(relay))[-1].data
+    assert done["status"] == "ok" and done["answer"] == "Answer."
+    assert done["refusals"] == {SOL_KEY: 2} and done["disabled"] == [SOL_KEY]
+    assert sum(b["model"] == "openai/gpt-6.2-sol" for b in bodies) == 2  # never billed again after that
+    assert all(r["reason"] == "refused" for r in done["dropped"])
+
+
+async def test_real_backend_all_empty_segment_concludes_the_notes():
+    def handler(key, phase, notes):
+        if phase == "answer":
+            return or_stream("X.")
+        if notes < 2:
+            return or_stream(para(notes))
+        # nothing left to add: Fable and Neon hit `stop` at once (no content), Sol writes only the sentinel
+        return or_stream(SENTINEL) if key == SOL_KEY else or_stream()
+
+    relay, _ = real_relay(handler, pick=lambda avail, cur, n: avail[0])
+    events = await collect(relay)
+    done = events[-1].data
+    assert not any(ev.type == "error" for ev in events)
+    assert done["status"] == "ok" and done["answer"] == "X." and "error" not in done
+    assert [s["phase"] for s in done["segments"]] == ["think", "think", "answer"]
+    assert [(r["model"], r["reason"]) for r in done["dropped"]] == [
+        (FABLE_KEY, "empty"), (SOL_KEY, "empty"), (NEON_KEY, "empty")]

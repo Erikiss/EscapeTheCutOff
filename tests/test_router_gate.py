@@ -53,6 +53,30 @@ def test_cues_report_the_lexical_evidence():
     assert GATE.cues("Prove that 2 + 2 = 4.")["math"] > 1
 
 
+
+@pytest.mark.parametrize("en,de", [
+    ("Who won the 2026 FIFA World Cup?", "Wer hat die FIFA-Weltmeisterschaft 2026 gewonnen?"),
+    ("What happened at the NATO summit in The Hague?", "Was ist beim NATO-Gipfel in Den Haag passiert?"),
+    ("Who is the CEO of OpenAI?", "Wer ist der CEO von OpenAI?"),
+    ("What did Elon Musk announce at the Tesla event?", "Was hat Elon Musk beim Tesla-Event angekündigt?"),
+])
+def test_german_entity_questions_score_like_their_english_pair(en, de):
+    # German capitalises every noun, so only name-like tokens (internal capitals, hyphen-joined, adjacent capitalised
+    # tokens) count as entities there; without them German news questions got a much hotter routing temperature
+    assert GATE.cues(de)["entity_density"] > 0.1
+    assert GATE.score(de) == pytest.approx(GATE.score(en), abs=0.1)
+
+
+@pytest.mark.parametrize("text", [
+    "Wer ist der Bundeskanzler?",
+    "Beweise, dass die Summe zweier ungerader Zahlen gerade ist.",
+    "Ein Zug braucht für 240 Kilometer drei Stunden. Wie schnell ist er?",
+    "Was ist der Unterschied zwischen Wetter und Klima?",
+    "Der Kanzler sprach im Bundestag.",
+])
+def test_german_common_nouns_are_not_entities(text):
+    assert GATE.cues(text)["entity_density"] == 0.0
+
 def test_lexical_gate_cannot_be_saved(tmp_path):
     with pytest.raises(ValueError):
         GATE.save(tmp_path / "gate.npz")

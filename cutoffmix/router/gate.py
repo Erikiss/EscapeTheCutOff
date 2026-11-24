@@ -89,6 +89,34 @@ def _padded_count(padded: str, phrases: Sequence[str]) -> int:
     return sum(padded.count(f" {p} ") for p in phrases)
 
 
+def _entity_density(text: str, matches: Sequence[re.Match[str]], lang: str) -> float:
+    """Share of tokens that are capitalised mid-sentence (likely named entities).
+
+    German capitalises every noun, so there only name-like capitalised tokens count: internal capitals or digits
+    ("NATO", "OpenAI", "F1"), hyphen-joined to a neighbour ("FIFA-Weltmeisterschaft") or next to another
+    capitalised mid-sentence token ("Den Haag", "Elon Musk").
+    """
+    if not matches:
+        return 0.0
+    gaps = [""] + [text[prev.end() : m.start()] for prev, m in zip(matches, matches[1:])]
+    # the first token always starts a sentence
+    mid = [i > 0 and m.group()[0].isupper() and not any(ch in _SENTENCE_BREAK for ch in gaps[i])
+           for i, m in enumerate(matches)]
+    if lang != "de":
+        return sum(mid) / len(matches)
+    last = len(matches) - 1
+    names = 0
+    for i, m in enumerate(matches):
+        if not mid[i]:
+            continue
+        token = m.group()
+        after = gaps[i + 1] if i < last else ""
+        if (any(ch.isupper() or ch.isdigit() for ch in token[1:]) or "-" in (gaps[i], after)
+                or (mid[i - 1] and gaps[i].isspace()) or (i < last and mid[i + 1] and after.isspace())):
+            names += 1
+    return names / len(matches)
+
+
 class TimeSensitivityGate:
     """Score r(W) in [0, 1]: lexical baseline, optionally blended with a trained logistic regression.
 
@@ -120,15 +148,6 @@ class TimeSensitivityGate:
         stems = [stem(t) for t in lower]
         padded = " " + " ".join(lower) + " "
         padded_stems = " " + " ".join(stems) + " "
-        lang = detect_language(lower)
-        entity = 0.0
-        if lang != "de" and matches:  # German capitalises every noun: entity density is uninformative there
-            capitalised = 0
-            for prev, m in zip(matches, matches[1:]):  # the first token always starts a sentence
-                gap = text[prev.end() : m.start()]
-                if m.group()[0].isupper() and not any(ch in _SENTENCE_BREAK for ch in gap):
-                    capitalised += 1
-            entity = capitalised / len(matches)
         return {
             "strong_temporal": sum(1 for s in stems if s in _STRONG_TEMPORAL)
             + _padded_count(padded, _STRONG_TEMPORAL_PHRASES),
@@ -137,7 +156,7 @@ class TimeSensitivityGate:
             "roles": sum(1 for s in stems if s in _ROLES)
             + _padded_count(padded_stems, _ROLE_PHRASES),
             "present_question": len(_PRESENT_QUESTION.findall(text.lower())),
-            "entity_density": entity,
+            "entity_density": _entity_density(text, matches, detect_language(lower)),
             "acronyms": sum(1 for m in matches if len(m.group()) >= 2 and m.group().isupper()),
             "news": float(sum(self._keywords.evidence(text))),
             "math": sum(1 for s in stems if s in _MATH) + len(_OPERATOR.findall(text)) / 2,

@@ -17,7 +17,8 @@ Per probe kind, on graded results of non-control, low/medium-predictability even
    with fewer than 5 distinct events (whose resamples barely vary), are drawn from Normal(tau, var).
    ``bootstrap=0`` stores no draws (consumers then use Normal(tau, var)).
 4. **Hazard / abstain**: among graded items with ``t > tau + 2·s``, (outdated+incorrect) resp. abstain rates with
-   Beta shrinkage toward the model-level rate with 5 pseudo-observations.
+   two-level Beta shrinkage, 5 pseudo-observations each: cell rate toward the model-level rate, model-level rate
+   toward the rate pooled over all models (a model with few items after its cutoff gets about the pooled rate).
 
 Everything is vectorised numpy; log-likelihoods use stable log-sigmoid forms and posteriors are normalised with
 log-sum-exp, so no cell can overflow, underflow to an empty posterior or run off to infinity.
@@ -69,7 +70,8 @@ _COARSE_A_EVERY = 4  # coarse pass uses every 4th plateau value (0.55, 0.59, ...
 _EB_MAX_ITER = 20
 _METHOD = ("4PL grid MAP per model (g=0.25 for mcq) + per-cell grid posterior of tau with empirical-Bayes topic "
            "offsets (sigma_gamma=2, sigma_eps by moments); draws: paired cluster bootstrap of events within topic; "
-           "hazard/abstain: Beta shrinkage (5 pseudo-obs) over items with t > tau + 2s")
+           "hazard/abstain: two-level Beta shrinkage cell->model->pooled (5 pseudo-obs each) over items with "
+           "t > tau + 2s")
 MONTH_AXIS = "x = (year - 2024) * 12 + (month - 1); 2024-01 -> 0; day adds (day - 0.5) / days_in_month"
 
 
@@ -345,7 +347,10 @@ def _fit_probe(rows: _Rows, g: float, n_models: int, n_topics: int, prior_mu: np
 
 
 def _rates(rows: _Rows, tau: np.ndarray, slope: np.ndarray, M: int, T: int) -> tuple[np.ndarray, np.ndarray]:
-    """Shrunk stale-assertion hazard and abstain rate over items after each cell's cutoff (step 4)."""
+    """Shrunk stale-assertion hazard and abstain rate over items after each cell's cutoff (step 4).
+
+    Two-level Beta shrinkage with ``HAZARD_PSEUDO`` pseudo-observations at each level: cell -> model -> pooled.
+    """
     sel = rows.topic >= 0
     m, z = rows.model[sel], rows.topic[sel]
     threshold = tau[m, z] + 2.0 * slope[m]
@@ -359,8 +364,8 @@ def _rates(rows: _Rows, tau: np.ndarray, slope: np.ndarray, M: int, T: int) -> t
     out = []
     for k in (bad, abst):
         n_m, k_m = n_after.sum(axis=1), k.sum(axis=1)
-        pooled = (k.sum() + 1.0) / (n_after.sum() + 2.0) if n_after.sum() > 0 else np.nan
-        base = np.where(n_m > 0, (k_m + 1.0) / (n_m + 2.0), pooled)  # model-level rate, Beta(1, 1)
+        pooled = (k.sum() + 1.0) / (n_after.sum() + 2.0) if n_after.sum() > 0 else np.nan  # Beta(1, 1)
+        base = (k_m + HAZARD_PSEUDO * pooled) / (n_m + HAZARD_PSEUDO)  # model-level rate, shrunk to the pooled one
         rate = (k + HAZARD_PSEUDO * base[:, None]) / (n_after + HAZARD_PSEUDO)
         out.append(np.where(np.isfinite(tau), rate, np.nan))
     return out[0], out[1]

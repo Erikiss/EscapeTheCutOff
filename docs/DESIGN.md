@@ -20,7 +20,7 @@ never from self-report. The user assumes as a premise that the models can contin
 | Fable 5.2 has a `reasoning_extraction` refusal category (thinking/scratchpad tags, "running log of reasoning", "verbatim reasoning") | **Template B wording for all models**: "Several analysts … contribute the next intermediate result + evidence". Never use the words thinking/reasoning/scratchpad and **no XML tags**. A refusal arrives as `finish_reason: content_filter`: drop it, re-route the segment, never retry with a reworded prompt. |
 | Reasoning tokens share `max_tokens` | `max_tokens = target_tokens + model.max_tokens_slack`. Visible length is controlled by the sentinel `<<END_STEP>>` plus a client-side cut. `length` with empty content: retry once with doubled `max_tokens`. |
 | `stop` support: Fable yes; GPT-6.2 Sol no; Neon only on `google-vertex` | Send `stop` only if `model.supports_stop`. Always detect the sentinel client-side and close the stream. |
-| Abort stops billing on anthropic/openai/azure, **not on Google** | `provider: {only: [...], allow_fallbacks: false}` pinned per model (Fable `[anthropic, azure]`, Sol `[openai, azure]`, Neon `[google-vertex]`). Keep Neon's `max_tokens_slack` tight (1536). |
+| Abort stops billing on anthropic/openai/azure, **not on Google** | `provider: {only: [...]}` pinned per model (Fable `[anthropic, azure]`, Sol `[openai, azure]`, Neon `[google-vertex]`). Fallbacks stay enabled: `only` alone keeps routing on these providers, while `allow_fallbacks: false` without `order` would serve only the top-ranked one (no failover). Keep Neon's `max_tokens_slack` tight (1536). An aborted stream has no usage chunk: keep its generation id (`X-Generation-Id`) and report the run's usage as partial. |
 | No logprobs on any of the three | No white-box switching signal (Co-LLM, CITER, R2R and others don't apply). Routing uses an external index + text classifiers. |
 | Caching: Anthropic needs explicit `cache_control` (≤4 breakpoints, 20-block lookback); OpenAI is automatic (+`prompt_cache_key`); Gemini 4 is implicit only, ≥4096 tokens, re-bills 2,050 tokens on small appends | Request bodies are **append-only**: static system prompt and one content block per committed segment, never edited. Anthropic: `cache_control` on the last segment block (plus the system block). OpenAI: `prompt_cache_key = run_id + model`. |
 | Temperature: only Neon accepts it | Never send temperature to Fable or Sol. |
@@ -84,7 +84,8 @@ class RouterConfig:
     T0: float = 0.5                    # months
     beta: float = 0.25                 # stickiness bonus for the current model, months
     kappa: float = 1.0                 # uncertainty penalty
-    lam: float = 2.0                   # stale-assertion hazard penalty, months per unit hazard
+    lam: float = 0.5                   # stale-assertion hazard penalty, months per unit hazard; a tie-breaker
+                                       # (lam <= T0), so it cannot overturn a cutoff gap the index resolves
     r_min: float = 0.05
     delta: float = 0.5                 # argmax hysteresis margin, months
     ema: float = 0.5                   # topic-posterior EMA weight on the newest window
@@ -157,10 +158,13 @@ class OpenRouterBackend:                                       # implements type
     def build_continuation_body(self, model: ModelSpec, req: ContinuationRequest) -> dict
     async def stream_continuation(self, model, req) -> AsyncIterator[StreamEvent]
         # yields kind="text" deltas as they arrive (raw, uncleaned); stops reading and closes the connection as soon
-        # as the accumulated text contains req.sentinel or exceeds req.hard_cut_chars*1.5; final kind="done" with
-        # usage (if received), finish_reason ("stop"|"length"|"content_filter"|"sentinel"|"cut"|"error"), and
+        # as the accumulated text contains req.sentinel or, if model.cancellable, exceeds req.hard_cut_chars*1.5
+        # (a non-cancellable model is read on: closing would not stop its billing; the relay bounds it); final
+        # kind="done" with usage (the usage chunk if received, plus "generation_id" from X-Generation-Id or the
+        # chunk id when known), finish_reason ("stop"|"length"|"content_filter"|"sentinel"|"cut"|"error"), and
         # StreamEvent.text = "" ; on errors kind="error" with error message (never raise inside the iterator after
         # the first yield; raising BackendError before the first yield is ok for HTTP errors).
+        # Refusal text (delta.refusal) with no content counts as finish_reason "content_filter".
         # Reasoning deltas (delta.reasoning) -> kind="reasoning" (normally excluded).
         # Mid-stream error chunk (top-level "error", finish_reason "error") -> kind="error".
     def build_chat_body(self, model: ModelSpec, req: ChatRequest) -> dict
@@ -247,12 +251,14 @@ class CutoffIndex:
     def __init__(self, models: list[str], topics: list[str], probes: dict[str, ProbeIndex], meta: dict)
     models; topics; probes; meta
     def primary(self, preference=("current_d","current","recall","mcq")) -> ProbeIndex
-    def scores(self, posterior: dict[str, float], *, probe: str | None = None, kappa=1.0, lam=2.0,
+    def scores(self, posterior: dict[str, float], *, probe: str | None = None, kappa=1.0, lam=0.5,
                models: list[str] | None = None) -> dict[str, float]
         # U_m = Σ_z π_z τ_mz − κ·sqrt(Σ_z π_z² Var_mz) − λ·Σ_z π_z H_mz ; topics absent from the index use the
         # model's global_tau (with var = mean var); models absent from the index -> -inf (never chosen by argmax)
-    def sample_scores(self, posterior, rng: np.random.Generator, *, probe=None, models=None) -> dict[str, float]
-        # one Thompson draw: Σ_z π_z τ^(b)_mz (draws if present, else Normal(tau, var))
+    def sample_scores(self, posterior, rng: np.random.Generator, *, probe=None, lam=0.0,
+                      models=None) -> dict[str, float]
+        # one Thompson draw: Σ_z π_z τ^(b)_mz (draws if present, else Normal(tau, var)) − λ·Σ_z π_z H_mz;
+        # the router passes cfg.lam so Thompson ranks a window like softmax/argmax (no κ: the draw is the uncertainty)
     def p_best(self, posterior, *, probe=None, models=None) -> dict[str, float]
     def table(self, probe=None) -> list[dict]             # rows for UI/CLI: topic, model, tau, tau_label, sd, n, hazard, p_best
     def to_json(self) -> dict ; @classmethod from_json(cls, d) ; save(path) ; @classmethod load(path)
@@ -321,7 +327,17 @@ QUERIES: dict[str, str]                                 # heads (Q2), elections 
 def events_from_heads(rows) -> list[Event]             # office_change; current: "Who is the {office}?" (no date);
                                                        # recall: "Who became {office} in {Month YYYY}?"; mcq incl.
                                                        # predecessor (P1365) as stale option; reject_aliases=[predecessor]
-def events_from_elections(rows) / events_from_awards(rows) / events_from_sports(rows) -> list[Event]
+def events_from_elections(rows, ctx, *, as_of) / events_from_awards(rows, *, since, as_of)
+    / events_from_sports(rows, ctx, *, editions, as_of) -> list[Event]
+    # question_current ("most recent ...") is empty when a later edition is known (rows, P156 successor, or every
+    # edition of the competition from the comp_editions query) or, for series recurring at most every 400 days
+    # (all curated awards; sports with a P155 period or a "2024-25" season label), when the next edition is
+    # overdue by 30 days as of `as_of`. Sports editions use their most specific competition (fewest editions,
+    # P179 series first); one result filed under two items (same winner within 3 days) is one event. Work awards
+    # (best film/series/album/song, festival prizes) answer the work, people credited via P1686 are aliases.
+    # MCQ distractors only of the answer's type (same election/country, award family and person-vs-work, sport and
+    # team kind, office kind); with fewer than 3 the event has no MCQ. Team aliases add short names
+    # ("Manchester United", "Spain", "Kansas City Chiefs").
 def build_wikidata_events(start="2024-01-01", end=None, *, client=None) -> list[Event]
 # bench/sources/wikipedia.py
 def fetch_ce_days(start: date, end: date, *, client=None) -> dict[date, str]    # batched revisions API, 50 titles/req,
@@ -343,13 +359,19 @@ def judge_messages(event, probe, response) -> list[dict]
 def extract_letter(response: str) -> str | None        # kc regex order
 def grade_mcq(event, response) -> Grade
 def grade_rule(event, probe, response) -> tuple[Grade, bool] | None   # alias / reject-alias / abstain phrases; None = unsure
+    # a correct or stale name in succession context ("Y, who replaced X", "her predecessor was X") is history, not
+    # an assertion; a correct name next to an unknown name and a succession cue -> None (judges)
 async def grade_with_judges(backend, judges: list[ModelSpec], event, probe, response) -> tuple[Grade, bool, str]
     # two judges, third on disagreement; parse {"label","hedged"} JSON; failures -> "ungraded"
 # bench/runner.py (WP4)
 async def run_probes(backend, models: list[ModelSpec], events: list[Event], probes: list[str], out_path, *,
                      today=None, concurrency=8, resume=True, use_batch_variant=False, judges=None,
                      deployment_system=None, max_tokens=4096, progress=None) -> list[ProbeResult]
-def estimate_cost(models, events, probes, *, out_tokens=600, in_tokens=200, pricing=None) -> dict
+    # use_batch_variant=True raises ValueError: OpenRouter serves ':batch' ids only via its async Batch API
+    # (/api/v1/batches), which is not implemented; the backends call /chat/completions
+def estimate_cost(models, events, probes, *, out_tokens=600, in_tokens=200, pricing=None, batch=False,
+                  max_tokens=4096) -> dict
+    # no batch discount; "max_usd" = bound when every call uses max_tokens (out_tokens=600 is unmeasured: pilot first)
 # bench/estimate.py (WP4)
 def fit_index(events: list[Event], results: list[ProbeResult], *, models=None, topics=None, probes=None,
               priors: dict[str, float] | None = None, prior_sd=3.0, bootstrap: int = 200, seed: int = 0,
@@ -380,8 +402,11 @@ grade == correct. `t_i` = `timeutil.parse_fractional_month(event.date)`.
 3. **Draws.** Paired cluster bootstrap: resample events with replacement within each topic, using the same resample
    for all models, and recompute the step-2 posterior means. That gives draws[B, M, T]; B = `bootstrap`. If
    bootstrap = 0, draw from N(tau, var).
-4. **Hazard.** Among graded items with t_i > tau_mz + 2·s_m: H = (outdated + incorrect + 1)/(n + 1/H_global + 1),
-   a Beta shrinkage toward the model-level hazard with 5 pseudo-observations. Abstain rate is computed the same way.
+4. **Hazard.** Among graded items with t_i > tau_mz + 2·s_m (k = outdated + incorrect of n): two-level Beta shrinkage
+   with 5 pseudo-observations per level. Pooled over all models H_pool = (k + 1)/(n + 2); model level
+   H_m = (k_m + 5·H_pool)/(n_m + 5); cell H_mz = (k_mz + 5·H_m)/(n_mz + 5). A model with few items after its cutoff
+   (the freshest one, when the data end near it) thus gets about the pooled rate. Abstain rate is computed the same
+   way.
 5. `meta`: created (ISO), sources, n_events, n_results, probe list, method string, priors, and the month axis
    definition.
 
@@ -412,13 +437,18 @@ Loop, with i = segment index:
      re-decide.
    - `length` with empty text: retry once with doubled max_tokens.
    - error or exception: retry ≤ max_retries with backoff, then exclude the model for this segment.
-   - If no model is left: emit `error` and stop.
+   - If no model is left: emit `error` and stop. Exception: in the think phase, if every remaining model returned
+     nothing usable (`empty`, e.g. it stopped at once or wrote only the sentinel) and the notes are not empty, the
+     notes count as concluded and the answer phase runs.
 5. If a segment contains final_marker: commit the text before it, then go to the answer phase.
    - answer_mode "inline": the text after the marker is the answer.
    - answer_mode "routed": the router picks the answer model on the whole-notes window; one answer call with
      `answer_*` prompts, streamed as `phase` and then `delta` events with phase "answer".
 6. Stop when max_segments is reached and force the answer phase. Emit `done` with
-   `data = trace.to_dict() | {"usage": per-model usage, "latency": ...}`.
+   `data = trace.to_dict() | {"usage": per-model usage, "latency": ...}`. A call whose stream was closed before its
+   usage chunk is listed in `usage_missing` (with its `generation_id`), and `usage_complete` is then false: the
+   usage and cost totals are a lower bound and clients label them as partial. `Segment.aborted` is true whenever
+   the stream was closed before the provider finished (by the relay, or by the backend at the sentinel or cut).
 
 ## 6. Server, UI and CLI (WP5)
 
@@ -431,6 +461,12 @@ Loop, with i = segment index:
     `delta.content`. Non-stream returns `message.content`, `message.reasoning` and a `cutoffmix` trace.
   - `GET /v1/models`.
   - Per request, options `policy`, `strategy` and `segment_tokens` can override the config.
+  - The POST endpoints start paid calls, so they take only `Content-Type: application/json` (415 otherwise, so a
+    cross-site page cannot send them without a CORS preflight, which is never granted) and refuse a foreign
+    `Origin` (403): only the server's own (`Host` or `X-Forwarded-Host`) or one passed via `allowed_origins` /
+    `serve --allow-origin`. A client disconnect stops the relay on every path (stream and non-stream). The
+    flattened `/v1` conversation is capped at 20,000 characters like the `/api/relay` question (400). The UI's
+    `?q=` link only prefills the question; a run always needs a click.
 - `web/index.html`: a single self-contained file with no external network. It has the question box, strategy and
   policy controls, and a live stream with segments coloured per model (legend, hover shows topic posterior, r and
   probs). It also shows a topic bar for the current window, an index heatmap (topics × models, τ as YYYY-MM, P_best
@@ -438,7 +474,7 @@ Loop, with i = segment index:
 - `cli.py` (`cutoffmix` entry point, argparse):
   - `run "question" [--mock] [--policy] [--strategy] [--segments] [--json out] [--config]` prints coloured
     segments to the terminal.
-  - `serve [--host] [--port] [--mock]`
+  - `serve [--host] [--port] [--mock] [--allow-origin ORIGIN]`
   - `index show [--path] [--probe]`
   - `bench import-kc --out DIR`
   - `bench build-wikidata --out FILE`

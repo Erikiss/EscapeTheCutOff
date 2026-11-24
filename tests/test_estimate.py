@@ -13,6 +13,7 @@ from cutoffmix.backends.mock import MockModelTruth
 from cutoffmix.bench.estimate import A_GRID, S_GRID, TAU_MAX, TAU_MIN, fit_index, kc_style_cutoffs
 from cutoffmix.bench.simulate import simulate_results, synthetic_events
 from cutoffmix.taxonomy import TOPIC_IDS
+from cutoffmix.timeutil import parse_fractional_month as _month
 from cutoffmix.types import Event, ProbeResult
 
 
@@ -110,6 +111,36 @@ def test_hazard_and_abstain_rates_follow_the_answer_style() -> None:
     assert np.all(p.hazard[0] > 0.8) and np.all(p.abstain[0] < 0.2)
     assert np.all(p.hazard[1] < 0.2) and np.all(p.abstain[1] > 0.8)
 
+
+
+def test_model_level_hazard_is_shrunk_to_the_pooled_rate() -> None:
+    # the freshest model has only a handful of items after its cutoff (the data end near it): its model-level
+    # hazard must lean on the rate pooled over all models instead of Beta(1, 1) plus those few items
+    truths = {
+        "fresh": truth("fresh", default_tau=33.6, slope=0.3, stale_rate=1.0),
+        "old1": truth("old1", default_tau=26.0, stale_rate=0.1),
+        "old2": truth("old2", default_tau=26.5, stale_rate=0.1),
+    }
+    events = synthetic_events(["sports", "government"], range(18, 35), 6, seed=2)
+    results = simulate_results(truths, events, ["current"], seed=3)
+    index = fit_index(events, results, models=list(truths), bootstrap=0)
+    p = index.probes["current"]
+    by_id = {e.id: e for e in events}
+    counts: dict[str, tuple[int, int]] = {}  # model -> (items after the cell cutoff + 2s, of which stale/incorrect)
+    for mi, model in enumerate(index.models):
+        after = [r for r in results if r.model == model
+                 and _month(by_id[r.event_id].date) > p.tau[mi, index.topics.index(by_id[r.event_id].topic)]
+                 + 2 * p.slope[mi]]
+        counts[model] = (len(after), sum(r.grade in ("outdated", "incorrect") for r in after))
+    assert 0 < counts["fresh"][0] <= 10 and counts["fresh"][1] == counts["fresh"][0]  # few items, all stale
+    n_all, k_all = (sum(c[i] for c in counts.values()) for i in (0, 1))
+    pooled = (k_all + 1) / (n_all + 2)
+    empty = index.topics.index("space_astronomy")  # no data: the cell rate is the model-level rate
+    for mi, model in enumerate(index.models):
+        n_m, k_m = counts[model]
+        assert p.hazard[mi, empty] == pytest.approx((k_m + 5 * pooled) / (n_m + 5), abs=1e-9)
+    assert p.hazard[0, empty] < 0.7  # Beta(1, 1) alone gave (k + 1) / (n + 2) ~ 0.9
+    assert np.all(p.hazard[1:, empty] < 0.15)
 
 def test_censored_cells_stay_finite_in_the_prior_driven_region() -> None:
     events = synthetic_events(["sports", "ai_ml", "government"], range(10, 31), 6, seed=4)

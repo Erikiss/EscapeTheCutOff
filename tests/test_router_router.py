@@ -182,3 +182,40 @@ def test_default_config_and_from_config(tmp_path):
     assert isinstance(router.classifier, KeywordTopicClassifier)
     d = router.decide(AI_WINDOW, current=None)
     assert d.decision == "argmax"
+
+
+def test_default_hazard_penalty_does_not_overturn_the_displayed_index_ranking():
+    # lam is a tie-breaker: with the default config, a topic on which the packaged prior shows one model as freshest
+    # (P_best >= 0.9) must route to that model; lam=2 sent government-only windows to Neon while Sol had P_best 0.99
+    cfg = default_config()
+    assert cfg.router.lam == RouterConfig().lam  # default.yaml and the dataclass agree
+    assert cfg.router.lam <= cfg.router.T0  # a full unit of hazard is worth at most the base temperature
+    router = Router.from_config(replace(cfg, router=replace(cfg.router, policy="argmax", seed=0)))
+    index = router.index
+    assert index is not None
+    for probe in index.probes:
+        for topic in index.topics:
+            p_best = index.p_best({topic: 1.0}, probe=probe)
+            freshest = max(p_best, key=p_best.get)
+            if p_best[freshest] < 0.9:
+                continue
+            u = index.scores({topic: 1.0}, probe=probe, kappa=cfg.router.kappa, lam=cfg.router.lam)
+            assert max(u, key=u.get) == freshest, (probe, topic, u, p_best)
+    assert router.decide("Wer ist aktuell Präsident von Estland?", current=None).model == "gpt-6.2-sol"
+
+
+def test_thompson_sampler_includes_the_hazard_penalty():
+    # two models with identical cutoffs and draws: only the hazard separates them, as it does for softmax/argmax
+    index = make_index()
+    p = index.probes["current_d"]
+    p.tau[2] = p.tau[1]
+    p.draws[:, 2] = p.draws[:, 1]
+    p.hazard[1] = 0.9
+    cfg = RouterConfig(policy="thompson", lam=0.5)
+    window = "Wer ist aktuell Präsident von Estland?"
+    d = make_router(cfg=cfg, index=index, seed=1).decide(window, current=None, available=MODELS[1:])
+    assert d.scores["gemini-4-neon"] > d.scores["gpt-6.2-sol"]
+    assert (d.model, d.probs["gemini-4-neon"]) == ("gemini-4-neon", 1.0)
+    argmax = make_router(cfg=replace(cfg, policy="argmax"), index=index).decide(window, current=None,
+                                                                               available=MODELS[1:])
+    assert argmax.model == d.model

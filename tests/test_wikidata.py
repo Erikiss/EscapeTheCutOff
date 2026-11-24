@@ -287,13 +287,17 @@ def test_heads_end_date_relative_to_as_of():
 
 
 def test_events_from_elections_with_context():
-    ctx = wd.election_context(rows("wd_election_context.json"))
-    events = by_id(wd.events_from_elections(rows("wd_elections.json"), ctx))
+    extra = [{"e": "Q115632204", "cand": f"Q100000{i}", "candLabel": name}
+             for i, name in ((2, "Ciro Gomes"), (3, "Simone Tebet"))]
+    ctx = wd.election_context(rows("wd_election_context.json") + extra)
+    events = by_id(wd.events_from_elections(rows("wd_elections.json"), ctx, as_of="2026-11-24"))
     assert set(events) == {"wd-election-Q115632204", "wd-election-Q107481430", "wd-election-Q56400471",
                            "wd-election-Q900001", "wd-election-Q900002"}
     for e in events.values():
         assert validate_event(e) == [] and e.topic == "elections" and e.category == "election"
-        assert correct_text(e) in e.aliases
+        assert not e.mcq_choices or correct_text(e) in e.aliases
+    # no country and no candidates: no same-type distractors, so no padded MCQ (BENCH-6)
+    assert events["wd-election-Q900001"].mcq_choices == []
 
     brazil = events["wd-election-Q115632204"]
     assert brazil.date == "2026-10-25"  # the runoff, the latest dated round
@@ -322,7 +326,7 @@ def test_events_from_elections_without_context():
 
 
 def test_events_from_awards():
-    events = by_id(wd.events_from_awards(rows("wd_awards.json"), since="2024-01-01"))
+    events = by_id(wd.events_from_awards(rows("wd_awards.json"), since="2024-01-01", as_of="2026-06-01"))
     assert set(events) == {"wd-award-Q38104-2024", "wd-award-Q38104-2025", "wd-award-Q103916-2024",
                            "wd-award-Q103916-2025", "wd-award-Q103916-2026", "wd-award-Q160082-2024",
                            "wd-award-Q160082-2025"}  # 2023 only as predecessors; Turing (year precision) dropped
@@ -349,9 +353,20 @@ def test_events_from_awards():
 
 def test_events_from_sports_with_context():
     ctx = wd.sports_context(rows("wd_sports_context.json"))
-    events = by_id(wd.events_from_sports(rows("wd_sports.json"), ctx))
+    # two more motorsport winners, so the Dutch GP has same-sport distractors (other sports never pad an MCQ)
+    more = [{"ed": f"Q51{i}", "edLabel": f"2025 Example Grand Prix {i}", "comp": f"Q52{i}",
+             "compLabel": f"Example Grand Prix {i}", "winner": f"Q53{i}", "winnerLabel": name,
+             "date": "2025-0{i}-01T00:00:00Z".format(i=i + 3), "sportLabel": "motorsport", "edLinks": 5}
+            for i, name in ((1, "Max Verstappen"), (2, "George Russell"))]
+    ctx.update({f"Q51{i}": {"human": {f"Q53{i}"}} for i in (1, 2)})
+    events = by_id(wd.events_from_sports(rows("wd_sports.json") + more, ctx, as_of="2026-06-01"))
     assert set(events) == {"wd-sports-Q501", "wd-sports-Q502", "wd-sports-Q701", "wd-sports-Q702",
-                           "wd-sports-Q703"}  # QID label and year-precision edition dropped
+                           "wd-sports-Q703", "wd-sports-Q511",
+                           "wd-sports-Q512"}  # QID label and year-precision edition dropped
+    for e in events.values():
+        others = {"Max Verstappen", "George Russell", "Lando Norris", "Oscar Piastri"}
+        if e.mcq_choices and "Grand Prix" in e.subject:  # distractors of the same sport only
+            assert set(choice_texts(e)) <= others
     for e in events.values():
         assert validate_event(e) == [] and e.topic == "sports" and e.category == "sports_result"
     gp24, gp25 = events["wd-sports-Q501"], events["wd-sports-Q502"]
@@ -371,10 +386,12 @@ def _fake_runner(queries: list[str]):
         "awards": (rows("wd_awards.json"), "d"), "sports": (rows("wd_sports.json"), "date"),
         "election_context": (rows("wd_election_context.json"), "e"),
         "sports_context": (rows("wd_sports_context.json"), "ed"),
+        "comp_editions": ([], "comp"),
     }
 
     def which(q: str) -> str:
-        for name, marker in (("election_context", "P726"), ("sports_context", "humanWinner"), ("heads", "P1906"),
+        for name, marker in (("election_context", "P726"), ("sports_context", "humanWinner"),
+                             ("comp_editions", "SELECT ?comp ?other"), ("heads", "P1906"),
                              ("elections", "wdt:P991 ?winner"), ("awards", "p:P166"), ("sports", "wdt:P3450"),
                              ("sports_series", "wdt:P179")):
             if marker in q:
@@ -387,7 +404,7 @@ def _fake_runner(queries: list[str]):
         if name == "sports_series":
             return []
         table, key = data[name]
-        if name.endswith("context"):
+        if name.endswith("context") or name == "comp_editions":
             wanted = set(re.findall(r"wd:(Q\d+)", query))
             return [r for r in table if r[key] in wanted]
         start, end = re.findall(r'"(\d{4}-\d{2}-\d{2})T00:00:00Z"', query)[:2]
@@ -421,3 +438,223 @@ def test_build_wikidata_events_kinds_and_dates():
         wd.build_wikidata_events("2024-01-01", "2026-11-24", kinds=["films"], runner=_fake_runner([]))
     with pytest.raises(ValueError, match="before start"):
         wd.build_wikidata_events("2026-01-01", "2025-01-01", runner=_fake_runner([]))
+
+
+# --------------------------------------------------------------------------------------
+# review regressions (BENCH-1, -3, -5, -6, -8, -9)
+# --------------------------------------------------------------------------------------
+
+
+def _sport_row(ed, label, comp, comp_label, winner, date, *, wq=None, links=30, sport="Formula One", series=False):
+    r = {"ed": ed, "edLabel": label, "comp": comp, "compLabel": comp_label, "winner": wq or f"W{winner}",
+         "winnerLabel": winner, "date": date + "T00:00:00Z", "sportLabel": sport, "edLinks": links}
+    if series:
+        r["isSeries"] = True
+    return r
+
+
+def test_sports_series_is_the_specific_competition_not_a_generic_item():
+    data = [  # 2025 Monaco GP filed under the generic "Formula One Grand Prix" (lower QID) and "Monaco Grand Prix"
+        _sport_row("Q900", "2025 Monaco Grand Prix", "Q1968", "Formula One Grand Prix", "Lando Norris", "2025-05-25"),
+        _sport_row("Q900", "2025 Monaco Grand Prix", "Q5000", "Monaco Grand Prix", "Lando Norris", "2025-05-25",
+                   series=True),
+        _sport_row("Q901", "2026 Monaco Grand Prix", "Q5000", "Monaco Grand Prix", "Kimi Antonelli", "2026-06-07",
+                   series=True),
+        _sport_row("Q905", "2025 Spanish Grand Prix", "Q1968", "Formula One Grand Prix", "Oscar Piastri",
+                   "2025-06-01"),
+    ]
+    ctx = {q: {"human": {f"W{w}"}} for q, w in (("Q900", "Lando Norris"), ("Q901", "Kimi Antonelli"),
+                                                 ("Q905", "Oscar Piastri"))}
+    events = by_id(wd.events_from_sports(data, ctx, as_of="2026-07-01"))
+    assert events["wd-sports-Q900"].question_current == ""  # superseded by the 2026 Monaco GP
+    # without the Spanish GP, the isSeries flag or edition lists, the edition label still names the series
+    plain = [{k: v for k, v in r.items() if k != "isSeries"} for r in data[:3]]
+    events = by_id(wd.events_from_sports(plain, ctx, as_of="2026-07-01"))
+    assert events["wd-sports-Q900"].question_current == ""
+    assert events["wd-sports-Q901"].question_current == "Who won the most recent edition of the Monaco Grand Prix?"
+
+
+def test_sports_later_editions_without_a_winner_and_overdue_series_supersede():
+    fa = [_sport_row("Q902", "2024 FA Cup Final", "Q8", "FA Cup", "Manchester United F.C.", "2024-05-25",
+                     sport="association football")]
+    # nothing later in the rows and no period known: the question stays
+    (alone,) = wd.events_from_sports(fa, as_of="2026-11-24")
+    assert alone.question_current == "Who won the most recent edition of the FA Cup?"
+    # an edition without a winner from the comp_editions follow-up query supersedes it
+    (by_edition,) = wd.events_from_sports(fa, editions={"Q8": {"2025-05-17"}}, as_of="2026-11-24")
+    assert by_edition.question_current == ""
+    # so does a dated P156 successor
+    ctx = wd.sports_context([{"ed": "Q902", "nextDate": "2025-05-17T00:00:00Z"}])
+    (by_next,) = wd.events_from_sports(fa, ctx, as_of="2026-11-24")
+    assert by_next.question_current == ""
+    # ...but not one dated after the as-of date
+    (future,) = wd.events_from_sports(fa, ctx, as_of="2025-05-01")
+    assert future.question_current != ""
+    # the safety net: an annual series (P155 one year earlier) whose next edition is overdue
+    ctx = wd.sports_context([{"ed": "Q902", "prevDate": "2023-06-03T00:00:00Z"}])
+    (overdue,) = wd.events_from_sports(fa, ctx, as_of="2026-11-24")
+    assert overdue.question_current == ""
+    (in_time,) = wd.events_from_sports(fa, ctx, as_of="2025-06-01")
+    assert in_time.question_current != ""
+    # the median gap keeps the annual rhythm when some editions are missing (2023 final absent, 2027 scheduled)
+    eds = {"Q8": {"2020-05-30", "2021-05-15", "2022-05-14", "2024-05-25", "2027-05-22"}}
+    assert wd.events_from_sports(fa, editions=eds, as_of="2025-06-01")[0].question_current != ""
+    assert wd.events_from_sports(fa, editions=eds, as_of="2025-07-01")[0].question_current == ""
+    # "2024–25" season labels are annual even without a known previous edition
+    season = [_sport_row("Q903", "2024–25 Latvian Hockey League", "Q9", "Latvian Hockey League", "HK Zemgale",
+                         "2025-04-20", sport="ice hockey")]
+    assert wd.events_from_sports(season, as_of="2026-11-24")[0].question_current == ""
+    assert wd.events_from_sports(season, as_of="2025-12-01")[0].question_current != ""
+
+
+def test_sports_same_result_under_two_labels_is_one_event():
+    data = [
+        _sport_row("Q910", "UEFA Euro 2024", "Q11", "UEFA European Championship", "Spain men's national football team",
+                   "2024-07-14", wq="Q42267", links=80, sport="association football"),
+        _sport_row("Q911", "UEFA Euro 2024 final", "Q12", "UEFA European Championship final",
+                   "Spain men's national football team", "2024-07-14", wq="Q42267", links=40,
+                   sport="association football"),
+    ]
+    events = wd.events_from_sports(data, as_of="2024-08-01")
+    assert [e.id for e in events] == ["wd-sports-Q910"]
+
+
+def test_team_aliases_cover_the_short_names_people_answer_with():
+    from cutoffmix.bench.grading import grade_rule
+
+    assert wd.team_variants("Manchester United F.C.") == ["Manchester United"]
+    assert wd.team_variants("Spain men's national football team") == ["Spain", "Spain national team"]
+    assert wd.team_variants("2023 Kansas City Chiefs season") == ["Kansas City Chiefs"]
+    assert wd.team_variants("Paris Saint-Germain FC") == ["Paris Saint-Germain"]
+    assert wd.team_variants("Lando Norris") == []
+    assert wd.team_variants("Real Madrid Club de Fútbol") == ["Real Madrid"]
+    data = [_sport_row("Q920", "2024 FA Cup Final", "Q8", "FA Cup", "Manchester United F.C.", "2024-05-25",
+                       sport="association football")]
+    ctx = {"Q920": {"prev": {"Manchester City F.C."}}}
+    (e,) = wd.events_from_sports(data, ctx, as_of="2024-06-01")
+    assert "Manchester United" in e.aliases and "Manchester City" in e.reject_aliases
+    assert grade_rule(e, "current_d", "Manchester United won the most recent FA Cup final.") == ("correct", False)
+    assert grade_rule(e, "current_d", "Manchester City won the FA Cup.") == ("outdated", False)
+    # a short form that occurs in the question is not an alias (it would give the answer away)
+    data = [_sport_row("Q921", "2025 Spain Cup", "Q13", "Spain Cup", "Spain men's national handball team",
+                       "2025-01-10", sport="handball")]
+    (spain,) = wd.events_from_sports(data, as_of="2025-02-01")
+    assert "Spain" not in spain.aliases and validate_event(spain) == []
+
+
+def test_sports_distractors_match_sport_gender_and_team_kind():
+    def team(ed, winner, sport, date):
+        return _sport_row(ed, f"2025 Cup {ed}", f"C{ed}", f"Cup {ed}", winner, date, sport=sport)
+
+    data = [team("Q930", "Japan women's national softball team", "softball", "2025-03-01"),
+            team("Q931", "United States women's national softball team", "softball", "2025-04-01"),
+            team("Q932", "England women's national football team", "association football", "2025-05-01"),
+            team("Q933", "United States women's national basketball team", "basketball", "2025-06-01"),
+            team("Q934", "Australia men's national softball team", "softball", "2025-07-01"),
+            team("Q935", "Mexico women's national softball team", "softball", "2025-08-01"),
+            team("Q936", "Canada women's national softball team", "softball", "2025-09-01")]
+    events = by_id(wd.events_from_sports(data, as_of="2025-10-01"))
+    japan = events["wd-sports-Q930"]
+    assert set(choice_texts(japan)) == {"Japan women's national softball team",
+                                        "United States women's national softball team",
+                                        "Mexico women's national softball team",
+                                        "Canada women's national softball team"}
+    assert events["wd-sports-Q932"].mcq_choices == []  # no other women's football team: no padded MCQ
+
+
+def _award_row(award, label, who, who_label, d, *, human, prec=11, work=None, work_label=None):
+    r = {"award": award, "awardLabel": label, "who": who, "whoLabel": who_label, "d": d + "T00:00:00Z",
+         "prec": prec, "human": human}
+    if work:
+        r.update(work=work, workLabel=work_label)
+    return r
+
+
+def test_work_awards_answer_the_work_and_ignore_honorary_people():
+    lion = "Golden Lion"
+    data = [
+        _award_row("Q209459", lion, "Q201", "Poor Things", "2023-09-09", human=False),
+        _award_row("Q209459", lion, "Q202", "The Room Next Door", "2024-09-07", human=False),
+        _award_row("Q209459", lion, "Q203", "Father Mother Sister Brother", "2025-09-06", human=False),
+        _award_row("Q209459", lion, "Q204", "Werner Herzog", "2025-09-06", human=True),  # honorary, no P1686
+        _award_row("Q209459", lion, "Q205", "Jim Jarmusch", "2025-09-06", human=True, work="Q203",
+                   work_label="Father Mother Sister Brother"),
+    ]
+    events = by_id(wd.events_from_awards(data, since="2024-01-01", as_of="2025-10-01"))
+    e = events["wd-award-Q209459-2025"]
+    assert e.question_current == "What won the most recent Golden Lion?"
+    assert e.aliases[0] == "Father Mother Sister Brother" and "Jim Jarmusch" in e.aliases
+    assert "Werner Herzog" not in e.aliases and "Werner Herzog" not in e.expected_current
+    assert "The Room Next Door" in e.reject_aliases
+    # producers credited for the film are aliases, the film is the answer
+    pic = [_award_row("Q102427", "Academy Award for Best Picture", "Q301", "Charles Roven", "2024-03-10",
+                      human=True, work="Q302", work_label="Oppenheimer"),
+           _award_row("Q102427", "Academy Award for Best Picture", "Q302", "Oppenheimer", "2024-03-10", human=False)]
+    (best,) = wd.events_from_awards(pic, as_of="2024-04-01")
+    assert best.aliases[:1] == ["Oppenheimer"] and "Charles Roven" in best.aliases
+    # a year with only unattributed people has no answer: dropped
+    only_people = [_award_row("Q102427", "Academy Award for Best Picture", "Q301", "Charles Roven", "2024-03-10",
+                              human=True)]
+    assert wd.events_from_awards(only_people, as_of="2024-04-01") == []
+
+
+def test_annual_awards_are_superseded_once_the_next_year_is_overdue():
+    data = [_award_row("Q38104", "Nobel Prize in Physics", "Q401", "John Clarke", "2025-10-07", human=True)]
+    assert wd.events_from_awards(data, as_of="2026-06-01")[0].question_current != ""
+    assert wd.events_from_awards(data, as_of="2026-11-24")[0].question_current == ""
+
+
+def test_elections_superseded_by_a_p156_successor_under_another_label():
+    rows_ = [{"e": "Q124054131", "eLabel": "2024 Liberal Democratic Party (Japan) leadership election",
+              "d": "2024-09-27T00:00:00Z", "winner": "Q1", "winnerLabel": "Shigeru Ishiba", "country": "Q17",
+              "countryLabel": "Japan", "sitelinks": 20}]
+    ctx = wd.election_context([{"e": "Q124054131", "nextDate": "2025-10-04T00:00:00Z"}])
+    (e,) = wd.events_from_elections(rows_, ctx, as_of="2026-11-24")
+    assert e.question_current == ""
+    (early,) = wd.events_from_elections(rows_, ctx, as_of="2025-09-01")
+    assert early.question_current.startswith("Who won the most recent")
+
+
+def test_blank_nodes_are_not_labels():
+    assert wd.is_qid_label("http://www.wikidata.org/.well-known/genid/a9eb0c")
+    assert wd.is_qid_label("Q42") and not wd.is_qid_label("Yasutomo Suzuki")
+    genid = "http://www.wikidata.org/.well-known/genid/1"
+    ctx = wd.election_context([{"e": "Q1", "cand": "x", "candLabel": genid},
+                               {"e": "Q1", "nextDate": genid, "prevDate": genid, "d": genid, "prec": 11}])
+    assert ctx["Q1"]["cands"] == set() and ctx["Q1"]["next_dates"] == set() and ctx["Q1"]["dates"] == []
+    assert wd.comp_editions([{"comp": "Q8", "d": genid}, {"comp": "Q8", "d": "2025-05-17T00:00:00Z"}]) == {
+        "Q8": {"2025-05-17"}}
+
+
+def test_heads_predecessor_must_be_a_person():
+    base = {"office": "Q23782691", "officeLabel": "Prime Minister of Madagascar", "country": "Q1019",
+            "countryLabel": "Madagascar", "prec": 11}
+    data = [
+        {**base, "person": "Q136448305", "personLabel": "Ruphin Zafisambo", "start": "2025-10-06T00:00:00Z",
+         "replaces": "Q1", "replacesLabel": "2025 Malagasy protests", "replacesHuman": False},
+        {**base, "person": "Q136448305", "personLabel": "Ruphin Zafisambo", "start": "2025-10-06T00:00:00Z",
+         "replaces": "Q2", "replacesLabel": "Christian Ntsay", "replacesHuman": True},
+    ]
+    (e,) = wd.events_from_heads(data, as_of="2026-11-24")
+    assert e.reject_aliases == ["Christian Ntsay"] and "protests" not in e.fact
+    no_flag = [{**data[0], "replacesHuman": None}]
+    no_flag[0].pop("replacesHuman")
+    (e2,) = wd.events_from_heads(no_flag, as_of="2026-11-24")
+    assert e2.reject_aliases == []  # a year-led label is an event even without the flag
+
+
+def test_award_distractors_come_from_the_same_kind_of_award():
+    def row(award, label, who, d):
+        return _award_row(award, label, f"Q{abs(hash(who)) % 10**6}", who, d, human=True)
+
+    actress = "Academy Award for Best Supporting Actress"
+    data = [row("Q106301", actress, "Da'Vine Joy Randolph", "2024-03-10"),
+            row("Q106301", actress, "Zoe Saldaña", "2025-03-02"),
+            row("Q106301", actress, "Amy Madigan", "2026-03-15"),
+            row("Q103618", "Academy Award for Best Actress", "Emma Stone", "2024-03-10"),
+            row("Q131520", "Academy Award for Best Cinematography", "Hoyte van Hoytema", "2024-03-10"),
+            row("Q131520", "Academy Award for Best Cinematography", "Lol Crawley", "2025-03-02"),
+            row("Q131520", "Academy Award for Best Cinematography", "Michael Bauman", "2026-03-15")]
+    events = by_id(wd.events_from_awards(data, as_of="2026-04-01"))
+    madigan = events["wd-award-Q106301-2026"]
+    assert set(choice_texts(madigan)) == {"Amy Madigan", "Zoe Saldaña", "Da'Vine Joy Randolph", "Emma Stone"}

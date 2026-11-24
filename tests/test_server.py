@@ -136,6 +136,50 @@ def client(app) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
+class BrokenStream(Exception):
+    retryable = False  # the relay drops the attempt and re-routes instead of retrying the same model
+
+
+class FlakyBackend(FakeBackend):
+    """The first think call streams half a paragraph (past the relay's preamble buffer) and then fails."""
+
+    PARTIAL = "This half paragraph is long enough to get past the preamble buffer of the relay before it"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.failed = False
+
+    async def stream_continuation(self, model, req):
+        if not self.failed and req.phase == "think":
+            self.failed = True
+            self.requests.append(req)
+            for i in range(0, len(self.PARTIAL), 8):
+                yield StreamEvent(kind="text", text=self.PARTIAL[i:i + 8])
+            raise BrokenStream("connection reset by peer")
+        async for event in super().stream_continuation(model, req):
+            yield event
+
+
+def http_scope(path: str, headers: list[tuple[bytes, bytes]] | None = None,
+               spec_version: str = "2.4") -> dict[str, Any]:
+    """An ASGI HTTP scope for a JSON POST to ``path`` (for driving the app with a hand-written receive/send)."""
+    return {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version}, "http_version": "1.1",
+            "method": "POST", "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+            "root_path": "", "client": ("127.0.0.1", 1234), "server": ("test", 80),
+            "headers": headers or [(b"content-type", b"application/json"), (b"host", b"test")]}
+
+
+def js_function(html: str, name: str) -> str:
+    """The source of the JavaScript function ``name`` in ``html`` (brace matching from its first ``{``)."""
+    start = html.index(f"function {name}(")
+    depth = 0
+    for j in range(html.index("{", start), len(html)):
+        depth += {"{": 1, "}": -1}.get(html[j], 0)
+        if depth == 0:
+            return html[start:j + 1]
+    raise AssertionError(f"unbalanced function {name}")
+
+
 def sse_payloads(body: str) -> list[Any]:
     out = []
     for block in body.split("\n\n"):
@@ -159,6 +203,37 @@ async def test_ui_is_a_single_self_contained_page():
     assert "<title>" in html and "/api/relay" in html and "/api/index" in html and "prefers-color-scheme" in html
     assert not re.search(r"https?://", html), "the UI must not load anything from the network"
     assert "<link" not in html and "@import" not in html
+
+
+async def test_ui_link_with_a_question_never_starts_a_run_by_itself():
+    """A cross-site link to ``/?q=...&run=1`` must not start a paid run: the question is only prefilled."""
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    boot = js_function(html, "boot")
+    assert 'params.get("q")' in boot
+    assert "run()" not in boot and 'get("run")' not in boot
+
+
+async def test_ui_segment_tokens_input_accepts_every_value_the_server_accepts():
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    tag = re.search(r'<input id="segtok"[^>]*>', html)
+    assert tag is not None
+    attrs = dict(re.findall(r'(\w+)="([^"]*)"', tag.group(0)))
+    assert attrs["min"] == "1" and attrs["max"] == str(server.MAX_SEGMENT_TOKENS)
+    assert attrs["step"] in ("1", "any")  # e.g. a configured 200 or 100 must not block the Run button
+
+
+async def test_ui_new_run_resets_the_stopped_hint():
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    reset = js_function(html, "resetRun")
+    assert '$("notes-hint").textContent = NOTES_HINT' in reset
+    default = re.search(r'id="notes-hint">([^<]*)<', html)
+    assert default is not None and f'const NOTES_HINT = "{default.group(1)}";' in html
 
 
 async def test_api_config_lists_models_defaults_and_policies():
@@ -270,6 +345,60 @@ async def test_api_relay_rejects_non_json():
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize("path", ["/api/relay", "/v1/chat/completions"])
+@pytest.mark.parametrize("value", ["1e999", "-1e999", "NaN", "Infinity"])
+async def test_non_finite_segment_tokens_are_a_client_error(path, value):
+    app, backend = make_app()
+    body = '{"question": "q", "messages": [{"role": "user", "content": "q"}], "segment_tokens": ' + value + "}"
+    async with client(app) as c:
+        r = await c.post(path, content=body.encode(), headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    detail = r.json()["detail"] if path == "/api/relay" else r.json()["error"]["message"]
+    assert "segment_tokens" in detail and backend.requests == []
+
+
+@pytest.mark.parametrize("path", ["/api/relay", "/v1/chat/completions"])
+@pytest.mark.parametrize("content_type", [None, "text/plain", "application/x-www-form-urlencoded",
+                                          "multipart/form-data; boundary=x"])
+async def test_posts_need_a_json_content_type(path, content_type):
+    """Simple cross-site requests (no CORS preflight) cannot carry application/json, so they are refused."""
+    app, backend = make_app()
+    body = json.dumps({"question": "q", "messages": [{"role": "user", "content": "q"}]}).encode()
+    headers = {"content-type": content_type} if content_type else {}
+    async with client(app) as c:
+        r = await c.post(path, content=body, headers=headers)
+    assert r.status_code == 415 and backend.requests == []
+    if path.startswith("/v1"):
+        assert r.json()["error"]["type"] == "invalid_request_error"
+
+
+@pytest.mark.parametrize("path", ["/api/relay", "/v1/chat/completions"])
+@pytest.mark.parametrize("origin", ["http://evil.example", "http://test.evil.example", "https://test:8443", "null"])
+async def test_posts_from_another_origin_are_refused(path, origin):
+    app, backend = make_app()
+    body = {"question": "q", "messages": [{"role": "user", "content": "q"}]}
+    async with client(app) as c:
+        r = await c.post(path, json=body, headers={"origin": origin})
+    assert r.status_code == 403 and backend.requests == []
+    assert "--allow-origin" in r.text
+
+
+@pytest.mark.parametrize("origin, headers, allowed", [
+    ("http://test", {}, ()),  # the page served by this server
+    ("http://TEST/", {}, ()),
+    ("https://notes.example", {"x-forwarded-host": "notes.example"}, ()),  # behind a reverse proxy
+    ("https://notes.example", {}, ("https://notes.example/",)),  # --allow-origin
+])
+async def test_posts_from_the_own_or_an_allowed_origin_run(origin, headers, allowed):
+    backend = FakeBackend()
+    app = create_app(make_cfg(), backend=backend, allowed_origins=allowed)
+    app.state.runtime.router_factory = lambda cfg: FakeRouter(cfg.model_keys())
+    app.state.runtime._load_routing = lambda: (None, None, None)
+    async with client(app) as c:
+        r = await c.post("/api/relay", json={"question": "q?"}, headers={"origin": origin, **headers})
+    assert r.status_code == 200 and sse_payloads(r.text)[-1]["type"] == "done"
+
+
 async def test_idle_streams_get_heartbeats(monkeypatch):
     monkeypatch.setattr(server, "POLL_S", 0.01)
     monkeypatch.setattr(server, "HEARTBEAT_S", 0.02)
@@ -299,14 +428,40 @@ async def test_client_disconnect_stops_the_relay(monkeypatch, spec_version):
         if message["type"] == "http.response.body" and b'"type":"delta"' in message.get("body", b""):
             disconnected.set()
 
-    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version}, "http_version": "1.1",
-             "method": "POST", "scheme": "http", "path": "/api/relay", "raw_path": b"/api/relay", "query_string": b"",
-             "root_path": "", "headers": [(b"content-type", b"application/json"), (b"host", b"test")],
-             "client": ("127.0.0.1", 1234), "server": ("test", 80)}
-    await asyncio.wait_for(app(scope, receive, send), timeout=5)
+    await asyncio.wait_for(app(http_scope("/api/relay", spec_version=spec_version), receive, send), timeout=5)
     assert disconnected.is_set()
     assert backend.open == 0 and backend.closed >= 1  # the in-flight model stream was closed
     assert len(backend.requests) <= 2  # the relay stopped instead of running all 50 segments
+
+
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_client_disconnect_stops_a_non_stream_chat_completion(monkeypatch, spec_version):
+    """A client that times out (or is killed) while waiting for a non-stream answer must not leave the relay
+    making paid calls to the end."""
+    # Events arrive far more often than POLL_S, so the relay is never idle long enough for an idle-time check:
+    # the disconnect must be noticed while events flow (the whole run would take about 3 s).
+    monkeypatch.setattr(server, "POLL_S", 0.2)
+    backend = FakeBackend(final_at=50, delay=0.005)
+    app, _ = make_app(backend)
+    body = json.dumps({"model": "cutoffmix", "messages": [{"role": "user", "content": "q?"}]}).encode()
+    pending = [{"type": "http.request", "body": body, "more_body": False}]
+    sent: list[dict[str, Any]] = []
+
+    async def receive():
+        if pending:
+            return pending.pop(0)
+        while not backend.open:  # the client gives up while the first model call is streaming
+            await asyncio.sleep(0.005)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    await asyncio.wait_for(app(http_scope("/v1/chat/completions", spec_version=spec_version), receive, send),
+                           timeout=3)
+    assert backend.open == 0 and backend.closed >= 1  # the in-flight model stream was closed
+    assert len(backend.requests) <= 12  # the relay stopped within about POLL_S instead of running all 50 segments
+    assert sent and sent[0]["type"] == "http.response.start" and sent[0]["status"] == 499
 
 
 # --------------------------------------------------------------------------------------
@@ -378,6 +533,39 @@ async def test_chat_completions_body_overrides_win():
                                                    "messages": [{"role": "user", "content": "q?"}]})
     cfg = app.state.runtime.seen_cfgs[-1]
     assert cfg.relay.strategy == "sequential" and cfg.relay.segment_tokens == 32
+
+
+async def test_chat_completions_stream_closes_the_text_of_a_dropped_attempt():
+    """Streamed reasoning of an attempt that fails later cannot be taken back: it is closed with a visible marker
+    and the re-routed attempt starts a new paragraph instead of being glued onto the half sentence."""
+    backend = FlakyBackend()
+    app, _ = make_app(backend)
+    async with client(app) as c:
+        r = await c.post("/v1/chat/completions", json={
+            "model": "cutoffmix", "stream": True, "messages": [{"role": "user", "content": "Who is it?"}]})
+    chunks = [c for c in sse_payloads(r.text) if c != "[DONE]"]
+    reasoning = "".join(c["choices"][0]["delta"].get("reasoning", "") for c in chunks if c["choices"])
+    assert reasoning.startswith("This half paragraph")  # it was streamed before the failure
+    assert " [segment dropped: error]\n\nStep 0:" in reasoning
+    assert "\n\nStep 1:" in reasoning and reasoning.count("[segment dropped") == 1
+    done = chunks[-1]["cutoffmix"]
+    assert done["status"] == "ok" and done["segments"][0]["text"].startswith("Step 0:")  # the trace is clean
+
+
+async def test_chat_completions_reject_an_over_long_conversation():
+    app, backend = make_app()
+    text = "x" * (server.MAX_QUESTION_CHARS + 1)
+    async with client(app) as c:
+        for stream in (False, True):
+            r = await c.post("/v1/chat/completions", json={"model": "cutoffmix", "stream": stream,
+                                                           "messages": [{"role": "user", "content": text}]})
+            assert r.status_code == 400
+            assert r.json()["error"]["type"] == "invalid_request_error"
+            assert str(server.MAX_QUESTION_CHARS) in r.json()["error"]["message"]
+        history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "y" * 3000} for i in range(7)]
+        r = await c.post("/v1/chat/completions", json={"model": "cutoffmix", "messages": history})
+        assert r.status_code == 400  # each message is short, the flattened conversation is not
+    assert backend.requests == []
 
 
 async def test_chat_completions_errors_use_the_openai_format():

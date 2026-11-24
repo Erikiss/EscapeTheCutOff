@@ -10,7 +10,6 @@ pass).
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import datetime as _dt
 import logging
 import os
@@ -24,11 +23,17 @@ from cutoffmix.bench.io import append_jsonl, read_jsonl
 from cutoffmix.bench.prompts import probe_messages
 from cutoffmix.types import Backend, ChatRequest, Event, Grade, ModelSpec, ProbeKind, ProbeResult
 
-__all__ = ["BATCH_SUFFIX", "DEFAULT_PRICING", "PROBES", "ProgressCallback", "estimate_cost", "run_probes"]
+__all__ = ["BATCH_SUFFIX", "BATCH_UNSUPPORTED", "DEFAULT_PRICING", "PROBES", "ProgressCallback", "estimate_cost",
+           "run_probes"]
 
 PROBES: tuple[str, ...] = ("current", "current_d", "recall", "mcq")
 BATCH_SUFFIX = ":batch"
-BATCH_DISCOUNT = 0.5  # OpenRouter `:batch` variants cost 50% of list price
+# OpenRouter lists its `:batch` model ids only on the asynchronous Batch API (endpoints == ["/api/v1/batches"]),
+# not on /chat/completions, which is all OpenRouterBackend speaks. Until that API is implemented (upload JSONL,
+# poll, then grade) or a live smoke test shows `:batch` ids working on chat/completions, batch runs are refused
+# and no batch discount is estimated.
+BATCH_UNSUPPORTED = ("OpenRouter serves ':batch' model ids only through its asynchronous Batch API "
+                     "(/api/v1/batches), which cutoffmix does not implement; run without --batch")
 # OpenRouter list prices, USD per million tokens (input, output), checked 2026-11-24; keyed by provider id.
 DEFAULT_PRICING: dict[str, tuple[float, float]] = {
     "anthropic/claude-fable-5.2": (8.0, 40.0),
@@ -149,8 +154,8 @@ async def run_probes(
       when ``retry_errors`` is true (the new row is appended; readers keep the last row per key).
       ``resume=False`` starts a fresh file (``out_path`` is truncated).
     - At most ``concurrency`` calls are in flight (``asyncio.Semaphore``); judge calls happen inside that slot.
-    - ``use_batch_variant`` calls ``provider_id + ":batch"`` (OpenRouter's discounted batch variants, probing only);
-      results are still recorded under the model key.
+    - ``use_batch_variant=True`` raises ``ValueError`` (:data:`BATCH_UNSUPPORTED`): OpenRouter's ``:batch`` ids
+      are only served by its asynchronous Batch API, not by the chat-completions endpoint the backends call.
     - ``today`` (ISO date, default: the local date, fixed for the whole run) and ``deployment_system`` shape the
       ``current_d`` system prompt. ``max_tokens`` includes the hidden reasoning budget.
     - Each row records the response, grade, hedged flag, grader, latency, usage and error (if any).
@@ -159,6 +164,8 @@ async def run_probes(
     in event x model x probe order.
     """
     _validate(models, probes)
+    if use_batch_variant:
+        raise ValueError(BATCH_UNSUPPORTED)
     if concurrency < 1:
         raise ValueError(f"concurrency must be >= 1, got {concurrency}")
     if max_tokens < 1:
@@ -187,7 +194,7 @@ async def run_probes(
                 if done is None or (retry_errors and done.error):
                     pending.append((model, event, probe, messages))
 
-    call_models = {m.key: _batch_variant(m) if use_batch_variant else m for m in models}
+    call_models = {m.key: m for m in models}
     results = dict(existing)
     total, finished = len(pending), 0
     sem = asyncio.Semaphore(concurrency)
@@ -227,12 +234,6 @@ async def run_probes(
     return [results[k] for k in order if k in results]
 
 
-def _batch_variant(model: ModelSpec) -> ModelSpec:
-    if model.provider_id.endswith(BATCH_SUFFIX):
-        return model
-    return dataclasses.replace(model, provider_id=model.provider_id + BATCH_SUFFIX)
-
-
 def _price(model: ModelSpec, pricing: Mapping[str, Any]) -> tuple[float, float] | None:
     """``(input, output)`` USD per million tokens for ``model``, looked up by key, then provider id."""
     entry = pricing.get(model.key, pricing.get(model.provider_id))
@@ -256,14 +257,18 @@ def estimate_cost(
     in_tokens: int = 200,
     pricing: Mapping[str, Any] | None = None,
     batch: bool = False,
+    max_tokens: int = 4096,
 ) -> dict[str, Any]:
     """Estimate calls, tokens and USD for :func:`run_probes` (judge calls not included).
 
     ``pricing`` maps a model key or provider id to ``(input, output)`` or ``{"input": .., "output": ..}`` in USD per
     million tokens (e.g. the OpenRouter list prices from a config); without it, :data:`DEFAULT_PRICING` (Fable
-    8/40, Sol 2/10, Neon 3/15). ``out_tokens`` must include the hidden reasoning, which is billed as output.
-    ``batch=True`` applies the 50% ``:batch`` discount. Only probes the event has a question for are counted.
-    Raises ``ValueError`` for a model without a price.
+    8/40, Sol 2/10, Neon 3/15). ``out_tokens`` must include the hidden reasoning, which is billed as output; the
+    default of 600 is an unmeasured guess, so ``max_usd`` (and ``max_usd`` per model) gives the bound when every
+    call uses its full ``max_tokens`` (:func:`run_probes` default 4096). Measure ``usage.completion_tokens`` on a
+    small ``--limit`` pilot and re-estimate before a full run. ``batch=True`` no longer applies a discount (see
+    :data:`BATCH_UNSUPPORTED`); the estimate says so in ``assumptions["batch"]``. Only probes the event has a
+    question for are counted. Raises ``ValueError`` for a model without a price.
     """
     _validate(models, probes)
     table: Mapping[str, Any] = DEFAULT_PRICING if pricing is None else pricing
@@ -273,19 +278,22 @@ def estimate_cost(
         raise ValueError(f"no price for model(s) {missing}; pass pricing={{key: (input_usd_per_M, output_usd_per_M)}}")
     day = _dt.date.today().isoformat()
     calls_per_model = sum(1 for e in events for p in probes if _probe_messages(e, p, day, None) is not None)
-    factor = BATCH_DISCOUNT if batch else 1.0
     per_model: dict[str, dict[str, Any]] = {}
     for m in models:
         inp, out = prices[m.key]  # type: ignore[misc]
-        usd = calls_per_model * (in_tokens * inp + out_tokens * out) / 1e6 * factor
+        usd = calls_per_model * (in_tokens * inp + out_tokens * out) / 1e6
+        max_usd = calls_per_model * (in_tokens * inp + max_tokens * out) / 1e6
         per_model[m.key] = {"calls": calls_per_model, "in_tokens": calls_per_model * in_tokens,
-                            "out_tokens": calls_per_model * out_tokens, "usd_per_m_in": inp * factor,
-                            "usd_per_m_out": out * factor, "usd": round(usd, 4)}
+                            "out_tokens": calls_per_model * out_tokens, "usd_per_m_in": inp,
+                            "usd_per_m_out": out, "usd": round(usd, 4), "max_usd": round(max_usd, 4)}
     return {
         "calls": calls_per_model * len(models),
         "per_model": per_model,
         "total_usd": round(sum(v["usd"] for v in per_model.values()), 4),
-        "assumptions": {"in_tokens": in_tokens, "out_tokens": out_tokens, "batch": batch,
+        "max_usd": round(sum(v["max_usd"] for v in per_model.values()), 4),
+        "assumptions": {"in_tokens": in_tokens, "out_tokens": out_tokens, "max_tokens": max_tokens,
+                        "out_tokens_measured": False, "judge_calls": "not included",
+                        "batch": f"not applied: {BATCH_UNSUPPORTED}" if batch else False,
                         "pricing": "custom" if pricing is not None else "built-in OpenRouter list prices"},
     }
 

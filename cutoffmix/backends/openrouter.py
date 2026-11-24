@@ -6,7 +6,11 @@ Stream facts this module relies on (OpenRouter docs, checked 2026-11-24):
   such as ``: OPENROUTER PROCESSING`` that must be skipped.
 - ``choices[0].delta`` carries ``content`` (visible text), ``reasoning`` (summary text) and ``refusal``.
 - The last chunk before ``[DONE]`` carries ``usage``; it has one choice with an empty delta that *repeats*
-  ``finish_reason``, so it is accounting, not a second terminal event.
+  ``finish_reason``, so it is accounting, not a second terminal event. A stream closed before it (sentinel, cut,
+  consumer leaving) has no usage; the ``X-Generation-Id`` response header (also each chunk's ``id``) names the
+  generation, whose tokens and cost GET ``/api/v1/generation?id=...`` reports afterwards.
+- OpenAI's native refusal shape is ``delta.refusal`` text with no content and ``finish_reason: "stop"``; it is
+  reported like OpenRouter's ``content_filter`` refusal.
 - After the HTTP 200 is committed, errors arrive as a chunk with a top-level ``error`` and ``finish_reason: "error"``.
 - Closing the connection stops generation (and billing) on Anthropic/OpenAI/Azure, not on Google.
 """
@@ -183,9 +187,10 @@ def _message_text(content: Any) -> str:
 class _StreamState:
     """Accumulates one streamed segment and decides when to stop reading."""
 
-    def __init__(self, sentinel: str, cut_chars: float | None) -> None:
+    def __init__(self, sentinel: str, cut_chars: float | None, generation_id: str | None = None) -> None:
         self.sentinel = sentinel
         self.cut_chars = cut_chars
+        self.generation_id = generation_id or None
         self.text = ""
         self.refusal = ""
         self.usage: dict[str, Any] | None = None
@@ -194,6 +199,8 @@ class _StreamState:
 
     def on_chunk(self, chunk: Mapping[str, Any]) -> tuple[list[StreamEvent], bool]:
         """Process one decoded chunk; returns the events to emit and whether to stop reading."""
+        if self.generation_id is None and isinstance(chunk.get("id"), str) and chunk["id"]:
+            self.generation_id = chunk["id"]
         if chunk.get("usage"):
             self.usage = dict(chunk["usage"])
         if chunk.get("error"):
@@ -237,7 +244,11 @@ class _StreamState:
         return StreamEvent(kind="text", text=piece), False
 
     def final_events(self) -> list[StreamEvent]:
-        """The closing ``done`` event, preceded by an error event if the stream ended without completing."""
+        """The closing ``done`` event, preceded by an error event if the stream ended without completing.
+
+        ``done.usage`` is the usage chunk (None if the stream was closed before it) plus ``generation_id`` when
+        known, so a caller can tell a missing usage chunk apart and fetch the numbers later.
+        """
         events: list[StreamEvent] = []
         finish = self.finish
         if finish is None:
@@ -247,8 +258,13 @@ class _StreamState:
                 finish = "error"
                 events.append(StreamEvent(kind="error", error="stream ended before a finish_reason or [DONE]",
                                           finish_reason="error"))
+        if self.refusal.strip() and not self.text.strip() and finish != "error":
+            finish = "content_filter"  # OpenAI's native shape: refusal text, no content, finish_reason "stop"
         note = f"refused: {self.refusal}" if finish == "content_filter" and self.refusal else None
-        events.append(StreamEvent(kind="done", usage=self.usage, finish_reason=finish, error=note))
+        usage = dict(self.usage) if self.usage else None
+        if self.generation_id is not None:
+            usage = (usage or {}) | {"generation_id": self.generation_id}
+        events.append(StreamEvent(kind="done", usage=usage, finish_reason=finish, error=note))
         return events
 
 
@@ -395,8 +411,11 @@ class OpenRouterBackend:
         """Stream one segment as raw ``text``/``reasoning`` deltas followed by exactly one ``done`` event.
 
         Reading stops, and the HTTP response is closed, as soon as the accumulated text contains ``req.sentinel``
-        (the delta is truncated right after it; finish_reason ``"sentinel"``) or, for think segments, exceeds
-        ``req.hard_cut_chars * 1.5`` characters (``"cut"``). Leaving the ``async for`` early also closes the response.
+        (the delta is truncated right after it; finish_reason ``"sentinel"``) or, for think segments of a
+        ``model.cancellable`` model, exceeds ``req.hard_cut_chars * 1.5`` characters (``"cut"``). A non-cancellable
+        model's overflow is read on (closing would not stop its billing, and the usage chunk comes last); the caller
+        bounds it. Leaving the ``async for`` early also closes the response. ``done.usage`` carries
+        ``generation_id`` (the ``X-Generation-Id`` header, else the chunks' ``id``) when known.
         HTTP and connection errors raise :class:`BackendError` before the first event; afterwards failures are
         reported as an ``error`` event followed by ``done`` with finish_reason ``"error"``.
         """
@@ -414,8 +433,8 @@ class OpenRouterBackend:
                 except httpx.HTTPError as e:
                     raise _transport_error(e, model) from e
                 raise _http_error(response, model)
-            cut = req.hard_cut_chars * CUT_FACTOR if req.phase == "think" else None
-            state = _StreamState(req.sentinel, cut)
+            cut = req.hard_cut_chars * CUT_FACTOR if req.phase == "think" and model.cancellable else None
+            state = _StreamState(req.sentinel, cut, response.headers.get("x-generation-id"))
             try:
                 async with contextlib.aclosing(self._read_events(response, state)) as events:
                     async for event in events:

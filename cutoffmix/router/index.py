@@ -206,7 +206,7 @@ class CutoffIndex:
         *,
         probe: str | None = None,
         kappa: float = 1.0,
-        lam: float = 2.0,
+        lam: float = 0.5,
         models: list[str] | None = None,
     ) -> dict[str, float]:
         """``U_m`` for each requested model (``-inf`` for models the index lacks)."""
@@ -225,18 +225,22 @@ class CutoffIndex:
         rng: np.random.Generator,
         *,
         probe: str | None = None,
+        lam: float = 0.0,
         models: list[str] | None = None,
     ) -> dict[str, float]:
-        """One Thompson draw of ``Σ_z π_z τ^(b)_mz`` per requested model.
+        """One Thompson draw of ``Σ_z π_z τ^(b)_mz − λ·Σ_z π_z H_mz`` per requested model.
 
         With draws, one draw index ``b`` is shared by all models (keeps their correlation); without, the sum is
         drawn from its Normal(tau, var) distribution. Mass on topics the index lacks is drawn from
-        Normal(global_tau, mean var).
+        Normal(global_tau, mean var). The hazard term is the same deterministic penalty as in :meth:`scores`, so
+        Thompson sampling ranks a window like the other policies (no ``κ`` term: the draw itself carries the
+        uncertainty). ``lam=0`` gives the pure cutoff draw.
         """
         p = self._probe(probe)
         pi, a_mass, a_sq = self._weights(posterior)
-        tau, var, _, mean_var, _ = p.filled()
+        tau, var, hazard, mean_var, mean_hazard = p.filled()
         absent = a_mass * p.global_tau + np.sqrt(a_sq * mean_var) * rng.standard_normal(len(self.models))
+        absent = absent - lam * (hazard @ pi + a_mass * mean_hazard)
         if p.draws is not None:
             draw = p.draws[int(rng.integers(len(p.draws)))].astype(np.float64)
             draw = np.where(np.isfinite(draw), draw, tau)

@@ -27,9 +27,9 @@ def test_default_models_match_design():
     assert (fable.provider_id, sol.provider_id, neon.provider_id) == (
         "anthropic/claude-fable-5.2", "openai/gpt-6.2-sol", "google/gemini-4-neon")
     assert (fable.color, sol.color, neon.color) == ("#d97757", "#10a37f", "#4285f4")
-    assert fable.provider_routing == {"only": ["anthropic", "azure"], "allow_fallbacks": False}
-    assert sol.provider_routing == {"only": ["openai", "azure"], "allow_fallbacks": False}
-    assert neon.provider_routing == {"only": ["google-vertex"], "allow_fallbacks": False}
+    assert fable.provider_routing == {"only": ["anthropic", "azure"]}
+    assert sol.provider_routing == {"only": ["openai", "azure"]}
+    assert neon.provider_routing == {"only": ["google-vertex"]}
     assert [m.supports_stop for m in (fable, sol, neon)] == [True, False, True]
     assert [m.supports_temperature for m in (fable, sol, neon)] == [False, False, True]
     assert [m.cancellable for m in (fable, sol, neon)] == [True, True, False]
@@ -54,6 +54,24 @@ def test_today_str_and_model_lookup():
     assert load_config(overrides={"today": "2026-11-24"}).today_str() == "2026-11-24"
     with pytest.raises(KeyError, match=r"known: claude-fable-5\.2"):
         cfg.model("nope")
+
+
+def test_default_routing_keeps_failover_within_the_only_list():
+    # OpenRouter: allow_fallbacks false without `order` serves only the top-ranked provider, so a second provider
+    # in `only` would never take over during an outage
+    for model in default_config().models:
+        routing = model.provider_routing
+        assert routing.get("only"), model.key
+        if len(routing["only"]) > 1 and routing.get("allow_fallbacks") is False:
+            assert routing.get("order"), f"{model.key}: fallbacks disabled without order"
+
+
+def test_unquoted_iso_date_for_today_in_yaml(tmp_path):
+    path = tmp_path / "cfg.yaml"
+    path.write_text("today: 2026-11-24\n", encoding="utf-8")  # YAML parses this as a date, not a string
+    cfg = load_config(path)
+    assert cfg.today == "2026-11-24" and cfg.today_str() == "2026-11-24"
+    assert load_config(overrides={"today": dt.date(2026, 11, 2)}).today == "2026-11-02"
 
 
 def test_overrides_deep_merge_and_model_patch():

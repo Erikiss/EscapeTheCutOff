@@ -155,7 +155,7 @@ def test_fable_body():
     assert body["max_tokens"] == 128 + 2048
     assert body["stop"] == [S]
     assert body["reasoning"] == {"effort": "low", "exclude": True}
-    assert body["provider"] == {"only": ["anthropic", "azure"], "allow_fallbacks": False}
+    assert body["provider"] == {"only": ["anthropic", "azure"]}
     for absent in ("temperature", "verbosity", "prompt_cache_key", "session_id"):
         assert absent not in body
     system, user = body["messages"]
@@ -185,7 +185,7 @@ def test_sol_body():
     assert "stop" not in body and "temperature" not in body
     assert body["prompt_cache_key"] == body["session_id"] == "run42:gpt-6.2-sol"
     assert body["verbosity"] == "low"
-    assert body["provider"] == {"only": ["openai", "azure"], "allow_fallbacks": False}
+    assert body["provider"] == {"only": ["openai", "azure"]}
     assert not has_cache_control(body)
     no_run = OpenRouterBackend(api_key="k").build_continuation_body(SOL, ContinuationRequest(question="Q"))
     assert "prompt_cache_key" not in no_run and "session_id" not in no_run
@@ -196,7 +196,7 @@ def test_neon_body():
     body = b.build_continuation_body(NEON, req(["s1"]))
     assert body["model"] == "google/gemini-4-neon"
     assert body["stop"] == [S]
-    assert body["provider"] == {"only": ["google-vertex"], "allow_fallbacks": False}
+    assert body["provider"] == {"only": ["google-vertex"]}
     assert body["max_tokens"] == 128 + 1536
     assert "temperature" not in body and "prompt_cache_key" not in body and not has_cache_control(body)
     assert b.build_continuation_body(NEON, req(["s1"], metadata={"temperature": 0.2}))["temperature"] == 0.2
@@ -258,7 +258,8 @@ async def test_stream_normal_with_split_chunks_and_usage_chunk():
     assert texts(events) == "Die Antwort ist Äpfel — 42."
     assert [e.text for e in events if e.kind == "reasoning"] == ["Let me check."]
     assert [e.kind for e in events].count("done") == 1 and events[-1].kind == "done"
-    assert events[-1].finish_reason == "stop" and events[-1].usage == USAGE and events[-1].text == ""
+    assert events[-1].finish_reason == "stop" and events[-1].text == ""
+    assert events[-1].usage == USAGE | {"generation_id": "gen-1"}  # the chunks' id: no X-Generation-Id header here
     assert stream.closed and stream.sent == len(stream.chunks)
     request = rec.requests[0]
     assert request.url == "https://openrouter.ai/api/v1/chat/completions"
@@ -280,7 +281,8 @@ async def test_sentinel_mid_delta_closes_stream_promptly():
     stream = ChunkStream(split_every(data, 11), hang_after=True)  # never ends unless we stop reading
     events = await asyncio.wait_for(collect(backend(Recorder(httpx.Response(200, stream=stream))), SOL, req()), 5)
     assert texts(events) == "The result is 42. Done<<END_STEP>>"
-    assert events[-1].kind == "done" and events[-1].finish_reason == "sentinel" and events[-1].usage is None
+    assert events[-1].kind == "done" and events[-1].finish_reason == "sentinel"
+    assert events[-1].usage == {"generation_id": "gen-1"}  # no usage chunk, but the generation can be looked up
     assert stream.closed and stream.sent < len(stream.chunks)
 
 
@@ -306,8 +308,46 @@ async def test_refusal_stream():
     events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), FABLE, req())
     assert texts(events) == ""
     done = events[-1]
-    assert done.kind == "done" and done.finish_reason == "content_filter" and done.usage == USAGE
+    assert done.kind == "done" and done.finish_reason == "content_filter" and done.usage["prompt_tokens"] == 50
     assert "I can't help with that." in done.error
+
+
+async def test_generation_id_header_is_reported_when_the_usage_chunk_is_cut_off():
+    # Sol writes the sentinel itself; the usage chunk would only follow it, so it is never read
+    data = sse_bytes(chunk("The result is 42."), chunk(S), chunk(" more"), chunk("", finish="stop"),
+                     chunk(None, finish="stop", usage=USAGE))
+    stream = ChunkStream(split_every(data, 16))
+    rec = Recorder(httpx.Response(200, stream=stream, headers={"X-Generation-Id": "gen-hdr-7"}))
+    events = await collect(backend(rec), SOL, req())
+    done = events[-1]
+    assert done.finish_reason == "sentinel" and stream.closed and stream.sent < len(stream.chunks)
+    assert done.usage == {"generation_id": "gen-hdr-7"}  # the header wins over the chunk id
+
+
+async def test_non_cancellable_model_is_not_cut_and_keeps_its_usage():
+    data = sse_bytes(*[chunk("x" * 100) for _ in range(5)], chunk("", finish="stop"),
+                     chunk(None, finish="stop", usage=USAGE))
+    r = req(hard_cut_chars=100)
+    assert not NEON.cancellable and SOL.cancellable
+    neon = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), NEON, r)
+    assert len(texts(neon)) == 500  # closing would not stop Google's billing: read on, the relay bounds it
+    assert neon[-1].finish_reason == "stop" and neon[-1].usage["prompt_tokens"] == 50
+    sol = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), SOL, r)
+    assert sol[-1].finish_reason == "cut" and "prompt_tokens" not in (sol[-1].usage or {})
+
+
+async def test_openai_style_refusal_counts_as_content_filter():
+    # OpenAI's native shape: refusal text, no content, finish_reason "stop"
+    data = sse_bytes(chunk(refusal="I can't help with "), chunk(refusal="that."), chunk("", finish="stop"),
+                     chunk(None, finish="stop", usage=USAGE))
+    events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), SOL, req())
+    done = events[-1]
+    assert texts(events) == "" and done.finish_reason == "content_filter"
+    assert done.error == "refused: I can't help with that."
+    # refusal text next to real content is not a refusal of the segment
+    data = sse_bytes(chunk(refusal="partly"), chunk("A usable note."), chunk("", finish="stop"))
+    events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), SOL, req())
+    assert events[-1].finish_reason == "stop" and events[-1].error is None
 
 
 async def test_error_chunk_mid_stream():
@@ -328,7 +368,7 @@ async def test_length_with_empty_content():
     data = sse_bytes(chunk(reasoning="hmm"), chunk("", finish="length"), chunk(None, finish="length", usage=USAGE))
     events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), NEON, req())
     assert texts(events) == "" and [e.kind for e in events] == ["reasoning", "done"]
-    assert events[-1].finish_reason == "length" and events[-1].usage == USAGE
+    assert events[-1].finish_reason == "length" and events[-1].usage == USAGE | {"generation_id": "gen-1"}
 
 
 async def test_premature_eof_reports_error():
