@@ -147,10 +147,11 @@ cutoffmix serve
 
 - `cutoffmix`: das Relay;
 - `cutoffmix-speculative`: das Relay mit parallelen Entwürfen;
-- `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich.
+- `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich;
+- `cutoffmix-explore`: das Relay mit dem Explore-Preset (siehe unten).
 
 Die Notizen kommen als `delta.reasoning` (dort, wo OpenAI-kompatible Clients Thinking anzeigen), die Antwort als
-`delta.content`. Pro Anfrage lassen sich `policy`, `strategy` und `segment_tokens` im Request-Body setzen.
+`delta.content`. Pro Anfrage lassen sich `policy`, `strategy`, `segment_tokens` und `preset` im Request-Body setzen.
 
 Konfiguration: `--config datei.yaml` wird über `cutoffmix/data/default.yaml` gemischt. Beispiel für einen neu
 gemessenen Index:
@@ -162,6 +163,48 @@ router:
 relay:
   segment_tokens: 128
 ```
+
+## Explore-Preset: Querverbindungen und ausführlichere Notizen
+
+```bash
+cutoffmix run --preset explore "Warum verlieren Lithium-Ionen-Akkus bei Kälte an Kapazität?"
+cutoffmix run --preset explore --policy round_robin "…"      # alle drei Modelle sichtbar, nicht nur das freshste
+cutoffmix serve --preset explore                              # UI-Auswahl „Preset“; API-Modell-ID cutoffmix-explore
+```
+
+Hintergrund: Der Wunsch war, die Modelle mit hoher Temperatur laufen zu lassen, damit die Kette über andere
+Fachgebiete wandert, und sie mehr Zwischenschritte ausschreiben zu lassen. Drei Literaturrecherchen mit über 140
+direkt geprüften Quellen (`docs/research/explore-*.md`, Synthese in `docs/DESIGN_explore.md`) haben ergeben:
+
+- **Temperatur ist bei keinem der drei Modelle wirksam.** Fable 5.2 und GPT-6.2 Sol haben den Parameter nicht.
+  Bei Gemini 4 Neon nimmt OpenRouter ihn an, aber laut Googles Doku ignoriert der Server Werte im erlaubten Bereich
+  und lehnt andere mit 400 ab. Das Preset schickt deshalb keine Temperatur. Die Studien sprechen auch inhaltlich
+  dagegen: Höhere Temperatur bringt wenig Neuheit und messbar mehr Inkohärenz, lange Ketten brechen ab T ≈ 1,5
+  zusammen, und selbst bei T = 2 bleiben über 60 % der Antworten fast gleich.
+- **„Mehr schreiben“ verbessert bei Frontier-Modellen die Antwort nicht,** eher im Gegenteil (umgekehrte U-Kurve
+  über die Länge; erzwungenes Weiterdenken erzeugt Varianz). Es verbessert aber Nachvollziehbarkeit und Breite.
+- **Was nachweislich hilft, ist „anderes schreiben“:** explizit verworfene Alternativen, Prinzipien aus anderen
+  Feldern, Zwischenstände, Impulse von außen.
+
+Das Preset setzt deshalb auf Protokoll statt Sampling:
+
+| Mechanismus | Was passiert |
+|---|---|
+| **Fachfremder Blickwinkel** (`lens`) | Vor einzelnen mittleren Abschnitten zieht das Relay per Seed ein Fachgebiet aus 23 Feldern (Thermodynamik, Immunologie, Spieltheorie, Musiktheorie, …), meist mittelweit oder weit vom Thema entfernt. Das schreibende Modell muss zwei bis drei funktionale Entsprechungen nennen, eine prüfbare Folgerung ableiten und zur Frage zurückkehren. |
+| **Prüfabschnitt** (`check`) | Direkt danach prüft ein **anderes** Modell: Welche Entsprechung hält, wo bricht die Analogie, `Lens kept:` oder `Lens dropped:`. Blickwinkel-Abschnitte zählen nicht zum Routing-Fenster, damit der Router nicht dem Analogiefeld hinterherwechselt. |
+| **Strukturierte Notizen** | Jeder Abschnitt besteht aus 2–4 beschrifteten Punkten (`Claim:`, `Evidence:` mit Quelle, `Inference:`, `Principle:`, `Alternative set aside:`, `Open question:`, `Next:`) und endet mit `Where we stand:` (beste Antwort, Konfidenz, schwächste Annahme). Abschnitte sind 192 statt 128 Token lang. |
+| **Abschluss-Sperre** | `FINAL ANSWER` wird erst akzeptiert, wenn mindestens 6 Hauptabschnitte vorliegen und das Protokoll `Evidence:`, `Alternative set aside:` und `Open question:` enthält. |
+| **Fortsetzung statt „Wait“** (`continue`) | Schließt ein Modell zu früh ab, bleibt sein Notizteil erhalten, die Antwort wird verworfen, und ein anderes Modell setzt mit einem inhaltlichen Einstieg fort („Alternatively, …“, „The strongest objection to the current conclusion is …“). Höchstens dreimal; bei Wiederholung wird die Antwort akzeptiert. |
+| **Sol** | `verbosity: medium` für Notizen, `low` für die Antwort, fester `seed` pro Abschnitt. |
+| **Optional** `vs_menu: stagnation` | Bei festgefahrener Kette fragt ein Nebenaufruf an Sol fünf Richtungen mit Wahrscheinlichkeiten ab (Verbalized Sampling) und der Client wählt eine unwahrscheinliche. Standardmäßig aus. |
+
+**Messwerte** stehen in `done.explore` bzw. im Trace: besuchte Themen und ihre Entropie, Blickwinkel
+(angeboten/behalten/verworfen, Felder, Quote), Label-Abdeckung, erzwungene Fortsetzungen, Antwortwechsel in den
+`Where we stand:`-Zeilen, Überlappung der letzten Abschnitte. CLI-Zusammenfassung und UI zeigen sie an.
+
+**Grenzen:** Mit dem Prior-Index schreibt auch hier meist Sol, Querverbindungen wechseln also das Modell nicht
+(`--policy round_robin` zeigt alle drei). Das Preset verbessert Antworten nicht, es macht sie nachvollziehbarer und
+breiter. Kosten: etwa das 1,5- bis 2,5-Fache eines Standardlaufs, ca. 100–140 s mit `round_robin`.
 
 ## Den Index neu messen (themenstratifiziert)
 
