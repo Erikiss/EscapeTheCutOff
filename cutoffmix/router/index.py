@@ -57,11 +57,12 @@ class ProbeIndex:
     plateau: np.ndarray  # [M]
 
     def __post_init__(self) -> None:
+        # copies: the index owns its arrays, so later edits to the caller's arrays cannot change routing
         for name in ("tau", "var", "hazard", "abstain", "global_tau", "slope", "plateau"):
-            setattr(self, name, np.asarray(getattr(self, name), dtype=np.float64))
-        self.n = np.asarray(self.n, dtype=np.int64)
+            setattr(self, name, np.array(getattr(self, name), dtype=np.float64))
+        self.n = np.array(self.n, dtype=np.int64)
         if self.draws is not None:
-            self.draws = np.asarray(self.draws, dtype=np.float32)
+            self.draws = np.array(self.draws, dtype=np.float32)
         if self.tau.ndim != 2:
             raise ValueError(f"probe {self.probe!r}: tau must be [M,T], got shape {self.tau.shape}")
         shape = self.tau.shape

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from cutoffmix.router.features import hashed_features
 from cutoffmix.router.gate import TimeSensitivityGate
 from cutoffmix.router.train import build_gate_corpus
 
@@ -67,8 +68,7 @@ def test_trained_gate_blends_and_round_trips(tmp_path):
     accuracy = np.mean([(gate.score(t) >= 0.5) == bool(y) for t, y in zip(texts, labels)])
     assert accuracy > 0.9
     text = "Wer ist derzeit Trainer des Vereins?"
-    learned = float(gate.model.predict_proba(__import__("cutoffmix.router.features", fromlist=["x"]).hashed_features(
-        text, gate.model.dim))[1])
+    learned = float(gate.model.predict_proba(hashed_features(text, gate.model.dim))[1])
     assert gate.score(text) == pytest.approx(0.7 * learned + 0.3 * gate.lexical_score(text))
 
     path = tmp_path / "gate.npz"

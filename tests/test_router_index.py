@@ -138,8 +138,9 @@ def test_json_round_trip_preserves_arrays(tmp_path):
     assert np.allclose(q.tau, p.tau) and np.array_equal(q.n, p.n)
     assert np.isnan(q.var[1, 2]) and np.allclose(np.nan_to_num(q.var), np.nan_to_num(p.var))
     assert back.probes["mcq"].draws is None
-    # values are rounded to 3 decimals, so the JSON stays compact
-    assert all(len(x.split(".")[-1]) <= 3 for x in json.dumps(json.loads(text)["probes"]["current_d"]["draws"][0][0]).strip("[]").split(","))
+    # draws are stored rounded to 3 decimals, so the JSON stays compact
+    raw = np.array(json.loads(text)["probes"]["current_d"]["draws"], dtype=np.float64)
+    assert np.allclose(raw, np.round(raw, 3), equal_nan=True)
 
     path = tmp_path / "deep" / "index.json"
     idx.save(path)
