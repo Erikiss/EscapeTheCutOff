@@ -28,6 +28,7 @@ import contextlib
 import copy
 import datetime as _dt
 import email.utils
+import hashlib
 import json
 import os
 import random
@@ -58,6 +59,15 @@ SENTINEL_GRACE_CHARS = 32
 SENTINEL_GRACE_S = 2.0
 MAX_RETRY_AFTER_S = 60.0
 _CONNECT_TIMEOUT_S = 10.0
+SEED_MODULUS = 2 ** 31  # request seeds are 31-bit, which every endpoint that takes `seed` accepts
+
+
+def segment_seed(key: str | int, index: int) -> int:
+    """A stable request seed for segment ``index`` of a run keyed by ``key`` (the run seed or run id): the first
+    eight bytes of SHA-256 of ``"{key}:{index}"`` modulo :data:`SEED_MODULUS`. Same inputs, same seed, on every
+    platform (unlike ``hash()``)."""
+    digest = hashlib.sha256(f"{key}:{index}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % SEED_MODULUS
 
 
 # --------------------------------------------------------------------------------------
@@ -389,7 +399,7 @@ class OpenRouterBackend:
 
     @staticmethod
     def _apply_model_params(body: dict[str, Any], model: ModelSpec, *, reasoning: Mapping[str, Any] | None,
-                            temperature: float | None, run_id: str) -> None:
+                            temperature: float | None, run_id: str, answer: bool = False) -> None:
         if reasoning is not None:
             body["reasoning"] = copy.deepcopy(dict(reasoning))
         if model.provider_routing:
@@ -401,6 +411,8 @@ class OpenRouterBackend:
             body["prompt_cache_key"] = key
             body["session_id"] = key
         extra = copy.deepcopy(dict(model.extra_body))
+        if answer:
+            _deep_update(extra, model.answer_extra_body)  # phase-specific values win (Sol: verbosity low)
         if model.provider_id.startswith("anthropic/"):
             extra.pop("verbosity", None)  # OpenRouter would map it to Claude's effort setting
         _deep_update(body, extra)
@@ -413,6 +425,12 @@ class OpenRouterBackend:
         ``stop`` is sent only for think segments on models that support it; temperature (``req.metadata
         ["temperature"]``) only if the model accepts it. Anthropic cache markers go on the system block and the last
         segment block of think requests (an answer request is a one-off prefix, so a cache write would be wasted).
+
+        Explore preset: ``req.system_override`` replaces the static system text and ``req.tail`` the tail block
+        (the last user block, which is never cache-marked), so the header and segment blocks stay append-only. In
+        phase ``answer`` ``model.answer_extra_body`` is merged over ``extra_body``. A model with ``supports_seed``
+        gets ``seed = segment_seed(key, index)`` with ``key = req.metadata["seed"]`` if present else ``req.run_id``
+        and ``index = req.metadata["segment_index"]`` (else ``metadata["segment"]``, else 0).
         """
         think = req.phase == "think"
         if think:
@@ -421,6 +439,10 @@ class OpenRouterBackend:
         else:
             system = answer_system_prompt(req.today)
             blocks = answer_user_blocks(req.question, req.segments)
+        if req.system_override is not None:
+            system = req.system_override
+        if req.tail is not None:
+            blocks[-1] = {"type": "text", "text": req.tail}
         system_block: dict[str, Any] = {"type": "text", "text": system}
         if think and model.cache_style == "anthropic":
             system_block["cache_control"] = {"type": "ephemeral"}
@@ -435,7 +457,11 @@ class OpenRouterBackend:
         if think and model.supports_stop:
             body["stop"] = [req.sentinel]
         self._apply_model_params(body, model, reasoning=model.reasoning, temperature=req.metadata.get("temperature"),
-                                 run_id=req.run_id)
+                                 run_id=req.run_id, answer=not think)
+        if model.supports_seed:
+            key = req.metadata.get("seed")
+            index = req.metadata.get("segment_index", req.metadata.get("segment", 0))
+            body["seed"] = segment_seed(req.run_id if key is None else key, int(index))
         return body
 
     def build_chat_body(self, model: ModelSpec, req: ChatRequest) -> dict:
@@ -450,6 +476,8 @@ class OpenRouterBackend:
             body["response_format"] = copy.deepcopy(req.response_format)
         reasoning = req.reasoning if req.reasoning is not None else model.reasoning
         self._apply_model_params(body, model, reasoning=reasoning, temperature=req.temperature, run_id="")
+        if model.supports_seed and req.metadata.get("seed") is not None:  # e.g. the explore next-move menu call
+            body["seed"] = segment_seed(req.metadata["seed"], int(req.metadata.get("segment_index", 0)))
         return body
 
     # ---- streaming ----------------------------------------------------------------------

@@ -23,7 +23,7 @@ never from self-report. The user assumes as a premise that the models can contin
 | Abort stops billing on anthropic/openai/azure, **not on Google** | `provider: {only: [...]}` pinned per model (Fable `[anthropic, azure]`, Sol `[openai, azure]`, Neon `[google-vertex]`). Fallbacks stay enabled: `only` alone keeps routing on these providers, while `allow_fallbacks: false` without `order` would serve only the top-ranked one (no failover). Keep Neon's `max_tokens_slack` tight (1536). An aborted stream has no usage chunk: keep its generation id (`X-Generation-Id`) and report the run's usage as partial. |
 | No logprobs on any of the three | No white-box switching signal (Co-LLM, CITER, R2R and others don't apply). Routing uses an external index + text classifiers. |
 | Caching: Anthropic needs explicit `cache_control` (≤4 breakpoints, 20-block lookback); OpenAI is automatic (+`prompt_cache_key`); Gemini 4 is implicit only, ≥4096 tokens, re-bills 2,050 tokens on small appends | Request bodies are **append-only**: static system prompt and one content block per committed segment, never edited. Anthropic: `cache_control` on the last segment block (plus the system block). OpenAI: `prompt_cache_key = run_id + model`. |
-| Temperature: only Neon accepts it | Never send temperature to Fable or Sol. |
+| Temperature: Fable and Sol have no parameter; Neon accepts it at the gateway, but Google ignores in-range values and returns 400 out of range (docs, 2026-11-24) | Never send temperature or top_p to any of the three: `supports_temperature: false` for all three in `default.yaml`, `ChatRequest.temperature` defaults to `None` (§7). |
 | Existing benchmark data (apoorvumang/knowledge-cutoff, report_answers.json, 2026-11-23) only reaches 2026-06. Sol is freshest overall (direct 4PL τ: Fable 2026-02.8, Sol 2026-04.75, Neon 2026-03.0). Per-topic cells are too sparse | Ship a **prior index** fitted from that data, with heavy shrinkage. A new topic-stratified probe set (pipeline below, extended to 2026-11) is needed to find topic reversals. Be honest that always-Sol is the baseline to beat. |
 
 Month axis: `timeutil` month index, 0 = 2024-01, 34 = 2026-11. τ is fractional: 27.75 means three quarters of the way through 2026-04.
@@ -34,7 +34,8 @@ Month axis: `timeutil` month index, 0 = 2024-01, 34 = 2026-11. τ is fractional:
 cutoffmix/
   types.py timeutil.py taxonomy.py      FROZEN (integrator only)
   config.py  data/default.yaml          WP1
-  prompts.py                            WP1  (relay prompt templates + segment post-processing)
+  data/presets/explore.yaml lenses.py   explore WP-A (§7: preset file, lens fields and the seeded draw)
+  prompts.py                            WP1  (relay prompt templates + segment post-processing; §7 explore texts)
   backends/__init__.py base.py          WP1
   backends/openrouter.py                WP1
   backends/mock.py                      WP1
@@ -103,6 +104,7 @@ class AppConfig:
     models: list[ModelSpec]
     relay: RelayConfig
     router: RouterConfig
+    explore: ExploreConfig             # §7.1; enabled False in the packaged default
     today: str | None = None           # ISO date; None -> date.today()
     base_url: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
@@ -111,8 +113,10 @@ class AppConfig:
     def model_keys(self) -> list[str]
     def today_str(self) -> str
 
-def load_config(path: str | None = None, overrides: dict | None = None) -> AppConfig
-    # path None -> packaged cutoffmix/data/default.yaml; overrides = nested dict deep-merged ("relay": {...})
+def load_config(path: str | None = None, overrides: dict | None = None, *, preset: str | None = None) -> AppConfig
+    # path None -> packaged cutoffmix/data/default.yaml; preset -> packaged data/presets/<preset>.yaml merged
+    # BEFORE the file and the overrides (nested dict deep-merged, "relay": {...}); unknown preset -> ConfigError
+def list_presets() -> list[str]        # names of the packaged presets (["explore"])
 def default_config() -> AppConfig
 ```
 

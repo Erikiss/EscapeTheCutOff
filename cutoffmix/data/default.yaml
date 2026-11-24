@@ -45,7 +45,7 @@ models:
     display: Gemini 4 Neon
     color: "#4285f4"
     supports_stop: true           # only on google-vertex, hence the pin below
-    supports_temperature: true
+    supports_temperature: false   # Google ignores in-range temperature/top_p/top_k (400 out of range); never sent
     cancellable: false            # Google keeps generating (and billing) after a disconnect
     provider_routing:
       only: [google-vertex]       # base slug: any google-vertex endpoint (all support `stop`), not the priority tier
@@ -86,3 +86,32 @@ router:
   classifier_path: null
   gate_path: null                 # gate_linear.npz from `cutoffmix router train`; null -> the lexical gate
   seed: null
+
+# Explore preset (DESIGN.md §7): off by default; `cutoffmix run --preset explore` merges data/presets/explore.yaml,
+# which turns it on. Every value below is ignored while `enabled` is false.
+explore:
+  enabled: false
+  seed: null                      # overrides the run seed (router.seed / --seed) for the client-side draws when set
+  min_segments: 6                 # main-line notes (lens and check notes not counted) before a conclusion is accepted
+  require_labels: ["Evidence:", "Alternative set aside:", "Open question:"]
+  where_we_stand_window: 2        # a 'Where we stand:' line must appear in one of the last 2 notes
+  max_forced_continuations: 3
+  loop_overlap_jaccard: 0.5       # word-3-gram Jaccard of the last two notes above this -> stop forcing
+  cues:
+    - "Alternatively, "
+    - "One thing not yet checked: "
+    - "The strongest objection to the current conclusion is "
+    - "Perhaps the missing piece is "
+    - "Before closing, the weakest assumption above is "
+  lens:
+    p: 0.25                       # per eligible segment
+    p_stagnation: 0.50
+    min: 1                        # force one lens at the last eligible slot if none was drawn
+    max: 2
+    first_index: 2                # 0-based: never in the first two segments
+    cooldown: 2                   # segments after a check before the next lens may be drawn
+    tiers: {mid: 0.55, far: 0.35, near: 0.10}
+    exclude_from_window: true     # lens notes are not part of the routing window
+    check_other_model: true       # the check is routed away from the lens writer
+  vs_menu: "off"                  # off | stagnation | every_lens; the side call always runs on gpt-6.2-sol
+  answer_basis: true              # the answer ends with 'Basis:' and 'Not resolved:'

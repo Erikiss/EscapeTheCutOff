@@ -37,6 +37,10 @@ class ModelSpec:
     cache_style: Literal["anthropic", "openai", "implicit", "none"] = "none"
     max_tokens_slack: int = 2048  # hidden-reasoning allowance added to the visible target (reasoning shares max_tokens)
     extra_body: Mapping[str, Any] = field(default_factory=dict)  # merged into every request body
+    # merged on top of ``extra_body`` for phase "answer" only (explore preset: Sol `verbosity: low` for the answer)
+    answer_extra_body: Mapping[str, Any] = field(default_factory=dict)
+    # the endpoint honours `seed` (GPT-6.2 Sol): request bodies then carry a seed derived from the run and segment
+    supports_seed: bool = False
 
     def label(self) -> str:
         return self.display or self.key
@@ -68,6 +72,11 @@ class ContinuationRequest:
     hard_cut_chars: int = 600  # client-side cap on visible characters per segment
     run_id: str = ""  # used for prompt_cache_key / session_id
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Explore preset (DESIGN.md §7). ``tail`` replaces the constant tail block, the only block that may vary per
+    # segment (the lens, check, continuation and record-status texts live there, so the prefix stays append-only);
+    # ``system_override`` replaces the static system prompt for the run (the structured-notes instruction).
+    tail: str | None = None
+    system_override: str | None = None
 
 
 @dataclass
@@ -76,7 +85,7 @@ class ChatRequest:
 
     messages: list[dict[str, Any]]
     max_tokens: int = 512
-    temperature: float | None = 0.0
+    temperature: float | None = None  # None: no sampling parameter is sent (no target model honours one)
     reasoning: dict[str, Any] | None = None  # passed through as OpenRouter's `reasoning` object
     response_format: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -143,6 +152,32 @@ Decision = Literal[
 ]
 
 
+SegmentKind = Literal["main", "lens", "check", "continue"]
+
+
+@dataclass
+class ExploreFlags:
+    """Per-segment bookkeeping of the explore preset (DESIGN.md §7); ``None`` on ``Segment.explore`` otherwise.
+
+    ``kind`` says which tail directive the segment was written under: a plain main-line note, a cross-field lens
+    note (``field``/``tier`` set), the check of the previous lens (``field`` set, ``lens_verdict`` from
+    ``Lens kept:``/``Lens dropped:``) or a forced continuation (``cue`` set). ``labels`` counts the labelled items
+    found in the committed text, ``has_wws`` whether it ends with a ``Where we stand:`` line.
+    """
+
+    kind: SegmentKind = "main"
+    field: str | None = None  # lens field (lens and check segments); shadows dataclasses.field below on purpose
+    tier: str | None = None  # "near" | "mid" | "far" (lens segments)
+    labels: dict[str, int] = dataclasses.field(default_factory=dict)  # canonical label -> count in the text
+    has_wws: bool = False
+    lens_verdict: Literal["kept", "dropped"] | None = None  # check segments
+    lens_prefix_ok: bool | None = None  # lens segments: the note opened with 'Lens (field):'
+    cue: str | None = None  # continuation segments: the opening phrase asked for
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
 @dataclass
 class Segment:
     index: int
@@ -157,6 +192,7 @@ class Segment:
     aborted: bool = False
     usage: dict[str, Any] | None = None
     note: str = ""
+    explore: ExploreFlags | None = None  # set by the relay when the explore preset is enabled
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

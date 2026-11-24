@@ -28,7 +28,7 @@ cutoffmix = "cutoffmix.cli:main"
 include = ["cutoffmix*"]
 
 [tool.setuptools.package-data]
-cutoffmix = ["web/*.html", "data/*.json", "data/*.yaml"]
+cutoffmix = ["web/*.html", "data/*.json", "data/*.yaml", "data/presets/*.yaml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
