@@ -143,7 +143,7 @@ input[type=number] { width: 96px; }
 .bar .track { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
 .bar .fill { height: 100%; border-radius: 4px; background: var(--fill, var(--accent)); min-width: 2px; transition: width .25s; }
 .bar .lbl .u { color: var(--text-3); font-size: 12px; margin-left: 6px; font-family: var(--mono); }
-.bar .lbl .u.top { color: var(--text-2); font-weight: 650; }
+.bar .lbl .u.is-best { color: var(--text-2); font-weight: 650; }
 .insp-note { font-size: 12px; color: var(--text-3); margin: 8px 0 0; line-height: 1.45; }
 .meter { display: inline-block; vertical-align: middle; width: 70px; height: 6px; border-radius: 4px; background: var(--surface-3); margin-left: 8px; overflow: hidden; }
 .meter b { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
@@ -637,7 +637,7 @@ function renderInspector(rec) {
     const rank = (m) => (scores[m] != null && isFinite(scores[m]) ? scores[m] : -Infinity);
     const rows = models.map((m) => [m, rec.probs[m] || 0, gaps[m] || ""]).sort((a, b) => b[1] - a[1] || rank(b[0]) - rank(a[0]));
     kids.push(h("div", { class: "bars" }, rows.map(([m, p, u]) => h("div", { class: "bar" },
-      h("span", { class: "lbl" }, chipInline(m), u ? h("span", { class: "u" + (u.endsWith("best") ? " top" : ""), title: SCORE_TITLE }, u) : null),
+      h("span", { class: "lbl" }, chipInline(m), u ? h("span", { class: "u" + (u.endsWith("best") ? " is-best" : ""), title: SCORE_TITLE }, u) : null),
       h("span", { class: "num" }, pct(p)),
       h("div", { class: "track" }, h("div", { class: "fill", style: `width:${p * 100}%;--fill:${modelColor(m)}` }))))));
     if (Object.keys(gaps).length) kids.push(h("p", { class: "insp-note" },

@@ -6,9 +6,15 @@ Stream facts this module relies on (OpenRouter docs, checked 2026-11-24):
   such as ``: OPENROUTER PROCESSING`` that must be skipped.
 - ``choices[0].delta`` carries ``content`` (visible text), ``reasoning`` (summary text) and ``refusal``.
 - The last chunk before ``[DONE]`` carries ``usage``; it has one choice with an empty delta that *repeats*
-  ``finish_reason``, so it is accounting, not a second terminal event. A stream closed before it (sentinel, cut,
-  consumer leaving) has no usage; the ``X-Generation-Id`` response header (also each chunk's ``id``) names the
-  generation, whose tokens and cost GET ``/api/v1/generation?id=...`` reports afterwards.
+  ``finish_reason``, so it is accounting, not a second terminal event. A stream closed before it (cut, a runaway
+  after the sentinel, consumer leaving) has no usage; the ``X-Generation-Id`` response header (also each chunk's
+  ``id``) names the generation, whose tokens and cost GET ``/api/v1/generation?id=...`` reports afterwards.
+- A model without ``stop`` support (Sol) writes the sentinel itself, normally as its very last content, and the
+  finish and usage chunks follow at once (live capture ``tests/fixtures/live_sse/gpt-6.2-sol.sse``). So after the
+  sentinel the stream is read on for a short grace window to collect them; nothing after the sentinel is emitted.
+- With ``reasoning.exclude`` set, OpenRouter still streams Fable's reasoning summary (``delta.reasoning`` and
+  ``reasoning_details`` of type ``reasoning.text``; live capture ``claude-fable-5.2.sse``). It is only ever
+  reported as ``reasoning`` events, which the relay drops; error messages never quote raw payloads.
 - OpenAI's native refusal shape is ``delta.refusal`` text with no content and ``finish_reason: "stop"``; it is
   reported like OpenRouter's ``content_filter`` refusal.
 - After the HTTP 200 is committed, errors arrive as a chunk with a top-level ``error`` and ``finish_reason: "error"``.
@@ -38,6 +44,10 @@ from cutoffmix.types import ChatRequest, ChatResult, ContinuationRequest, ModelS
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 USER_AGENT = "cutoffmix/0.1"
 CUT_FACTOR = 1.5  # the stream is closed once visible text exceeds hard_cut_chars * CUT_FACTOR
+# After the sentinel the stream is read on for its finish and usage chunks, but closed at once when more than
+# SENTINEL_GRACE_CHARS of further content arrive (the model ignored the sentinel) or after SENTINEL_GRACE_S seconds.
+SENTINEL_GRACE_CHARS = 32
+SENTINEL_GRACE_S = 2.0
 MAX_RETRY_AFTER_S = 60.0
 _CONNECT_TIMEOUT_S = 10.0
 
@@ -78,12 +88,14 @@ def _is_done(data: str) -> bool:
 
 
 def _decode(data: str) -> dict[str, Any]:
+    """Decode one ``data:`` payload. Errors describe the payload but never quote it: a truncated chunk may hold
+    hidden reasoning text, and the message ends up in the run's trace."""
     try:
         obj = json.loads(data)
     except json.JSONDecodeError as e:
-        raise ValueError(f"malformed SSE data payload: {data[:200]!r}") from e
+        raise ValueError(f"malformed SSE data payload ({len(data)} chars): {e.msg} at char {e.pos}") from None
     if not isinstance(obj, dict):
-        raise ValueError(f"SSE data payload is not a JSON object: {data[:200]!r}")
+        raise ValueError(f"SSE data payload is not a JSON object (got {type(obj).__name__}, {len(data)} chars)")
     return obj
 
 
@@ -185,7 +197,11 @@ def _message_text(content: Any) -> str:
 
 
 class _StreamState:
-    """Accumulates one streamed segment and decides when to stop reading."""
+    """Accumulates one streamed segment and decides when to stop reading.
+
+    Once the sentinel has been seen (``sentinel_seen``) the segment is complete: later chunks are only read up to
+    the usage chunk; their content, reasoning, finish reasons and errors are never emitted.
+    """
 
     def __init__(self, sentinel: str, cut_chars: float | None, generation_id: str | None = None) -> None:
         self.sentinel = sentinel
@@ -196,6 +212,8 @@ class _StreamState:
         self.usage: dict[str, Any] | None = None
         self.finish: str | None = None
         self.done_seen = False
+        self.sentinel_seen = False
+        self.after_sentinel = 0  # characters of content received after the sentinel (never emitted)
 
     def on_chunk(self, chunk: Mapping[str, Any]) -> tuple[list[StreamEvent], bool]:
         """Process one decoded chunk; returns the events to emit and whether to stop reading."""
@@ -203,6 +221,8 @@ class _StreamState:
             self.generation_id = chunk["id"]
         if chunk.get("usage"):
             self.usage = dict(chunk["usage"])
+        if self.sentinel_seen:
+            return [], self._after_sentinel(chunk)
         if chunk.get("error"):
             self.finish = "error"
             return [StreamEvent(kind="error", error=_error_message(chunk["error"]), finish_reason="error")], True
@@ -227,7 +247,17 @@ class _StreamState:
                 events.append(StreamEvent(kind="error", error="provider reported finish_reason=error",
                                           finish_reason="error"))
                 stop = True
+        if self.sentinel_seen and self.usage is not None:
+            stop = True  # the usage chunk is the last one: nothing more to wait for
         return events, stop
+
+    def _after_sentinel(self, chunk: Mapping[str, Any]) -> bool:
+        """A chunk inside the grace window after the sentinel; returns whether to stop reading."""
+        if chunk.get("error"):
+            return True  # the segment is already complete; a late error only costs the usage chunk
+        for choice in (chunk.get("choices") or [])[:1]:
+            self.after_sentinel += len((choice.get("delta") or {}).get("content") or "")
+        return self.usage is not None or self.after_sentinel > SENTINEL_GRACE_CHARS
 
     def _on_text(self, piece: str) -> tuple[StreamEvent, bool]:
         before = len(self.text)
@@ -235,9 +265,11 @@ class _StreamState:
         idx = self.text.find(self.sentinel, max(0, before - len(self.sentinel) + 1))
         if idx >= 0:  # emit up to the end of the sentinel and nothing after it
             end = idx + len(self.sentinel)
+            self.after_sentinel = len(self.text) - end
             self.text = self.text[:end]
             self.finish = "sentinel"
-            return StreamEvent(kind="text", text=piece[: end - before]), True
+            self.sentinel_seen = True
+            return StreamEvent(kind="text", text=piece[: end - before]), self.after_sentinel > SENTINEL_GRACE_CHARS
         if self.cut_chars is not None and len(self.text) > self.cut_chars:
             self.finish = "cut"
             return StreamEvent(kind="text", text=piece), True
@@ -410,12 +442,16 @@ class OpenRouterBackend:
     async def stream_continuation(self, model: ModelSpec, req: ContinuationRequest) -> AsyncIterator[StreamEvent]:
         """Stream one segment as raw ``text``/``reasoning`` deltas followed by exactly one ``done`` event.
 
-        Reading stops, and the HTTP response is closed, as soon as the accumulated text contains ``req.sentinel``
-        (the delta is truncated right after it; finish_reason ``"sentinel"``) or, for think segments of a
-        ``model.cancellable`` model, exceeds ``req.hard_cut_chars * 1.5`` characters (``"cut"``). A non-cancellable
-        model's overflow is read on (closing would not stop its billing, and the usage chunk comes last); the caller
-        bounds it. Leaving the ``async for`` early also closes the response. ``done.usage`` carries
-        ``generation_id`` (the ``X-Generation-Id`` header, else the chunks' ``id``) when known.
+        Once the accumulated text contains ``req.sentinel`` the delta is truncated right after it and nothing later
+        is emitted (finish_reason ``"sentinel"``). Reading goes on for a short grace window to collect the
+        provider's finish and usage chunks (a model without ``stop`` writes the sentinel as its last content); the
+        response is closed as soon as the usage chunk arrives, more than :data:`SENTINEL_GRACE_CHARS` of further
+        content arrive, or :data:`SENTINEL_GRACE_S` seconds have passed. Failures inside the grace window do not
+        fail the segment. For think segments of a ``model.cancellable`` model the response is also closed once the
+        text exceeds ``req.hard_cut_chars * 1.5`` characters (``"cut"``). A non-cancellable model's overflow is
+        read on (closing would not stop its billing, and the usage chunk comes last); the caller bounds it. Leaving
+        the ``async for`` early also closes the response. ``done.usage`` carries ``generation_id`` (the
+        ``X-Generation-Id`` header, else the chunks' ``id``) when known.
         HTTP and connection errors raise :class:`BackendError` before the first event; afterwards failures are
         reported as an ``error`` event followed by ``done`` with finish_reason ``"error"``.
         """
@@ -440,9 +476,10 @@ class OpenRouterBackend:
                     async for event in events:
                         yield event
             except (httpx.HTTPError, ValueError) as e:
-                state.finish = "error"
-                yield StreamEvent(kind="error", error=f"stream from {model.provider_id} failed: {e!r}",
-                                  finish_reason="error")
+                if not state.sentinel_seen:  # after the sentinel the segment is complete; only the usage is lost
+                    state.finish = "error"
+                    yield StreamEvent(kind="error", error=f"stream from {model.provider_id} failed: {e!r}",
+                                      finish_reason="error")
             for event in state.final_events():
                 yield event
         finally:
@@ -451,18 +488,40 @@ class OpenRouterBackend:
     @staticmethod
     async def _read_events(response: httpx.Response, state: _StreamState) -> AsyncGenerator[StreamEvent, None]:
         buf = _SSEBuffer()
-        async for line in response.aiter_lines():
-            data = buf.feed(line)
-            if data is None:
-                continue
-            if _is_done(data):
-                state.done_seen = True
-                return
-            events, stop = state.on_chunk(_decode(data))
-            for event in events:
-                yield event
-            if stop:
-                return
+        lines = response.aiter_lines()
+        loop = asyncio.get_running_loop()
+        deadline: float | None = None  # end of the grace window after the sentinel
+        try:
+            while True:
+                try:
+                    if deadline is None:
+                        line = await lines.__anext__()
+                    else:  # nothing is yielded inside the timeout, so it can only cancel this read
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            return
+                        line = await asyncio.wait_for(lines.__anext__(), remaining)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    return  # grace window over: give up on the usage chunk
+                data = buf.feed(line)
+                if data is None:
+                    continue
+                if _is_done(data):
+                    state.done_seen = True
+                    return
+                events, stop = state.on_chunk(_decode(data))
+                for event in events:
+                    yield event
+                if stop:
+                    return
+                if deadline is None and state.sentinel_seen:
+                    deadline = loop.time() + SENTINEL_GRACE_S
+        finally:
+            close = getattr(lines, "aclose", None)  # typed as a plain AsyncIterator; it is an async generator
+            if close is not None:
+                await close()
         data = buf.flush()  # an event not terminated by a blank line before EOF
         if data is None:
             return

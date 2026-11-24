@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -234,6 +236,87 @@ async def test_ui_new_run_resets_the_stopped_hint():
     assert '$("notes-hint").textContent = NOTES_HINT' in reset
     default = re.search(r'id="notes-hint">([^<]*)<', html)
     assert default is not None and f'const NOTES_HINT = "{default.group(1)}";' in html
+
+
+def run_js_function(source: str, name: str, args: list[Any]) -> list[Any]:
+    """``[name(a) for a in args]`` evaluated by Node (the test is skipped without a ``node`` on PATH)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    script = f"{source}\nconsole.log(JSON.stringify({json.dumps(args)}.map((a) => {name}(a))));"
+    done = subprocess.run([node, "-"], input=script, capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(done.stdout)
+
+
+# Routing scores U of a real round-robin relay (tests/fixtures/live_sse/relay_trace_round_robin.json, segments 1-3)
+LIVE_SCORES = [
+    {"claude-fable-5.2": 25.724, "gpt-6.2-sol": 27.698, "gemini-4-neon": 26.148},
+    {"claude-fable-5.2": 25.626, "gpt-6.2-sol": 27.606, "gemini-4-neon": 26.054},
+    {"claude-fable-5.2": 25.565, "gpt-6.2-sol": 27.548, "gemini-4-neon": 25.995},
+]
+
+
+async def test_ui_shows_routing_scores_as_gaps_to_the_best_model_not_as_dates():
+    """U already subtracts the uncertainty and stale-answer penalties, so it is no calendar month: the inspector
+    shows it as months behind the best model of the same decision."""
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    inspector = js_function(html, "renderInspector")
+    assert "fmtTau" not in inspector and "scoreGaps(" in inspector
+    assert "freshness score" not in html and "freshness of the window" not in html
+    title = re.search(r'const SCORE_TITLE = ([^;]*);', html)
+    assert title is not None and "Not a date" in title.group(1)
+
+    gaps = run_js_function(js_function(html, "scoreGaps"), "scoreGaps", LIVE_SCORES)
+    for scores, labels in zip(LIVE_SCORES, gaps, strict=True):
+        best = max(scores.values())
+        assert set(labels) == set(scores)
+        for model, label in labels.items():
+            assert not re.search(r"\d{4}-\d{2}", label), label
+            if scores[model] == best:
+                assert label == "best"
+            else:
+                m = re.fullmatch(r"−(\d+\.\d) mo", label)
+                assert m is not None, label
+                assert abs(float(m.group(1)) - (best - scores[model])) <= 0.051
+    edge = run_js_function(js_function(html, "scoreGaps"), "scoreGaps", [
+        {"a": 26.0, "b": 26.0, "c": 25.96, "d": 25.9995},  # tie, a sub-0.1 gap, a sub-0.01 gap
+        {"a": 26.0, "b": None},  # -inf on the server (the index lacks b) arrives as null
+        {"a": 0.0, "b": 0.0},  # no index: every score is 0
+        {},  # inline answer: no scores at all
+    ])
+    assert edge == [
+        {"a": "tied best", "b": "tied best", "c": "−0.04 mo", "d": "−<0.01 mo"},
+        {"a": "best", "b": "not in index"},
+        {"a": "tied best", "b": "tied best"},
+        {},
+    ]
+
+
+async def test_ui_inspector_lists_every_scored_model_also_for_forced_decisions():
+    """Round robin and fixed policies report probability 1 for the chosen model only; the other models must still
+    show their score gap, or a forced pick of a worse model looks like the best choice."""
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    inspector = js_function(html, "renderInspector")
+    assert "new Set([...Object.keys(rec.probs || {}), ...Object.keys(rec.scores || {})])" in inspector
+
+
+async def test_ui_index_labels_p_freshest_and_explains_the_routing_penalties():
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    assert "P(best)" not in html
+    heat, tip, about = (js_function(html, n) for n in ("renderHeatmap", "showTip", "aboutIndex"))
+    assert '"(freshest)"' in heat and "P_FRESHEST_TITLE" in heat
+    title = re.search(r'const P_FRESHEST_TITLE = ([^;]*);', html)
+    assert title is not None and "latest knowledge cutoff on this" in title.group(1)
+    assert "P(freshest)" in tip and "latest cutoff on this topic" in tip
+    # the routing explanation is always there, also for an index without provenance metadata
+    assert "return h(\"span\", {})" not in about
+    assert "uncertain estimate" in about and "stale-answer rate" in about and "κ·sd" in about and "λ·H" in about
 
 
 async def test_api_config_lists_models_defaults_and_policies():

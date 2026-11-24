@@ -16,9 +16,9 @@ Event protocol of :meth:`Relay.run` (every attempt that streams from a backend i
   part of the trace.
 - ``error`` when no model is left, then always one final ``done`` whose ``data`` is ``trace.to_dict()`` plus
   ``usage`` (per model), ``usage_total``, ``latency``, ``status`` and bookkeeping. A stream closed before its usage
-  chunk (sentinel, cut, marker, overflow) has no token counts or cost: such calls are listed in ``usage_missing``
-  (with the backend's ``generation_id`` when it reported one) and ``usage_complete`` is then False, so
-  ``usage_total`` is a lower bound.
+  chunk (cut, marker, overflow, a runaway after the sentinel) has no token counts or cost: such calls are listed in
+  ``usage_missing`` (with the backend's ``generation_id`` when it reported one) and ``usage_complete`` is then
+  False, so ``usage_total`` is a lower bound.
 - When every model left for a think segment returns nothing usable (``empty``: it stopped at once, wrote only the
   sentinel, or only echoed the notes) and the notes are not empty, the notes count as concluded and the answer phase
   runs instead of failing the run.
@@ -73,7 +73,7 @@ _NO_LIMIT = 1_000_000_000  # "no hard cut" for clean_segment on answers
 _MAX_BACKOFF_S = 30.0
 _ECHO_MIN_CHARS = 12  # same minimum as prompts.trim_overlap
 _USAGE_COUNT_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
-_CLOSED_FINISHES = ("sentinel", "cut")  # finish reasons of a stream the backend closed before the provider finished
+_CLOSED_FINISHES = ("sentinel", "cut")  # finish reasons of a stream the backend may close before the provider finished
 
 Outcome = Literal["ok", "refused", "error", "length", "empty"]
 
@@ -238,7 +238,9 @@ class _StreamFilter:
             if self.start is None:
                 return ""
             self.emitted = max(self.emitted, self.start)
-        limit = len(text) if done else len(text) - self.lag
+        # trailing whitespace (Fable ends with a blank line, Sol puts the sentinel on its own line) is never shown:
+        # the committed text is stripped, and streamed text that differs from it makes clients redraw the block
+        limit = len(text.rstrip()) if done else len(text) - self.lag
         if self.hard_cut is not None:
             limit = min(limit, self.start + self.hard_cut)
         if limit <= self.emitted:
@@ -697,7 +699,8 @@ class Relay:
                     att.finish = ev.finish_reason
                     att.usage = dict(ev.usage) if ev.usage else None
                     att.note = ev.error
-                    att.aborted = att.aborted or ev.finish_reason in _CLOSED_FINISHES
+                    # a sentinel stream whose usage chunk (always the last chunk) arrived was read to its end
+                    att.aborted = att.aborted or (ev.finish_reason in _CLOSED_FINISHES and not _has_counts(att.usage))
                     break
         except Exception as e:  # noqa: BLE001 -- any backend failure is handled by the retry/exclude policy
             att.error = f"{type(e).__name__}: {e}"

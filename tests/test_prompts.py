@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -159,3 +161,101 @@ def test_split_final():
     assert split_final("No marker here.", FM) == ("No marker here.", None)
     assert split_final("Before a final answer: we check more.", FM) == ("Before a final answer: we check more.", None)
     assert split_final("Notes done. FINAL ANSWER:", FM) == ("Notes done.", "")
+
+
+# --------------------------------------------------------------------------------------
+# Regressions from the first live runs (tests/fixtures/live_sse)
+# --------------------------------------------------------------------------------------
+
+LIVE = Path(__file__).parent / "fixtures" / "live_sse"
+
+
+def _live_segment_texts() -> dict[str, str]:
+    trace = json.loads((LIVE / "relay_trace_round_robin.json").read_text(encoding="utf-8"))
+    return {f"{s['index']}:{s['model']}": s["text"] for s in trace["segments"]}
+
+
+def _live_sse_content(name: str) -> str:
+    content = []
+    for line in (LIVE / f"{name}.sse").read_text(encoding="utf-8").splitlines():
+        if line.startswith("data: {"):
+            for choice in json.loads(line[6:]).get("choices") or []:
+                content.append((choice.get("delta") or {}).get("content") or "")
+    return "".join(content)
+
+
+# The live segments were cut right after a date ordinal; the raw text went on with "24. November 2026 ...", and the
+# next sentence end lay beyond the 600-character hard cut.
+_RUNON = (" November 2026 lassen sich aus den vorliegenden Notizen weder weitere bestätigte Starts noch belastbare "
+          "Missionsergebnisse ableiten, solange kein aktuelles Startregister vorliegt, das die genannten Termine "
+          "bestätigt oder widerlegt")
+
+
+@pytest.mark.parametrize("key, last_sentence_end", [
+    ("1:gpt-6.2-sol", "ist ein angekündigter Termin kein Startnachweis."),
+    ("2:gemini-4-neon", "hatten Startfenster ab dem zweiten Quartal 2026 oder später."),
+])
+def test_live_segments_are_not_cut_after_a_date_ordinal(key, last_sentence_end):
+    committed = _live_segment_texts()[key]
+    assert committed.endswith(" zum 24.")  # what the live run committed
+    raw = committed + _RUNON + ". Danach folgt der nächste Schritt."
+    assert len(committed + _RUNON) > 600
+    expected = committed[: committed.index(last_sentence_end) + len(last_sentence_end)]
+    assert trim_to_sentence(raw, 600) == expected
+    text, saw = clean_segment(raw + S + " leaked", "", sentinel=S, hard_cut_chars=600)
+    assert (text, saw) == (expected, True)
+
+
+def test_live_sse_content_ordinals_and_years():
+    sol = _live_sse_content("gpt-6.2-sol")  # "... bis Oktober 2026. Für den Stichtag 24. November 2026 genügt ..."
+    cut = sol.index("Stichtag 24.") + len("Stichtag 24.") + 3
+    assert trim_to_sentence(sol, cut).endswith("reichte damit bis Oktober 2026.")  # a year still ends a sentence
+    neon = _live_sse_content("gemini-4-neon")  # "... am 11. Oktober 2021 an. Da die reguläre ..."
+    first = "Alar Karis trat sein Amt als Präsident von Estland am 11. Oktober 2021 an."
+    # no sentence end inside the limit: the whitespace fallback is unchanged
+    assert trim_to_sentence(neon, neon.index(" Oktober 2021") + 4) == first[: first.index(" Oktober")]
+    assert trim_to_sentence(neon, len(first) + 10) == first
+
+
+@pytest.mark.parametrize("abbreviation", [
+    "z. B.", "z.B.", "u. a.", "u.a.", "d. h.", "d.h.", "bzw.", "ca.", "Nr. 4", "Dr. Kaja", "Prof. Tamm", "St. Petersburg",
+    "vgl.", "usw.", "e.g.", "i.e.", "vs.", "Mr. Karis", "Mrs. Kallas", "Ms. Kallas", "Jan.", "Feb.", "Okt.", "Dez.",
+    "Sept.", "No. 5", "am 3. Mal", "vom 10.–12. Oktober", "am 10./11. Oktober", "(24.",
+])
+def test_trim_to_sentence_skips_abbreviations_and_ordinals(abbreviation):
+    head = "Der erste Satz endet hier."
+    text = f"{head} Danach steht {abbreviation} mitten im Satz, der weit über die Grenze hinaus weitergeht und weitergeht"
+    limit = text.index(abbreviation) + len(abbreviation) + 2
+    assert trim_to_sentence(text, limit) == head
+
+
+@pytest.mark.parametrize("text, limit, expected", [
+    ("Die Wahl fand 2026. Danach kam der Rest des langen Textes", 30, "Die Wahl fand 2026."),
+    ("The vote was in 1999. After that a long tail follows here", 30, "The vote was in 1999."),
+    ("So the answer is no. Then more text follows here", 30, "So the answer is no."),
+    ("Rates rose 3.5. Then they fell sharply again and again", 25, "Rates rose 3.5."),
+])
+def test_trim_to_sentence_keeps_real_sentence_ends(text, limit, expected):
+    assert trim_to_sentence(text, limit) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Next result: Karis took office in 2021.", "Karis took office in 2021."),
+    ("next RESULT: Karis took office in 2021.", "Karis took office in 2021."),
+    ("**Next result:** Karis took office in 2021.", "Karis took office in 2021."),
+    ("**Next result**: Karis took office in 2021.", "Karis took office in 2021."),
+    ("Next intermediate result: Karis took office.", "Karis took office."),
+    ("Intermediate result:\nKaris took office.", "Karis took office."),
+    ("Nächstes Zwischenergebnis: Karis trat 2021 an.", "Karis trat 2021 an."),
+    ("**Zwischenergebnis:** Karis trat 2021 an.", "Karis trat 2021 an."),
+    ("Nächster Schritt: Die Amtszeit endete 2026.", "Die Amtszeit endete 2026."),
+    ("__Nächster Schritt__: Die Amtszeit endete 2026.", "Die Amtszeit endete 2026."),
+    ("Correction: Karis took office in October 2021.", "Correction: Karis took office in October 2021."),
+    ("Korrektur: Karis trat im Oktober 2021 an.", "Korrektur: Karis trat im Oktober 2021 an."),
+    ("**Korrektur:** Karis trat im Oktober 2021 an.", "**Korrektur:** Karis trat im Oktober 2021 an."),
+    ("Ergebnis: Karis ist Präsident.", "Ergebnis: Karis ist Präsident."),
+    ("Result: Karis is president.", "Result: Karis is president."),
+    ("Next results show that Karis won.", "Next results show that Karis won."),
+])
+def test_strip_preamble_removes_template_echoes_only(raw, expected):
+    assert strip_preamble(raw) == expected

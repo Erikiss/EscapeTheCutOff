@@ -19,7 +19,7 @@ never from self-report. The user assumes as a premise that the models can contin
 | Fable 5.2 rejects assistant prefill (400). Thinking blocks are signed and model-bound | No native continuation. Every segment is a new request: `system` + one `user` message with the notes. |
 | Fable 5.2 has a `reasoning_extraction` refusal category (thinking/scratchpad tags, "running log of reasoning", "verbatim reasoning") | **Template B wording for all models**: "Several analysts … contribute the next intermediate result + evidence". Never use the words thinking/reasoning/scratchpad and **no XML tags**. A refusal arrives as `finish_reason: content_filter`: drop it, re-route the segment, never retry with a reworded prompt. |
 | Reasoning tokens share `max_tokens` | `max_tokens = target_tokens + model.max_tokens_slack`. Visible length is controlled by the sentinel `<<END_STEP>>` plus a client-side cut. `length` with empty content: retry once with doubled `max_tokens`. |
-| `stop` support: Fable yes; GPT-6.2 Sol no; Neon only on `google-vertex` | Send `stop` only if `model.supports_stop`. Always detect the sentinel client-side and close the stream. |
+| `stop` support: Fable yes; GPT-6.2 Sol no; Neon only on `google-vertex` | Send `stop` only if `model.supports_stop`. Always detect the sentinel client-side; then close the stream once its usage chunk is read, or at once if the model runs on past it (short grace window). |
 | Abort stops billing on anthropic/openai/azure, **not on Google** | `provider: {only: [...]}` pinned per model (Fable `[anthropic, azure]`, Sol `[openai, azure]`, Neon `[google-vertex]`). Fallbacks stay enabled: `only` alone keeps routing on these providers, while `allow_fallbacks: false` without `order` would serve only the top-ranked one (no failover). Keep Neon's `max_tokens_slack` tight (1536). An aborted stream has no usage chunk: keep its generation id (`X-Generation-Id`) and report the run's usage as partial. |
 | No logprobs on any of the three | No white-box switching signal (Co-LLM, CITER, R2R and others don't apply). Routing uses an external index + text classifiers. |
 | Caching: Anthropic needs explicit `cache_control` (≤4 breakpoints, 20-block lookback); OpenAI is automatic (+`prompt_cache_key`); Gemini 4 is implicit only, ≥4096 tokens, re-bills 2,050 tokens on small appends | Request bodies are **append-only**: static system prompt and one content block per committed segment, never edited. Anthropic: `cache_control` on the last segment block (plus the system block). OpenAI: `prompt_cache_key = run_id + model`. |
@@ -128,7 +128,10 @@ def answer_system_prompt(today: str | None) -> str
 def answer_user_blocks(question: str, segments: list[str]) -> list[dict]
 def trim_overlap(notes_tail: str, new: str, min_len: int = 12) -> str
 def trim_to_sentence(text: str, max_chars: int) -> str
+    # a dot after an abbreviation (z. B., bzw., e.g., Okt., "No. 5"), an initial or a standalone 1-2 digit ordinal
+    # ("zum 24. November") is no sentence end; years ("2026.") are. No sentence end in the cut: last whitespace.
 def strip_preamble(text: str) -> str          # "Next paragraph:", "Continuation:", code fences, leading quotes
+    # also template echoes ("Next result:", "Zwischenergebnis:", "Nächster Schritt:"), not "Correction:"/"Korrektur:"
 def clean_segment(raw: str, notes_tail: str, *, sentinel: str, hard_cut_chars: int) -> tuple[str, bool]
     # -> (clean text, saw_sentinel). Cut at sentinel, strip preamble, trim echoed overlap, hard-cut, trim to sentence.
 def split_final(text: str, final_marker: str) -> tuple[str, str | None]   # (notes part, answer part or None)
@@ -157,15 +160,20 @@ class OpenRouterBackend:                                       # implements type
         # api_key None -> os.environ["OPENROUTER_API_KEY"] at first request; missing -> BackendError (not at import)
     def build_continuation_body(self, model: ModelSpec, req: ContinuationRequest) -> dict
     async def stream_continuation(self, model, req) -> AsyncIterator[StreamEvent]
-        # yields kind="text" deltas as they arrive (raw, uncleaned); stops reading and closes the connection as soon
-        # as the accumulated text contains req.sentinel or, if model.cancellable, exceeds req.hard_cut_chars*1.5
-        # (a non-cancellable model is read on: closing would not stop its billing; the relay bounds it); final
+        # yields kind="text" deltas as they arrive (raw, uncleaned); nothing after req.sentinel is emitted. After
+        # the sentinel it reads on for a grace window to collect the finish and usage chunks (Sol writes the
+        # sentinel as its last content), closing the connection when the usage chunk arrives, when more than
+        # SENTINEL_GRACE_CHARS (32) of further content arrive, or after SENTINEL_GRACE_S (2.0 s); failures in that
+        # window do not fail the segment. It also stops if model.cancellable and the text exceeds
+        # req.hard_cut_chars*1.5 (a non-cancellable model is read on: closing would not stop its billing; the
+        # relay bounds it); final
         # kind="done" with usage (the usage chunk if received, plus "generation_id" from X-Generation-Id or the
         # chunk id when known), finish_reason ("stop"|"length"|"content_filter"|"sentinel"|"cut"|"error"), and
         # StreamEvent.text = "" ; on errors kind="error" with error message (never raise inside the iterator after
         # the first yield; raising BackendError before the first yield is ok for HTTP errors).
         # Refusal text (delta.refusal) with no content counts as finish_reason "content_filter".
-        # Reasoning deltas (delta.reasoning) -> kind="reasoning" (normally excluded).
+        # Reasoning deltas (delta.reasoning) -> kind="reasoning" (streamed for Fable despite reasoning.exclude; the
+        # relay drops them, and error messages never quote raw payloads, so they cannot reach notes or traces).
         # Mid-stream error chunk (top-level "error", finish_reason "error") -> kind="error".
     def build_chat_body(self, model: ModelSpec, req: ChatRequest) -> dict
     async def chat(self, model, req) -> ChatResult   # non-streaming; retries 408/429/5xx/502/503 with Retry-After + backoff
@@ -423,7 +431,8 @@ Loop, with i = segment index:
 1. W = router.window(question, segments, cfg.relay.window_segments).
 2. Sequential strategy: `d = router.decide(W, current=current, available=avail)`. Emit `segment_start` with model,
    decision, posterior, scores and probs. Stream `backend.stream_continuation(model, req)`. Buffer the first 40 chars
-   so that preamble or echoed overlap can be stripped, then emit `delta` events. Never emit text after the sentinel.
+   so that preamble or echoed overlap can be stripped, then emit `delta` events. Never emit text after the sentinel,
+   nor trailing whitespace at the end of the segment.
    At the end, `clean_segment()` and emit `segment_end` with the final text. The final text is authoritative; the UI
    replaces the streamed text with it.
 3. Speculative strategy, when r(W) ≥ speculative_gate and more than one model is available:
@@ -448,7 +457,8 @@ Loop, with i = segment index:
    `data = trace.to_dict() | {"usage": per-model usage, "latency": ...}`. A call whose stream was closed before its
    usage chunk is listed in `usage_missing` (with its `generation_id`), and `usage_complete` is then false: the
    usage and cost totals are a lower bound and clients label them as partial. `Segment.aborted` is true whenever
-   the stream was closed before the provider finished (by the relay, or by the backend at the sentinel or cut).
+   the stream was closed before the provider finished (by the relay, or by the backend at the cut or at the
+   sentinel without the usage chunk); a sentinel stream whose usage chunk arrived in the grace window is not.
 
 ## 6. Server, UI and CLI (WP5)
 

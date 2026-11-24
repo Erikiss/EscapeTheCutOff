@@ -92,11 +92,22 @@ def trim_overlap(notes_tail: str, new: str, min_len: int = 12) -> str:
 # Latin terminators need following whitespace ("3.5" is not an end); CJK full-width ones do not.
 _SENTENCE_END = re.compile(r"[.!?…][\"'”’“»)\]]*(?=\s|$)|[。！？][」』”’）)]*")
 _DOTTED_ABBREVIATION = re.compile(r"(?:[^\W\d_]\.)+[^\W\d_]")  # "u.s", "z.b" (word before the final dot)
+# A standalone 1-2 digit number before the dot is a German ordinal ("zum 24. November", "im 3. Quartal") or a day
+# range ("10./11.", "10.–12."); years ("2026.") and decimals ("3.5.") still end a sentence.
+_ORDINAL = re.compile(r"\d{1,2}(?:\.[/–-]\d{1,2})?")
 _ABBREVIATIONS = frozenset({
-    "e.g", "i.e", "etc", "vs", "cf", "approx", "ca", "mr", "mrs", "ms", "dr", "prof", "st", "nr", "jr", "sr",
-    "inc", "ltd", "co", "corp", "fig", "eq", "vol", "z.b", "bzw", "usw", "vgl", "d.h", "u.a", "jan", "feb", "mar",
-    "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    # English
+    "e.g", "i.e", "etc", "vs", "cf", "approx", "ca", "mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "inc",
+    "ltd", "co", "corp", "fig", "eq", "vol", "al", "gen", "gov", "sen", "rep", "lt", "col", "sgt", "capt", "mt",
+    # German
+    "nr", "z.b", "bzw", "usw", "vgl", "d.h", "u.a", "ggf", "evtl", "inkl", "bzgl", "zzgl", "bspw", "sog", "geb",
+    "gest", "hrsg", "bd", "jh", "mio", "mrd", "tsd",
+    # month abbreviations (English and German)
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "mär", "mrz", "okt", "dez",
 })
+# Abbreviations only when a number follows ("No. 5", "Art. 3", "pp. 4-7"): "no." also ends sentences.
+_NUMBER_ABBREVIATIONS = frozenset({"no", "nos", "art", "abs", "pp"})
+_NUMBER_NEXT = re.compile(r"\s+\d")
 
 
 def _is_sentence_end(text: str, match: re.Match[str]) -> bool:
@@ -104,7 +115,11 @@ def _is_sentence_end(text: str, match: re.Match[str]) -> bool:
         return True
     words = text[: match.start()].split()
     word = (words[-1] if words else "").lstrip("([\"'“„«").lower()
-    if len(word) == 1 and word.isalpha():  # initials such as "J. Smith"
+    if len(word) == 1 and word.isalpha():  # initials such as "J. Smith", and "z. B.", "u. a.", "d. h."
+        return False
+    if _ORDINAL.fullmatch(word):
+        return False
+    if word in _NUMBER_ABBREVIATIONS and _NUMBER_NEXT.match(text, match.end()):
         return False
     return word not in _ABBREVIATIONS and not _DOTTED_ABBREVIATION.fullmatch(word)
 
@@ -112,8 +127,10 @@ def _is_sentence_end(text: str, match: re.Match[str]) -> bool:
 def trim_to_sentence(text: str, max_chars: int) -> str:
     """Shorten ``text`` to at most ``max_chars``, ending at the last sentence end or line break inside the limit.
 
-    Text already within the limit is returned (stripped) unchanged. If the first sentence alone is longer than the
-    limit, the cut falls on the last whitespace, or exactly at ``max_chars`` if there is none.
+    A dot after an abbreviation (``z. B.``, ``bzw.``, ``e.g.``, ``Okt.``, ``No. 5``), an initial or a standalone
+    1-2 digit ordinal (``zum 24. November``) is not a sentence end. Text already within the limit is returned
+    (stripped) unchanged. If the first sentence alone is longer than the limit, the cut falls on the last whitespace,
+    or exactly at ``max_chars`` if there is none.
     """
     text = text.strip()
     if len(text) <= max_chars:
@@ -137,9 +154,10 @@ _FENCE_CLOSE = re.compile(r"(?:^|\n)[ \t]*```[ \t]*$")
 _LABEL = re.compile(
     r"^(?:[*_#>]+[ \t]*)*"
     r"(?:here(?:'s| is)[ \t]+(?:the|my)[ \t]+)?"
-    r"(?:next[ \t]+paragraph|next[ \t]+intermediate[ \t]+result|intermediate[ \t]+result|next[ \t]+step"
-    r"|next[ \t]+note|continuation|contribution|paragraph|analyst(?:[ \t]+\d+)?"
-    r"|fortsetzung|n[äa]chster[ \t]+absatz|n[äa]chstes[ \t]+zwischenergebnis|zwischenergebnis|beitrag)"
+    r"(?:next[ \t]+paragraph|next[ \t]+intermediate[ \t]+result|intermediate[ \t]+result|next[ \t]+result"
+    r"|next[ \t]+step|next[ \t]+note|continuation|contribution|paragraph|analyst(?:[ \t]+\d+)?"
+    r"|fortsetzung|n[äa]chster[ \t]+absatz|n[äa]chstes[ \t]+zwischenergebnis|zwischenergebnis"
+    r"|n[äa]chster[ \t]+schritt|beitrag)"
     r"[ \t]*(?:[*_]+[ \t]*)?:[ \t]*(?:[*_]+[ \t]*)?\n?",
     re.IGNORECASE,
 )
@@ -161,8 +179,10 @@ def _strip_enclosing_quotes(text: str) -> str:
 
 
 def strip_preamble(text: str) -> str:
-    """Remove wrappers models put around a paragraph: labels ("Next paragraph:", "Continuation:", ...), code fences
-    around the whole text, and enclosing quotes. "Correction:" and the final-answer marker are kept."""
+    """Remove wrappers models put around a paragraph: labels ("Next paragraph:", "Continuation:", ...) including echoes
+    of the template ("Next result:", "Zwischenergebnis:", "Nächster Schritt:", ...), code fences around the whole
+    text, and enclosing quotes. Content-bearing openers ("Correction:", "Korrektur:") and the final-answer marker are
+    kept."""
     out = text.strip()
     while True:
         before = out

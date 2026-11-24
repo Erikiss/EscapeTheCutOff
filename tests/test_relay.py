@@ -284,6 +284,31 @@ async def test_sentinel_split_across_deltas_is_never_shown_and_usage_is_kept():
     assert events[-1].data["usage"]["b"]["prompt_tokens"] >= 11  # read on to the done event after the sentinel
 
 
+@pytest.mark.parametrize("ending", [
+    "\n\n",  # live Fable: a blank line, then the server-side stop at the sentinel
+    "\n" + SENTINEL,  # live Sol: the sentinel on its own line
+    " \n \n" + SENTINEL + " trailing",
+])
+async def test_trailing_whitespace_is_not_streamed(ending):
+    body = para(0)
+
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("The answer is 42." + "\n\n")
+        if req.segments:
+            return text_events("FINAL ANSWER: 42")
+        return text_events(body + ending, chunk=3)
+
+    relay, _, _ = make_relay(script, answer_mode="routed")
+    events = await collect(relay)
+    ends = committed(events) + committed(events, "answer")
+    assert [e.text for e in ends] == [body, "", "The answer is 42."]
+    for end in ends:  # the CLI redraws a block (and clients rewrite it) whenever these differ
+        streamed = "".join(ev.text for ev in events
+                           if ev.type == "delta" and ev.segment == end.segment and ev.phase == end.phase)
+        assert streamed == end.text
+
+
 async def test_final_marker_split_across_deltas_inline_answer():
     chunks = ["Everything needed is in the notes now. FINAL AN", "SWER: Olaf Sch", "olz is chancellor.", SENTINEL]
 
@@ -742,11 +767,13 @@ def real_relay(handler: Callable[[str, str, int], str], *, pick: Callable[[list[
 
 
 async def test_real_backend_calls_closed_before_their_usage_chunk_are_reported():
+    runaway = " trailing words that keep going past the sentinel"  # beyond the backend's grace window
+
     def handler(key, phase, notes):
         if phase == "answer":
             return or_stream("The answer is X.")
         text = "The notes agree on every point. FINAL ANSWER: X" if notes >= 2 else para(notes)
-        return or_stream(text, SENTINEL, " trailing words")  # Sol has no `stop`: it writes the sentinel itself
+        return or_stream(text, SENTINEL, runaway)  # Sol has no `stop`: it writes the sentinel itself
 
     relay, bodies = real_relay(handler, pick=lambda avail, cur, n: SOL_KEY)
     done = (await collect(relay))[-1].data
@@ -757,9 +784,33 @@ async def test_real_backend_calls_closed_before_their_usage_chunk_are_reported()
     assert [(m["index"], m["model"], m["finish_reason"], m["generation_id"]) for m in done["usage_missing"]] == [
         (0, SOL_KEY, "sentinel", "gen-1"), (1, SOL_KEY, "sentinel", "gen-2"), (2, SOL_KEY, None, None)]
     segs = done["segments"]
-    assert [s["aborted"] for s in segs] == [True, True, True, False]  # the backend's sentinel close counts too
+    assert [s["aborted"] for s in segs] == [True, True, True, False]  # the backend's runaway close counts too
     assert segs[0]["usage"] == {"generation_id": "gen-1"}
     assert segs[3]["usage"] == OR_USAGE | {"generation_id": "gen-4"}
+
+
+async def test_real_backend_sentinel_as_the_last_content_keeps_the_usage_complete():
+    # the live Sol shape: the sentinel is its very last content, finish "stop" and the usage chunk follow at once
+    def handler(key, phase, notes):
+        if phase == "answer":
+            return or_stream("The answer is X.")
+        if notes >= 2:
+            return or_stream("FINAL ANSWER: X")  # inline answer: read to the end, no close at the marker
+        return or_stream(para(notes) + "\n", "<<", "END", "_STEP", ">>")
+
+    relay, bodies = real_relay(handler, pick=lambda avail, cur, n: SOL_KEY, answer_mode="inline")
+    events = await collect(relay)
+    done = events[-1].data
+    assert done["status"] == "ok" and len(bodies) == 3
+    assert done["usage_complete"] is True and done["usage_missing"] == []
+    assert done["usage_total"]["calls"] == 3 and done["usage_total"]["cost"] == pytest.approx(3 * 0.004)
+    segs = done["segments"]
+    assert [s["text"] for s in segs[:2]] == [para(0), para(1)]
+    assert [s["note"] for s in segs[:2]] == ["sentinel", "sentinel"]  # the backend's finish_reason contract
+    assert [s["usage"] for s in segs[:2]] == [OR_USAGE | {"generation_id": "gen-1"},
+                                              OR_USAGE | {"generation_id": "gen-2"}]
+    assert [s["aborted"] for s in segs] == [False, False, False, False]  # the provider finished every stream
+    assert not any(SENTINEL in (ev.text or "") or "END_STEP" in (ev.text or "") for ev in events)
 
 
 async def test_real_backend_complete_usage_when_every_stream_ends_normally():

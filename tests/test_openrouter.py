@@ -275,15 +275,108 @@ async def test_no_referer_header_by_default():
     assert "http-referer" not in rec.requests[0].headers
 
 
-async def test_sentinel_mid_delta_closes_stream_promptly():
-    data = sse_bytes(chunk("The result is 42."), chunk(" Done<<END_"), chunk("STEP>> leaked words"),
-                     chunk("more leaked words"), done=False)
+async def test_sentinel_mid_delta_then_runaway_closes_stream_promptly():
+    # more than SENTINEL_GRACE_CHARS of content after the sentinel: the model ignored it, close at once
+    runaway = " leaked words that keep on coming"
+    assert len(runaway) > 32
+    data = sse_bytes(chunk("The result is 42."), chunk(" Done<<END_"), chunk("STEP>>" + runaway),
+                     *[chunk("more leaked words") for _ in range(20)], done=False)
     stream = ChunkStream(split_every(data, 11), hang_after=True)  # never ends unless we stop reading
+    t0 = time.monotonic()
     events = await asyncio.wait_for(collect(backend(Recorder(httpx.Response(200, stream=stream))), SOL, req()), 5)
+    assert time.monotonic() - t0 < 1.0  # well inside the grace time limit
     assert texts(events) == "The result is 42. Done<<END_STEP>>"
+    assert [e.kind for e in events].count("done") == 1 and "error" not in [e.kind for e in events]
     assert events[-1].kind == "done" and events[-1].finish_reason == "sentinel"
     assert events[-1].usage == {"generation_id": "gen-1"}  # no usage chunk, but the generation can be looked up
     assert stream.closed and stream.sent < len(stream.chunks)
+
+
+async def test_sentinel_as_the_last_content_keeps_the_usage_chunk():
+    # the live Sol shape (fixtures/live_sse/gpt-6.2-sol.sse): "\n<<END_STEP>>" last, then finish "stop" + usage
+    data = sse_bytes(chunk("Karis took office in 2021.\n"), chunk("<<"), chunk("END"), chunk("_STEP"), chunk(">>"),
+                     chunk("", finish="stop"), chunk(None, finish="stop", usage=USAGE))
+    stream = ChunkStream(split_every(data, 9))
+    rec = Recorder(httpx.Response(200, stream=stream, headers={"X-Generation-Id": "gen-hdr-7"}))
+    events = await collect(backend(rec), SOL, req())
+    assert texts(events) == "Karis took office in 2021.\n<<END_STEP>>"
+    done = events[-1]
+    assert [e.kind for e in events].count("done") == 1 and "error" not in [e.kind for e in events]
+    assert done.finish_reason == "sentinel"  # the contract: the segment ended at the sentinel
+    assert done.usage == USAGE | {"generation_id": "gen-hdr-7"}
+    assert stream.closed
+
+
+async def test_sentinel_grace_reads_a_short_tail_but_never_yields_it():
+    data = sse_bytes(chunk("A note." + S + " ok"), chunk(" done."), chunk(reasoning="late summary"),
+                     chunk("", finish="stop"), chunk(None, finish="stop", usage=USAGE))
+    events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream(split_every(data, 5))))), SOL,
+                           req())
+    assert texts(events) == "A note." + S
+    assert not any("late summary" in e.text or "ok" in e.text for e in events if e.kind != "text")
+    assert [e.kind for e in events] == ["text", "done"]
+    assert events[-1].finish_reason == "sentinel" and events[-1].usage["prompt_tokens"] == 50
+
+
+class DripStream(ChunkStream):
+    """Sends its chunks, then a keep-alive comment every ``every`` seconds forever."""
+
+    def __init__(self, chunks: list[bytes], every: float) -> None:
+        super().__init__(chunks)
+        self.every = every
+
+    async def __aiter__(self):
+        for c in self.chunks:
+            self.sent += 1
+            yield c
+        while True:
+            await asyncio.sleep(self.every)
+            yield b": OPENROUTER PROCESSING\n\n"
+
+
+@pytest.mark.parametrize("make_stream", [
+    lambda data: ChunkStream([data], hang_after=True),  # the connection goes silent after the sentinel
+    lambda data: DripStream([data], every=0.01),  # only keep-alive comments follow
+])
+async def test_sentinel_grace_time_limit(monkeypatch, make_stream):
+    assert orb.SENTINEL_GRACE_S == 2.0 and orb.SENTINEL_GRACE_CHARS == 32
+    monkeypatch.setattr(orb, "SENTINEL_GRACE_S", 0.1)
+    stream = make_stream(sse_bytes(chunk("The note ends here." + S), done=False))
+    t0 = time.monotonic()
+    events = await asyncio.wait_for(collect(backend(Recorder(httpx.Response(200, stream=stream))), SOL, req()), 5)
+    assert 0.05 <= time.monotonic() - t0 < 1.5
+    assert [e.kind for e in events] == ["text", "done"]
+    assert events[-1].finish_reason == "sentinel" and events[-1].usage == {"generation_id": "gen-1"}
+    assert stream.closed
+
+
+@pytest.mark.parametrize("tail", [
+    [{"id": "gen-1", "error": {"code": 502, "message": "Provider disconnected"},
+      "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]}],
+    ["{broken json"],
+    [chunk("", finish="length")],
+])
+async def test_failures_after_the_sentinel_do_not_fail_the_segment(tail):
+    data = sse_bytes(chunk("A complete note." + S), *tail, done=False)  # and the stream ends without [DONE]
+    events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream(split_every(data, 6))))), SOL,
+                           req())
+    assert [e.kind for e in events] == ["text", "done"]
+    assert events[-1].finish_reason == "sentinel" and events[-1].error is None
+
+
+async def test_malformed_payload_errors_never_quote_the_payload():
+    # a connection dropped in the middle of a reasoning chunk leaves a truncated JSON line at EOF
+    data = sse_bytes(chunk(reasoning="first summary"), done=False)
+    data += b'data: {"id":"g","choices":[{"delta":{"reasoning":"hidden musings about the answer'
+    events = await collect(backend(Recorder(httpx.Response(200, stream=ChunkStream([data])))), FABLE, req())
+    assert [e.kind for e in events] == ["reasoning", "error", "done"]
+    assert "malformed" in events[1].error and "hidden musings" not in events[1].error
+    with pytest.raises(ValueError) as ei:
+        list(parse_sse(['data: {"choices": [{"delta": {"reasoning": "hidden musings', ""]))
+    assert "hidden musings" not in str(ei.value)
+    with pytest.raises(ValueError) as ei:
+        list(parse_sse(['data: "hidden musings"', ""]))
+    assert "not a JSON object" in str(ei.value) and "hidden musings" not in str(ei.value)
 
 
 async def test_hard_cut_closes_stream():
@@ -313,9 +406,9 @@ async def test_refusal_stream():
 
 
 async def test_generation_id_header_is_reported_when_the_usage_chunk_is_cut_off():
-    # Sol writes the sentinel itself; the usage chunk would only follow it, so it is never read
-    data = sse_bytes(chunk("The result is 42."), chunk(S), chunk(" more"), chunk("", finish="stop"),
-                     chunk(None, finish="stop", usage=USAGE))
+    # Sol writes the sentinel itself and runs on past it: the stream is closed before the usage chunk
+    data = sse_bytes(chunk("The result is 42."), chunk(S), chunk(" more text that the model keeps writing on"),
+                     chunk("", finish="stop"), chunk(None, finish="stop", usage=USAGE))
     stream = ChunkStream(split_every(data, 16))
     rec = Recorder(httpx.Response(200, stream=stream, headers={"X-Generation-Id": "gen-hdr-7"}))
     events = await collect(backend(rec), SOL, req())
