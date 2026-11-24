@@ -1,0 +1,85 @@
+# cutoffmix default configuration (DESIGN.md §1 and §3.1).
+#
+# Load with cutoffmix.config.load_config(); a custom file or an `overrides` dict is deep-merged on top of this one.
+# In overrides, `models` may be a list (replaces all models) or a mapping {model key: {field: value}} that patches
+# individual models.
+
+today: null                       # ISO date for the system prompt; null -> the current date
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY
+app_title: cutoffmix
+
+models:
+  - key: claude-fable-5.2
+    provider_id: anthropic/claude-fable-5.2
+    display: Claude Fable 5.2
+    color: "#d97757"
+    supports_stop: true           # all Fable endpoints honour `stop`
+    supports_temperature: false   # Fable 5.2 rejects temperature/top_p
+    cancellable: true             # closing the stream stops billing on anthropic/azure
+    provider_routing:             # `only` keeps routing on cancellable providers; fallbacks stay on so that an
+      only: [anthropic, azure]    # outage at one is served by the other (allow_fallbacks: false without `order`
+                                  # would serve only the top-ranked provider)
+    reasoning: {effort: low, exclude: true}
+    cache_style: anthropic        # explicit cache_control on the system block and the last notes block
+    max_tokens_slack: 2048
+    extra_body: {}                # never put `verbosity` here: OpenRouter maps it to Claude's effort
+
+  - key: gpt-6.2-sol
+    provider_id: openai/gpt-6.2-sol
+    display: GPT-6.2 Sol
+    color: "#10a37f"
+    supports_stop: false          # no Sol endpoint supports `stop`; the sentinel is detected client-side
+    supports_temperature: false
+    cancellable: true             # openai/azure stop billing on disconnect
+    provider_routing:
+      only: [openai, azure]       # failover between the two, as for Fable
+    reasoning: {effort: low, exclude: true}
+    cache_style: openai           # automatic caching + prompt_cache_key per run
+    max_tokens_slack: 2048
+    extra_body:
+      verbosity: low
+
+  - key: gemini-4-neon
+    provider_id: google/gemini-4-neon
+    display: Gemini 4 Neon
+    color: "#4285f4"
+    supports_stop: true           # only on google-vertex, hence the pin below
+    supports_temperature: true
+    cancellable: false            # Google keeps generating (and billing) after a disconnect
+    provider_routing:
+      only: [google-vertex]       # base slug: any google-vertex endpoint (all support `stop`), not the priority tier
+    reasoning: {effort: low, exclude: true}
+    cache_style: implicit         # Gemini 4: implicit caching only (>= 4096 tokens)
+    max_tokens_slack: 1536        # kept tight because aborting does not stop billing
+    extra_body: {}
+
+relay:
+  segment_tokens: 128
+  hard_cut_chars: 600
+  max_segments: 60
+  window_segments: 3
+  strategy: sequential
+  speculative_gate: 0.5
+  answer_mode: routed
+  answer_max_tokens: 1024
+  sentinel: "<<END_STEP>>"
+  final_marker: "FINAL ANSWER:"
+  inject_date: true
+  max_retries: 2
+  disable_after_refusals: 2
+
+router:
+  policy: softmax
+  T0: 0.5
+  beta: 0.25
+  kappa: 1.0
+  lam: 0.5
+  r_min: 0.05
+  delta: 0.5
+  ema: 0.5
+  index_path: null
+  probe_preference: [current_d, current, recall, mcq]
+  classifier: auto
+  classifier_path: null
+  seed: null

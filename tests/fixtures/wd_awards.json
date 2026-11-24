@@ -1,0 +1,612 @@
+{
+ "head": {
+  "vars": [
+   "award",
+   "awardLabel",
+   "d",
+   "human",
+   "prec",
+   "who",
+   "whoLabel"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q101"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Pierre Agostini"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2023-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q102"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Anne L'Huillier"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2023-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "John Hopfield"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q104"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Geoffrey Hinton"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q105"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "John Clarke"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-10-07T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q106"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Michel Devoret"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q38104"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Nobel Prize in Physics"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q107"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "John M. Martinis"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103916"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Academy Award for Best Actor"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q201"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Cillian Murphy"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-03-10T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103916"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Academy Award for Best Actor"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q202"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Adrien Brody"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-03-02T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103916"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Academy Award for Best Actor"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q203"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Michael B. Jordan"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-03-15T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103916"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Academy Award for Best Actor"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q204"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Sinners"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-03-15T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "false"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q103916"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Academy Award for Best Actor"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q205"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Earlier Laureate"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q160082"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Booker Prize"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q301"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Paul Lynch"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2023-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q160082"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Booker Prize"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q302"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Samantha Harvey"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q160082"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Booker Prize"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q303"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "David Szalay"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q185667"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Turing Award"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q401"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Andrew Barto"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "award": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q185667"
+    },
+    "awardLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Turing Award"
+    },
+    "who": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q402"
+    },
+    "whoLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Richard S. Sutton"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    },
+    "human": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   }
+  ]
+ }
+}

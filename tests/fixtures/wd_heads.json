@@ -1,0 +1,771 @@
+{
+ "head": {
+  "vars": [
+   "country",
+   "countryLabel",
+   "end",
+   "nature",
+   "office",
+   "officeLabel",
+   "person",
+   "personLabel",
+   "prec",
+   "replaces",
+   "replacesLabel",
+   "sitelinks",
+   "start"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q26258815"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ana Brnabić"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q889830"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Serbia"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q403"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Serbia"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-09-28T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4831"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Aleksandar Vučić"
+    },
+    "nature": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q4676846"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "60"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q142195374"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Aleksandar Čupić"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q889830"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Serbia"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q403"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Serbia"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-11-19T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q26258815"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ana Brnabić"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q16407395"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ülle Madise"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q890005"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Estonia"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q191"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Estonia"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-12T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q12358575"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Alar Karis"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "30"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q16407395"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ülle Madise"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q890005"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Estonia"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q191"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Estonia"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-12T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q12358575"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Alar Karis"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "30"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q18538164"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ilie Bolojan"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q15304810"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "prime minister of Romania"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q218"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Romania"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-06-23T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-20T00:00:00Z"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q5051781"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Cătălin Predoiu"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "25"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q121140873"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Luca Niculescu"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q15304810"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "prime minister of Romania"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q218"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Romania"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-20T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q18538164"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ilie Bolojan"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "8"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30339350"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Gabriel Attal"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1587677"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Prime Minister of France"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q142"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "France"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-09T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "end": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-09-05T00:00:00Z"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q20020731"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Élisabeth Borne"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "64"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q291668"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Michel Barnier"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1587677"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Prime Minister of France"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q142"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "France"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-09-05T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30339350"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Gabriel Attal"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "70"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q439632"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "François Bayrou"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1587677"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Prime Minister of France"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q142"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "France"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-12-13T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q291668"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Michel Barnier"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "60"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q141531158"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "William Casali"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q258045"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Captain Regent of San Marino"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q238"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "San Marino"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q141531159"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Second Regent"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q258045"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Captain Regent of San Marino"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q238"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "San Marino"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q813067"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Beat Jans"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q11811941"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Member of the Swiss Federal Council"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q39"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Switzerland"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q123939"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Alain Berset"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q99999991"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Q99999991"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34071"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Paraguay"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q733"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Paraguay"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-03-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q51885479"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Pedro Alliana"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34071"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of Paraguay"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q733"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Paraguay"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    }
+   },
+   {
+    "person": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q22686"
+    },
+    "personLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Donald Trump"
+    },
+    "office": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q11696"
+    },
+    "officeLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "President of the United States"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "start": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-20T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    },
+    "replaces": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q6279"
+    },
+    "replacesLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Joe Biden"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "250"
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,452 @@
+{
+ "head": {
+  "vars": [
+   "comp",
+   "compLabel",
+   "date",
+   "ed",
+   "edLabel",
+   "edLinks",
+   "sport",
+   "sportLabel",
+   "winner",
+   "winnerLabel"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q501"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2024 Dutch Grand Prix"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q500"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Dutch Grand Prix"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q511"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Lando Norris"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-08-25T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q5386"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "motorsport"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q501"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2024 Dutch Grand Prix"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q500"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Dutch Grand Prix"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q512"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "McLaren"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-08-25T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q5386"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "motorsport"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2025 Dutch Grand Prix"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q500"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Dutch Grand Prix"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q513"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Oscar Piastri"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-08-31T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q5386"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "motorsport"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2025 Dutch Grand Prix"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q500"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Dutch Grand Prix"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q512"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "McLaren"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-08-31T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q5386"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "motorsport"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q701"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2025 Tour de France"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q33881"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tour de France"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tadej Pogačar"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-07-27T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q3609"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "road cycling"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q702"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Tour de France"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q33881"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tour de France"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tadej Pogačar"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-07-26T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q3609"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "road cycling"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q703"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Paris–Roubaix"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q704"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Paris–Roubaix"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q712"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Mathieu van der Poel"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-04-12T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q3609"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "road cycling"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q601"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Q601"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q600"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Example Cup"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q611"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Team Alpha"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-06-01T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q2736"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "association football"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q602"
+    },
+    "edLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2024 Spengler Cup"
+    },
+    "comp": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q603"
+    },
+    "compLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Spengler Cup"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q612"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "HC Fribourg-Gottéron"
+    },
+    "date": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "sport": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q41466"
+    },
+    "sportLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "ice hockey"
+    },
+    "edLinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "10"
+    }
+   }
+  ]
+ }
+}

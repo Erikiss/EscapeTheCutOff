@@ -1,0 +1,214 @@
+# cutoffmix
+
+Eine gemeinsame Gedankenkette, die abschnittsweise von drei Modellen geschrieben wird. Vor jedem Abschnitt
+entscheidet ein Router, welches Modell weiterschreibt: das, dessen **themenspezifischer effektiver Wissensstand**
+(„virtueller Cutoff“) für das aktuelle Thema am nächsten an heute liegt. Die Cutoffs werden **extern gemessen**,
+mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/knowledge-cutoff/). Was die Modelle
+über sich selbst sagen, spielt keine Rolle.
+
+| Schlüssel | OpenRouter-ID | Provider (fest gepinnt) |
+|---|---|---|
+| `claude-fable-5.2` | `anthropic/claude-fable-5.2` | anthropic, azure |
+| `gpt-6.2-sol` | `openai/gpt-6.2-sol` (*„Gemini 6.2 Sol“ ist ein OpenAI-Modell*) | openai, azure |
+| `gemini-4-neon` | `google/gemini-4-neon` | google-vertex |
+
+`docs/DESIGN.md` ist der vollständige Entwurf, inklusive der gegen die Live-Endpunkt-Metadaten geprüften API-Fakten.
+
+## Ehrlicher Stand
+
+- **Mit simulierten Modellen (`--mock`) läuft alles:** Relay, Router, Web-UI, OpenAI-kompatible API, Benchmark-Pipeline,
+  Schätzer. Alle Tests laufen offline.
+- **Live geprüft am 24.11.2026** über OpenRouter:
+  - Alle drei Modelle wurden einzeln aufgerufen. Request-Format, Provider-Pinning und Stopp am Sentinel funktionieren,
+    und die Kosten kommen pro Aufruf an.
+  - Ein voller Relay-Lauf mit dem Prior-Index (Policy `softmax`): Erwartungsgemäß schrieb nur Sol, nach 17 s lag eine
+    deutsche Antwort vor.
+  - Ein Lauf mit Rotation über alle drei Modelle (Policy `round_robin`): 6 Abschnitte, 5 Wechsel, 57 s, 0,15 $. Die
+    Modelle greifen die Notizen der anderen auf und korrigieren sie. Bei Artemis II (April 2026) brachte Fable Details
+    ein, die Sol und Neon zunächst als unbelegt markiert hatten.
+  - Die echten SSE-Mitschnitte liegen als Test-Fixtures in `tests/fixtures/live_sse/`.
+- **Latenz (live gemessen):**
+
+  | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
+  |---|---|---|---|
+  | GPT-6.2 Sol | ≈ 1,1 s | ≈ 4,7 s | ≈ 0,4–0,8 ct |
+  | Claude Fable 5.2 | ≈ 6,3 s | ≈ 9,8 s | ≈ 1,7–2,2 ct |
+  | Gemini 4 Neon | ≈ 7,2 s | ≈ 9,2 s | ≈ 0,9–1,6 ct |
+
+  Alle drei denken vor jeder Ausgabe verdeckt; die niedrigste mögliche Stufe ist `low`. Ein Wechsel kostet deshalb
+  jedes Mal diese Anlaufzeit. Schneller als ein Wechsel pro Abschnitt geht über diese APIs nicht.
+- **Der mitgelieferte Index ist ein Prior, keine themenaufgelöste Messung.** Er ist aus den öffentlichen Daten des
+  Knowledge-Cutoff-Bench gefittet. Diese Daten enden im **Juni 2026**, und GPT-6.2 Sol liegt dort **in jedem Thema
+  vorn**. Mit echten Modellen und diesem Index schreibt deshalb meist Sol, und die anderen kommen nur durch das
+  Sampling zum Zug. „Immer Sol“ ist damit die Baseline, die das Routing schlagen muss.
+- **Themen-Umkehrungen** (z. B. Fable bei KI-Themen, Neon bei Raumfahrt) lassen sich erst mit einem neuen,
+  themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 961 Wikidata-Ereignisse dafür liegen in
+  `data/events/`. Der Lauf kostet Geld (siehe unten) und wird nur mit Freigabe gestartet.
+- **Wechsel pro Abschnitt, nicht pro Token.** Die Modelle teilen über diese APIs keine nativen Thinking-Tokens: Jeder
+  Aufruf denkt verborgen, und dieses Denken wird verworfen. Geteilt wird ein **sichtbarer Notizstrom**. Jeder Abschnitt
+  ist standardmäßig etwa 128 Token lang, und nach jedem Abschnitt kann das Modell wechseln. Gemäß deiner Prämisse
+  setzen die Modelle die Notizen des jeweils anderen fort.
+
+## So funktioniert es
+
+```
+Frage ──► [Abschnitt 1: Modell A] ─► [Abschnitt 2: Modell B] ─► … ─► FINAL ANSWER ─► Antwort (geroutetes Modell)
+               ▲                         ▲
+               └── Router: Themen-Posterior des Fensters × Cutoff-Index × Zeitsensitivität → Sampling
+```
+
+1. **Relay** (`cutoffmix/relay.py`). Jeder Abschnitt ist ein eigener Streaming-Aufruf über OpenRouter.
+   - Die Notizen werden append-only mitgeschickt, damit Prompt-Caches treffen.
+   - Ein Abschnitt endet am Sentinel `<<END_STEP>>`, nach ca. K Token oder spätestens nach 600 Zeichen.
+   - Verweigert ein Modell, geht der Abschnitt an ein anderes Modell. Es wird nie umformuliert und erneut versucht.
+   - Mit `--strategy speculative` schreiben bei zeitkritischen Fenstern alle drei Modelle parallel einen Entwurf, und
+     der Router wählt mit Vorausschau. Das beseitigt die eine Abschnittsverzögerung der Standardstrategie, kostet aber
+     etwa 3× Token.
+2. **Zeitfenster.** Geroutet wird nach den letzten 3 Abschnitten (exponentiell geglättet) plus der Frage. Ein Fenster
+   von etwa 300–400 Token reicht, damit das Thema stabil erkannt wird, und ist kurz genug, damit ein Themenwechsel nach
+   spätestens einem Abschnitt greift.
+3. **Router** (`cutoffmix/router/`).
+   - Ein Themenklassifikator (15 Themen, deutsch und englisch, ohne Training) liefert den Themen-Posterior π.
+   - Ein Zeitsensitivitäts-Gate liefert r(W). Bei zeitlosen Fragen („Warum schwimmt Eis?“) ist das Routing nahezu egal.
+   - Aus dem Index wird pro Modell ein Score berechnet, der Unsicherheit und Halluzinationsneigung bestraft:
+
+     `U_m = Σ_z π_z·τ_mz − κ·√(Σ_z π_z²·Var_mz) − λ·Σ_z π_z·H_mz`
+
+     Dabei ist τ der virtuelle Cutoff in Monaten, Var dessen Unsicherheit und H die Rate veralteter oder falscher
+     Behauptungen nach dem Cutoff. Standardwerte sind κ = 1 und λ = 0,5. Der H-Term entscheidet damit nur bei fast
+     gleichen Cutoffs und überstimmt keinen echten Vorsprung.
+4. **Sampling** für die feinen relativen Unterschiede:
+   - Die Standard-Policy `softmax` zieht mit P ∝ exp((U_m + β·[aktuelles Modell]) / T), mit T = T₀ / max(r, r_min).
+     Bei hoher Zeitsensitivität entscheidet sie also scharf und bei zeitlosen Fenstern locker, und der Bonus β
+     verhindert sinnloses Hin- und Herspringen.
+   - `thompson` zieht stattdessen einen Cutoff aus den Bootstrap-Draws des Index. Damit wird jeder Abstand von einem
+     Monat oder weniger proportional zur echten Unsicherheit ausgenutzt.
+   - Weitere Policies: `argmax` (mit Hysterese), `round_robin`, `random` und `fixed:<key>` als Vergleichsbaselines.
+5. **Index** (`cutoffmix/bench/estimate.py`). Es ist ein hierarchisches 4PL-Modell der Trefferquote über die
+   Ereigniszeit:
+
+   `P(richtig | t) = g + (a − g)·σ((τ − t)/s)`
+
+   - Der Ratefloor g ist 0 bei offenen Fragen und 0,25 bei Multiple Choice.
+   - Gefittet wird zuerst pro Modell, dann pro (Modell, Thema) mit Themen-Offset und Shrinkage zum Modellmittel.
+   - Pro Zelle entstehen Bootstrap-Draws und P(best).
+   - Die primäre Sonde ist `current_d`: die Frage nach dem aktuellen Stand mit heutigem Datum im Systemprompt, also so,
+     wie das Modell im Relay tatsächlich gefragt wird. Diese Sonde ist der „virtuelle Cutoff“.
+   - Mit `cutoffmix simulate` kann man prüfen, ob der Schätzer bekannte Cutoffs wiederfindet.
+
+## Mitgelieferter Prior-Index
+
+Sonde `current`, also die direkte Frage des Knowledge-Cutoff-Bench. Datenbasis: 280 Ereignisse, 1677 bewertete
+Antworten, Ereignisse von 2024-01 bis 2026-06. In jeder Zelle steht τ als `JJJJ-MM.Zehntel` und dahinter P(best);
+`*` markiert das wahrscheinlich beste Modell.
+
+| Thema | Fable 5.2 | GPT-6.2 Sol | Gemini 4 Neon |
+|---|---|---|---|
+| Regierung / Amtsinhaber | 2026-03.3 · 0 % | **2026-04.7 · 99 %*** | 2026-03.7 · 1 % |
+| Wahlen | 2026-03.9 · 0 % | **2026-05.6 · 100 %*** | 2026-03.8 · 0 % |
+| Wirtschaft | 2026-03.5 · 0 % | **2026-05.8 · 100 %*** | 2026-03.5 · 0 % |
+| Sport | 2026-03.3 · 0 % | **2026-05.4 · 100 %*** | 2026-03.5 · 0 % |
+| Kunst & Kultur | 2026-02.7 · 0 % | **2026-05.0 · 100 %*** | 2026-03.1 · 0 % |
+| KI / Software / Wissenschaft / Raumfahrt | ~2026-03.2 · 0 % | **~2026-05.2 · ≈100 %*** | ~2026-03.5 · 0–2 % |
+
+Die globalen τ (Fable 2026-03.2, Sol 2026-05.2, Neon 2026-03.5) liegen jeweils etwa 0,5 Monate über den
+veröffentlichten Werten des Bench. Das entspricht unserer tagesgenauen Zeitachse (Monatsmitte = +0,5). In Themen
+mit nur 0–4 Ereignissen steht einfach der Modellwert. `cutoffmix index show` zeigt die vollständige Tabelle.
+
+## Installation
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[server]"   # Laufzeit: numpy, httpx, pyyaml; UI/API: fastapi, uvicorn
+pip install -e ".[dev]"      # zusätzlich pytest
+```
+
+## Ausprobieren ohne API-Key
+
+`--mock` simuliert die drei Modelle mit bekannten Themen-Cutoffs: Sol meist vorn, Fable bei KI/Software, Neon bei
+Wissenschaft/Raumfahrt. So sieht man das Umschalten ohne Netz.
+
+```bash
+cutoffmix run --mock "Wer ist aktuell Präsident von Estland und was weiß man über neue KI-Modelle?"
+cutoffmix run --mock "…" --strategy speculative --policy thompson
+cutoffmix serve --mock          # Web-UI auf http://127.0.0.1:8000/, OpenAI-API unter /v1
+cutoffmix simulate              # Schätzer an simulierten Antworten prüfen
+```
+
+## Mit den echten Modellen
+
+```bash
+export OPENROUTER_API_KEY=…     # nie in Dateien oder ins Repo schreiben
+cutoffmix run "Wer ist aktuell Bundeskanzler von Deutschland?"
+cutoffmix serve
+```
+
+`cutoffmix serve` bietet `POST /v1/chat/completions` mit diesen Modell-IDs:
+
+- `cutoffmix`: das Relay;
+- `cutoffmix-speculative`: das Relay mit parallelen Entwürfen;
+- `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich.
+
+Die Notizen kommen als `delta.reasoning` (dort, wo OpenAI-kompatible Clients Thinking anzeigen), die Antwort als
+`delta.content`. Pro Anfrage lassen sich `policy`, `strategy` und `segment_tokens` im Request-Body setzen.
+
+Konfiguration: `--config datei.yaml` wird über `cutoffmix/data/default.yaml` gemischt. Beispiel für einen neu
+gemessenen Index:
+
+```yaml
+router:
+  index_path: runs/index.json
+  policy: softmax      # oder thompson, argmax, fixed:gpt-6.2-sol …
+relay:
+  segment_tokens: 128
+```
+
+## Den Index neu messen (themenstratifiziert)
+
+```bash
+cutoffmix bench import-kc --out runs/kc                                   # öffentliche Bench-Daten
+cutoffmix bench build-wikidata --out runs/wikidata_events.jsonl           # optional; 961 Ereignisse liegen bereits in data/events/
+cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl \
+    --probes current_d mcq --dry-run                                      # zuerst nur Kosten schätzen
+cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl --probes current_d mcq
+cutoffmix bench fit --events runs/kc/kc_events.jsonl data/events/wikidata_events.jsonl \
+    --results runs/kc/kc_results.jsonl runs/results.jsonl --out runs/index.json
+```
+
+Der Lauf kann unterbrochen und fortgesetzt werden. Danach `router.index_path` auf `runs/index.json` setzen.
+
+**Kosten und Abdeckung:**
+
+- Für 953 Ereignisse × 3 Modelle × 2 Sonden schätzt `--dry-run` **≈ 51 $**. Die Obergrenze liegt bei ≈ 330 $, wenn
+  jeder Aufruf `max_tokens` ausschöpft; Judge-Aufrufe sind nicht eingerechnet.
+- Erst einen Pilotlauf mit `--limit 20` machen und die echten Token-Zahlen ansehen.
+- Die Wikidata-Ereignisse decken nur 7 der 15 Themen ab, mit Schwerpunkt Sport (606), Regierung (169) und Wahlen (96).
+- Für KI, Software, Raumfahrt, Gesundheit, Konflikte und Unglücke braucht es zusätzlich das Wikipedia-Current-events-Set
+  (`bench build-wikipedia --probe-model …`). Dessen Fragen erzeugt ein Modell, was ebenfalls Geld kostet.
+
+## Optionales Training (≤ 1 h)
+
+Ohne Training geht alles. Der Themenklassifikator arbeitet mit Schlüsselwörtern, und der Index ist reine Statistik.
+Optional:
+
+- `cutoffmix router train`: ein linearer Themenklassifikator und ein linearer Gate, auf der CPU in Minuten.
+- `torchrun --nproc_per_node=N -m cutoffmix.router.train_gpu --events … --results …`: ein Encoder (mmBERT bzw.
+  ModernBERT) mit Köpfen für Thema, Zeitsensitivität und „Aktualität pro Modell“. Das Zeitbudget ist hart auf
+  55 Minuten begrenzt und für eine B200/B300 ausgelegt; mehrere GPUs per torchrun.
+
+  Sinnvoll ist dieses Training erst, wenn ein neuer Benchmark-Lauf mit Themen-Umkehrungen vorliegt.
+
+## Daten und Lizenzen
+
+- Daten des Knowledge-Cutoff-Bench (apoorvumang/knowledge-cutoff): **CC BY 4.0**. Sie fließen in den Prior-Index ein
+  (nur aggregierte Statistiken) und werden von `bench import-kc` verwendet. Der Code des Bench steht unter keiner
+  Lizenz und wurde deshalb nicht übernommen, sondern neu implementiert.
+- Wikidata: **CC0 1.0** (`data/events/wikidata_events.jsonl`, siehe `data/events/README.md`).
+- Wikipedia: **CC BY-SA 4.0**, für `bench build-wikipedia`.
+- Code: MIT.
+
+## Tests
+
+```bash
+python -m pytest -q    # offline, kein Test greift aufs Netz zu
+```
