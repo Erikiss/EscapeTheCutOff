@@ -51,7 +51,10 @@ _ROLES = _stem_set(
     "vorsitzende vorsitzender chef chefin trainer trainerin papst könig königin meister weltmeister botschafter "
     "regierungschef staatschef amtsinhaber"
 )
-_ROLE_PHRASES = ("prime minister", "head coach", "head of state", "head of government", "chief executive")
+_ROLE_PHRASES = tuple(
+    " ".join(stem(w) for w in p.split())
+    for p in ("prime minister", "head coach", "head of state", "head of government", "chief executive")
+)  # stemmed, matched against the stemmed text
 # distinctly mathematical / puzzle vocabulary (generic reasoning words such as "let", "therefore" or "sum" also
 # occur in time-sensitive notes and are deliberately absent)
 _MATH = _stem_set(
@@ -132,7 +135,7 @@ class TimeSensitivityGate:
             "weak_temporal": sum(1 for s in stems if s in _WEAK_TEMPORAL),
             "years": len(_YEAR.findall(text)),
             "roles": sum(1 for s in stems if s in _ROLES)
-            + _padded_count(padded_stems, [" ".join(stem(w) for w in p.split()) for p in _ROLE_PHRASES]),
+            + _padded_count(padded_stems, _ROLE_PHRASES),
             "present_question": len(_PRESENT_QUESTION.findall(text.lower())),
             "entity_density": entity,
             "acronyms": sum(1 for m in matches if len(m.group()) >= 2 and m.group().isupper()),
@@ -179,7 +182,7 @@ class TimeSensitivityGate:
         seed: int = 0,
         batch_size: int = 32,
         learned_weight: float = 0.5,
-    ) -> "TimeSensitivityGate":
+    ) -> TimeSensitivityGate:
         """Train the learned part on ``texts`` with binary ``labels`` (time-sensitive = truthy / >= 0.5)."""
         if len(texts) != len(labels):
             raise ValueError(f"texts and labels differ in length: {len(texts)} != {len(labels)}")
@@ -203,7 +206,7 @@ class TimeSensitivityGate:
             )
 
     @classmethod
-    def load(cls, path: str | Path) -> "TimeSensitivityGate":
+    def load(cls, path: str | Path) -> TimeSensitivityGate:
         """Load a gate written by :meth:`save`."""
         with np.load(Path(path), allow_pickle=False) as z:
             kind = str(z["kind"]) if "kind" in z.files else ""

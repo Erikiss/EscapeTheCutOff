@@ -3,8 +3,10 @@
 ``MockBackend`` implements ``types.Backend`` without any network access. It is fully deterministic given its seed,
 so tests, ``cutoffmix simulate`` and the ``--mock`` UI demo are reproducible:
 
-- ``stream_continuation`` writes plausible analyst notes about the dominant topic of the question and recent notes,
-  stating what the model knows "as of" its true cutoff for that topic, and streams them in ~8-character chunks.
+- ``stream_continuation`` writes plausible analyst notes stating what the model knows "as of" its true cutoff for
+  the segment's topic, and streams them in ~8-character chunks. A question about several topics ("Who is the
+  president, and what is new in AI?") is covered topic by topic, three segments each, so the routing window moves
+  between topics; otherwise the topic is the dominant one of the question and recent notes.
 - ``chat`` answers benchmark probes for known events according to a 4PL curve around the model's true cutoff,
   so an index fitted from mock probe results should recover ``MockModelTruth.tau``.
 """
@@ -26,6 +28,8 @@ from cutoffmix.types import ChatRequest, ChatResult, ContinuationRequest, Event,
 
 CHUNK_CHARS = 8
 _WINDOW_SEGMENTS = 3  # notes taken into account when picking the topic of a mock segment
+_MAX_QUESTION_TOPICS = 3  # a question is covered topic by topic for at most this many topics
+_SEGMENTS_PER_TOPIC = 3
 
 
 @dataclass
@@ -188,6 +192,27 @@ class MockBackend:
         post = clf.posterior(text)
         return clf.topics[max(range(len(post)), key=post.__getitem__)]
 
+    def question_topics(self, question: str) -> list[str]:
+        """The topics a question asks about, most probable first.
+
+        The most probable topic plus every topic with at least half its probability (and at least twice the
+        uniform probability), at most three. A question without a clear topic gives one (arbitrary) topic.
+        """
+        clf = self.classifier
+        post = clf.posterior(question)
+        order = sorted(range(len(post)), key=lambda i: (-post[i], i))
+        floor = max(0.5 * post[order[0]], 2.0 / len(post))
+        picked = [clf.topics[i] for i in order[:_MAX_QUESTION_TOPICS] if post[i] >= floor]
+        return picked or [clf.topics[order[0]]]
+
+    def _segment_topics(self, req: ContinuationRequest) -> list[str]:
+        """``[topic of this segment]``, or every question topic for the answer and the concluding segment."""
+        asked = self.question_topics(req.question)
+        concluding = req.phase == "answer" or len(req.segments) >= self.segments_to_answer
+        if len(asked) > 1:
+            return asked if concluding else [asked[(len(req.segments) // _SEGMENTS_PER_TOPIC) % len(asked)]]
+        return [self.topic_of(" ".join([req.question, *req.segments[-_WINDOW_SEGMENTS:]]))]
+
     def _rng(self, *parts: object) -> random.Random:
         digest = hashlib.sha256("\x1f".join(map(str, (self.seed, *parts))).encode("utf-8")).digest()
         return random.Random(int.from_bytes(digest[:8], "big"))
@@ -220,14 +245,18 @@ class MockBackend:
             sentences.append(text)
         return " ".join(sentences)
 
-    def _segment_text(self, model: ModelSpec, req: ContinuationRequest, fields: dict[str, str]) -> str:
-        answer = (f"The latest state of {fields['subject']} known as of {fields['asof']}; anything after "
-                  f"{fields['asof']} should be checked against a current source.")
+    def _segment_text(self, model: ModelSpec, req: ContinuationRequest, fields: dict[str, str],
+                      known: list[tuple[str, str]]) -> str:
+        """The segment (or answer) text; ``known`` lists ``(subject, as-of month)`` for every topic it covers."""
+        states = ", and of ".join(f"{subject} known as of {asof}" for subject, asof in known)
+        dates = known[0][1] if len(known) == 1 else "those dates"
+        answer = f"The latest state of {states}; anything after {dates} should be checked against a current source."
         if req.phase == "answer":
             return (f"Based on the shared notes: {answer[0].lower()}{answer[1:]} This is {fields['gap']} before "
                     f"today ({fields['today']}).")
         if len(req.segments) >= self.segments_to_answer:
-            return (f"The notes now cover {fields['subject']} up to what is known as of {fields['asof']}, and no open "
+            covered = " and ".join(subject for subject, _ in known)
+            return (f"The notes now cover {covered} up to what is known as of {fields['asof']}, and no open "
                     f"point remains. {req.final_marker} {answer}")
         return self._note_text(model, req, fields)
 
@@ -245,13 +274,14 @@ class MockBackend:
             yield StreamEvent(kind="done", finish_reason="content_filter", error="refused: simulated refusal",
                               usage=self._usage(req, "", rng))
             return
-        topic = self.topic_of(" ".join([req.question, *req.segments[-_WINDOW_SEGMENTS:]]))
-        tau = truth.tau_for(topic)
-        subject, facts = _TOPIC_PHRASES.get(topic, (topic.replace("_", " "), "recent developments"))
+        topics = self._segment_topics(req)
+        phrases = [_TOPIC_PHRASES.get(z, (z.replace("_", " "), "recent developments")) for z in topics]
+        tau = min(truth.tau_for(z) for z in topics)  # the oldest knowledge bounds the whole statement
         today = self._today(req.today)
-        fields = {"q": _short_question(req.question), "subject": subject, "facts": facts, "asof": month_label(tau),
-                  "gap": _month_gap(tau, today), "today": today}
-        text = self._segment_text(model, req, fields)
+        fields = {"q": _short_question(req.question), "subject": phrases[0][0], "facts": phrases[0][1],
+                  "asof": month_label(tau), "gap": _month_gap(tau, today), "today": today}
+        known = [(subject, month_label(truth.tau_for(z))) for z, (subject, _) in zip(topics, phrases, strict=True)]
+        text = self._segment_text(model, req, fields, known)
         if req.phase == "think" and not model.supports_stop:
             streamed, finish = text + req.sentinel, "sentinel"
         else:

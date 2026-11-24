@@ -2,6 +2,7 @@ import math
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,11 +31,16 @@ def test_hashed_features_include_char_ngrams():
 
 
 def test_hashed_features_are_stable_across_processes():
-    code = "from cutoffmix.router.features import hashed_features; print(sorted(hashed_features('Wer ist Kanzler?', 4096).items()))"
+    code = (
+        "from cutoffmix.router.features import hashed_features\n"
+        "print(sorted(hashed_features('Wer ist Kanzler?', 4096).items()))"
+    )
     outs = set()
     for seed in ("1", "2"):
         env = {**os.environ, "PYTHONHASHSEED": seed}
-        outs.add(subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True).stdout)
+        res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, check=True,
+                             cwd=Path(__file__).resolve().parents[1])
+        outs.add(res.stdout)
     assert len(outs) == 1
     assert outs.pop().strip() == str(sorted(hashed_features("Wer ist Kanzler?", 4096).items()))
 

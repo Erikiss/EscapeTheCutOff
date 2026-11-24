@@ -68,7 +68,8 @@ class ProbeIndex:
         shape = self.tau.shape
         for name in _MATRIX_FIELDS:
             if getattr(self, name).shape != shape:
-                raise ValueError(f"probe {self.probe!r}: {name} has shape {getattr(self, name).shape}, expected {shape}")
+                got = getattr(self, name).shape
+                raise ValueError(f"probe {self.probe!r}: {name} has shape {got}, expected {shape}")
         for name in _VECTOR_FIELDS:
             if getattr(self, name).shape != (shape[0],):
                 raise ValueError(f"probe {self.probe!r}: {name} has shape {getattr(self, name).shape}, "
@@ -105,7 +106,7 @@ class ProbeIndex:
         return d
 
     @classmethod
-    def from_json(cls, d: Mapping[str, Any]) -> "ProbeIndex":
+    def from_json(cls, d: Mapping[str, Any]) -> ProbeIndex:
         """Inverse of :meth:`to_json`."""
         try:
             arrays = {name: np.asarray(d[name], dtype=np.float64) for name in
@@ -129,7 +130,9 @@ def _float_list(a: np.ndarray, decimals: int) -> list[Any]:
     rounded = np.round(np.asarray(a, dtype=np.float64), decimals)
     if np.isfinite(rounded).all():
         return rounded.tolist()
-    return np.where(np.isfinite(rounded), rounded, None).tolist()  # object array: NaN/inf -> None
+    out = rounded.astype(object)  # object array, so non-finite cells can hold None (JSON null)
+    out[~np.isfinite(rounded)] = None
+    return out.tolist()
 
 
 class CutoffIndex:
@@ -319,7 +322,7 @@ class CutoffIndex:
         }
 
     @classmethod
-    def from_json(cls, d: Mapping[str, Any]) -> "CutoffIndex":
+    def from_json(cls, d: Mapping[str, Any]) -> CutoffIndex:
         """Inverse of :meth:`to_json`."""
         if d.get("format", _FORMAT) != _FORMAT:
             raise ValueError(f"not a cutoffmix index (format={d.get('format')!r})")
@@ -338,7 +341,7 @@ class CutoffIndex:
         p.write_text(json.dumps(self.to_json(), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
     @classmethod
-    def load(cls, path: str | Path) -> "CutoffIndex":
+    def load(cls, path: str | Path) -> CutoffIndex:
         """Read an index written by :meth:`save`."""
         with Path(path).open(encoding="utf-8") as f:
             return cls.from_json(json.load(f))

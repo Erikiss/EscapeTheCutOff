@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>cutoffmix relay</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f5f5f2;
+  --surface: #ffffff;
+  --surface-2: #f0efeb;
+  --surface-3: #e7e5df;
+  --border: #e1dfd8;
+  --text: #191917;
+  --text-2: #52514e;
+  --text-3: #85837c;
+  --accent: #2a78d6;
+  --accent-soft: #cde2fb;
+  --danger: #d03b3b;
+  --danger-soft: #fbe9e8;
+  --shadow: 0 1px 2px rgba(20, 20, 15, .05), 0 4px 16px rgba(20, 20, 15, .04);
+  --ring: 0 0 0 2px var(--text);
+  --radius: 12px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #121211;
+    --surface: #1a1a19;
+    --surface-2: #232321;
+    --surface-3: #2d2d2a;
+    --border: #33322f;
+    --text: #f0efec;
+    --text-2: #c3c2b7;
+    --text-3: #8f8d85;
+    --accent: #3987e5;
+    --accent-soft: #1c3a5e;
+    --danger: #e66767;
+    --danger-soft: #3a1f1e;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3 { margin: 0; line-height: 1.25; }
+h2 { font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--text-2); }
+h3 { font-size: 12px; font-weight: 600; color: var(--text-3); margin: 14px 0 6px; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+
+/* header */
+.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; margin-bottom: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { width: 28px; height: 28px; border-radius: 8px; background: conic-gradient(from 210deg, #d97757 0 33%, #10a37f 0 66%, #4285f4 0); box-shadow: inset 0 0 0 5px var(--bg); }
+.brand h1 { font-size: 21px; font-weight: 700; letter-spacing: -.01em; }
+.sub { margin: 4px 0 0; color: var(--text-2); font-size: 14px; max-width: 60ch; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); white-space: nowrap; }
+.pill.warn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #eda100; }
+
+/* layout */
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.main { display: grid; gap: 14px; min-width: 0; }
+.side { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; display: grid; gap: 14px; overscroll-behavior: contain; }
+@media (max-width: 959px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; max-height: none; overflow: visible; }
+}
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; min-width: 0; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.hint { font-size: 12px; color: var(--text-3); }
+
+/* ask form */
+.ask label.q { display: block; font-weight: 600; margin-bottom: 6px; }
+textarea { width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); line-height: 1.45; }
+textarea:focus, select:focus, input:focus, button:focus-visible, .seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.ex { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; text-align: left; border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 4px 11px 4px 5px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.ex:hover { background: var(--surface-2); color: var(--text); }
+.ex span.t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ex .lang { font: 600 10px/1 var(--mono); padding: 4px 5px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); }
+.ex .kind { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin-top: 12px; }
+.field { display: grid; gap: 4px; font-size: 12px; color: var(--text-3); font-weight: 600; }
+select, input[type=number] { min-width: 0; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 14px; font-weight: 400; }
+input[type=number] { width: 96px; }
+.btns { margin-left: auto; display: flex; gap: 8px; }
+.btn { border: 1px solid transparent; border-radius: 9px; padding: 8px 18px; font-weight: 650; cursor: pointer; }
+.btn.primary { background: var(--text); color: var(--bg); }
+.btn.primary:disabled { opacity: .45; cursor: default; }
+.btn.ghost { background: transparent; border-color: var(--border); color: var(--text); }
+@media (max-width: 559px) { .btns { margin-left: 0; width: 100%; } .btns .btn { flex: 1; } .field { flex: 1 1 40%; } select, input[type=number] { width: 100%; } }
+
+/* stats */
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 699px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.stat .k { font-size: 11px; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.stat .v { font: 600 20px/1.3 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .v small { font-size: 12px; color: var(--text-3); font-weight: 500; }
+
+.banner { border-radius: 10px; padding: 10px 14px; background: var(--danger-soft); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); font-size: 14px; }
+
+/* stream */
+.stream { display: grid; gap: 8px; }
+.empty { color: var(--text-3); font-size: 14px; margin: 6px 0; }
+.seg { --m: #888; position: relative; border-radius: 10px; padding: 10px 12px 11px 14px; background: color-mix(in srgb, var(--m) 7%, var(--surface)); border: 1px solid color-mix(in srgb, var(--m) 22%, var(--border)); cursor: pointer; transition: box-shadow .15s; }
+.seg::before { content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px; width: 4px; border-radius: 10px 0 0 10px; background: var(--m); }
+.seg:hover { box-shadow: 0 0 0 1px color-mix(in srgb, var(--m) 55%, transparent); }
+.seg.selected { box-shadow: 0 0 0 2px var(--m); }
+.seg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.seg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.seg.streaming .seg-text::after, .answer.streaming .answer-text::after { content: "▍"; color: var(--text-3); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.seg.dropped { opacity: .62; padding-bottom: 8px; }
+.seg.dropped .seg-text { font-size: 13px; color: var(--text-2); }
+.seg-meta { font-size: 12px; color: var(--text-3); margin-left: auto; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 650; padding: 2px 9px 2px 7px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
+.chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--m, #888); flex: none; }
+.badge { font: 600 11px/1.6 var(--mono); padding: 0 7px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+.badge.speculative { background: var(--accent-soft); color: var(--text); }
+
+/* answer */
+.answer { border-color: color-mix(in srgb, var(--text) 25%, var(--border)); }
+.answer-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.6; }
+.answer .card-head { cursor: pointer; }
+
+/* inspector & side cards */
+.insp-empty { color: var(--text-3); font-size: 14px; }
+.insp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.insp-sub { font-size: 12px; color: var(--text-3); margin-top: 6px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 12px 0 0; }
+.kv dt { color: var(--text-3); }
+.kv dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.bars { display: grid; gap: 5px; }
+.bar { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 3px 8px; align-items: center; font-size: 13px; }
+.bar .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.bar .num { text-align: right; font: 12px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.bar .track { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.bar .fill { height: 100%; border-radius: 4px; background: var(--fill, var(--accent)); min-width: 2px; transition: width .25s; }
+.bar .lbl .u { color: var(--text-3); font-size: 12px; margin-left: 6px; font-family: var(--mono); }
+.meter { display: inline-block; vertical-align: middle; width: 70px; height: 6px; border-radius: 4px; background: var(--surface-3); margin-left: 8px; overflow: hidden; }
+.meter b { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.drafts { display: grid; gap: 8px; }
+.draft { font-size: 13px; color: var(--text-2); border-left: 3px solid var(--m); padding: 2px 0 2px 9px; }
+.draft.win { color: var(--text); }
+.draft p { margin: 3px 0 0; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.legend { display: grid; gap: 10px; }
+.legend .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 13.5px; }
+.legend .row .chip { justify-self: start; }
+.legend .row .num { font: 12px var(--mono); color: var(--text-2); }
+.legend .track { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.legend .fill { height: 100%; background: var(--m); border-radius: 4px; transition: width .3s; }
+.window-model { font-size: 13px; color: var(--text-2); margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* heatmap */
+.heat-wrap { overflow-x: auto; }
+table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-width: 420px; font-size: 13px; }
+.heat th { font-weight: 600; color: var(--text-2); text-align: center; padding: 4px 6px; white-space: nowrap; }
+.heat th.topic { text-align: left; font-weight: 500; color: var(--text); max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.heat thead th .chip { font-size: 12px; }
+.heat td { text-align: center; padding: 5px 6px; border-radius: 6px; font: 12.5px/1.25 var(--mono); font-variant-numeric: tabular-nums; cursor: default; white-space: nowrap; }
+.heat td small { display: block; font-size: 10.5px; opacity: .8; }
+.heat td.best { font-weight: 750; box-shadow: inset 0 0 0 2px var(--text); }
+.heat tr.active th.topic { color: var(--accent); font-weight: 650; }
+.heat tr.active th.topic::before { content: "▸ "; }
+@media (max-width: 559px) {
+  table.heat { min-width: 0; border-spacing: 1px; }
+  .heat th.topic { white-space: normal; min-width: 88px; font-size: 12px; line-height: 1.3; }
+  .heat thead .chip { white-space: normal; font-size: 11px; padding: 3px 5px; border-radius: 8px; flex-direction: column; gap: 3px; line-height: 1.2; text-align: center; }
+  .heat td { padding: 4px 3px; font-size: 11px; }
+}
+.heat-foot { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; margin-top: 10px; font-size: 12px; color: var(--text-3); }
+.heat-about { flex-basis: 100%; }
+.heat-about summary { cursor: pointer; color: var(--text-2); }
+.heat-about p { margin: 6px 0 0; max-width: 80ch; color: var(--text-2); line-height: 1.5; }
+.ramp { display: inline-block; width: 90px; height: 8px; border-radius: 4px; vertical-align: middle; margin: 0 6px; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 8px 10px; font-size: 12.5px; line-height: 1.5; max-width: 260px; }
+.tip b { font-weight: 650; }
+.tip .mono { font-family: var(--mono); }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="brand"><div class="logo" aria-hidden="true"></div><h1>cutoffmix</h1><span class="pill warn" id="mode" hidden>simulated models</span></div>
+      <p class="sub">One shared chain of notes. Each segment goes to the model whose knowledge of the current topic is the most recent, measured by external evaluation.</p>
+    </div>
+    <span class="pill" id="today"></span>
+  </header>
+
+  <div class="layout">
+    <div class="main">
+      <form class="card ask" id="ask" autocomplete="off">
+        <label class="q" for="q">Question</label>
+        <textarea id="q" rows="3" placeholder="Ask something that depends on recent events, e.g. who holds an office right now. Ctrl+Enter runs it."></textarea>
+        <div class="examples" id="examples" aria-label="Example questions"></div>
+        <div class="controls">
+          <label class="field">Strategy <select id="strategy"></select></label>
+          <label class="field">Policy <select id="policy"></select></label>
+          <label class="field">Segment tokens <input id="segtok" type="number" min="16" max="1024" step="16" value="128"></label>
+          <div class="btns">
+            <button type="button" class="btn ghost" id="stop" hidden>Stop</button>
+            <button type="submit" class="btn primary" id="run">Run</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="stats" id="stats" aria-live="polite">
+        <div class="stat"><div class="k">Segments</div><div class="v" id="s-seg">0</div></div>
+        <div class="stat"><div class="k">Switches</div><div class="v" id="s-sw">0</div></div>
+        <div class="stat"><div class="k">First token</div><div class="v" id="s-ttft">–</div></div>
+        <div class="stat"><div class="k">Total time</div><div class="v" id="s-total">–</div></div>
+        <div class="stat"><div class="k" id="s-cost-k">Cost</div><div class="v" id="s-cost">–</div></div>
+      </div>
+
+      <div class="banner" id="error" role="alert" hidden></div>
+
+      <section class="card">
+        <div class="card-head"><h2>Shared notes</h2><span class="hint" id="notes-hint">Hover or tap a segment to see why it went to that model</span></div>
+        <div class="stream" id="stream"><p class="empty" id="empty">Ask a question to start. Every paragraph of the shared notes appears here, coloured by the model that wrote it.</p></div>
+      </section>
+
+      <section class="card answer" id="answer" hidden>
+        <div class="card-head" id="answer-head" title="Show how the answer model was chosen"><h2>Answer</h2><span id="answer-chip"></span></div>
+        <div class="answer-text" id="answer-text"></div>
+      </section>
+    </div>
+
+    <aside class="side">
+      <section class="card" id="insp-slot">
+        <div id="insp">
+          <div class="card-head"><h2>Routing</h2></div>
+          <p class="insp-empty">Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability of every model and the decision type.</p>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Current window</h2><span class="hint" id="win-r"></span></div>
+        <div id="window"><p class="insp-empty">The topic mix of the question and the latest notes shows up here while the relay runs.</p></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Models</h2><span class="hint">share of the notes</span></div>
+        <div class="legend" id="legend"></div>
+      </section>
+    </aside>
+  </div>
+
+  <section class="card" style="margin-top:18px">
+    <div class="card-head"><h2>Cutoff index</h2><span class="hint" id="heat-sub"></span></div>
+    <div class="heat-wrap" id="heat"><p class="empty">Loading the index…</p></div>
+    <div class="heat-foot" id="heat-foot" hidden></div>
+  </section>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const EXAMPLES = [
+  { lang: "DE", kind: "time-sensitive", q: "Wer ist aktuell Bundeskanzler von Deutschland, und seit wann ist er im Amt?" },
+  { lang: "EN", kind: "time-sensitive", q: "Which AI lab released the most capable language model most recently, and what is it called?" },
+  { lang: "EN", kind: "time-sensitive", q: "What was the most recent crewed mission to the Moon, and which agency flew it?" },
+  { lang: "DE", kind: "time-sensitive", q: "Welcher Verein ist derzeit deutscher Fußballmeister, und wer trainiert ihn?" },
+  { lang: "EN", kind: "timeless", q: "Why does ice float on water? Explain it step by step." },
+  { lang: "DE", kind: "timeless", q: "Wie viele Primzahlen liegen zwischen 1 und 100? Begründe Schritt für Schritt." },
+];
+const DECISIONS = {
+  sample: "sampled from the softmax over freshness scores",
+  hold: "kept the current model",
+  argmax: "deterministic best score (with hysteresis)",
+  speculative: "best of parallel drafts by all models",
+  forced: "only option, fixed policy or inline answer",
+  drift: "re-routed mid-stream",
+};
+const RAMP = {
+  light: ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281"],
+  dark: ["#172a42", "#1b3555", "#1d4069", "#204c7e", "#245a95", "#2a69ae", "#3478c6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4"],
+};
+const S = {
+  cfg: null, models: {}, topics: {}, running: false, ctrl: null, t0: 0, ttft: null, timer: null,
+  cur: {}, committed: [], answer: null, selected: null, windowTopic: null, index: null,
+};
+const dark = matchMedia("(prefers-color-scheme: dark)");
+const narrow = matchMedia("(max-width: 959px)");
+const canHover = matchMedia("(hover: hover)");
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "style") el.style.cssText = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const pct = (p) => (p == null || !isFinite(p) ? "–" : Math.round(p * 100) + "%");
+const secs = (s) => (s == null || !isFinite(s) ? "–" : s < 10 ? s.toFixed(2) + " s" : s.toFixed(1) + " s");
+function fmtTau(x) {
+  if (x == null || !isFinite(x)) return "n/a";
+  const tenths = Math.round(x * 10), base = Math.floor(tenths / 10), frac = tenths - base * 10;
+  const year = 2024 + Math.floor(base / 12), month = ((base % 12) + 12) % 12 + 1;
+  return `${year}-${String(month).padStart(2, "0")}.${frac}`;
+}
+const modelName = (k) => (S.models[k] ? S.models[k].display : k || "?");
+const modelColor = (k) => (S.models[k] ? S.models[k].color : "#888888");
+const topicName = (id) => S.topics[id] || String(id).replace(/_/g, " ");
+const chip = (k) => h("span", { class: "chip", style: `--m:${modelColor(k)}` }, h("i"), modelName(k));
+const badge = (d) => h("span", { class: "badge " + (d || ""), title: DECISIONS[d] || "" }, d || "?");
+const topN = (obj, n) => Object.entries(obj || {}).filter(([, v]) => isFinite(v)).sort((a, b) => b[1] - a[1]).slice(0, n);
+
+function bars(entries, opts = {}) {
+  return h("div", { class: "bars" }, entries.map(([label, value, extra]) =>
+    h("div", { class: "bar" },
+      h("span", { class: "lbl" }, label, extra ? h("span", { class: "u" }, extra) : null),
+      h("span", { class: "num" }, pct(value)),
+      h("div", { class: "track" }, h("div", { class: "fill", style: `width:${Math.max(0, Math.min(1, value || 0)) * 100}%;${opts.fill ? opts.fill(label) : ""}` })))));
+}
+
+/* ---------------- setup ---------------- */
+async function boot() {
+  for (const ex of EXAMPLES) {
+    $("examples").append(h("button", { type: "button", class: "ex", title: ex.q, onclick: () => { $("q").value = ex.q; $("q").focus(); } },
+      h("span", { class: "lang" }, ex.lang), h("span", { class: "t" }, ex.q), h("span", { class: "kind" }, ex.kind)));
+  }
+  try {
+    const cfg = await (await fetch("/api/config")).json();
+    S.cfg = cfg;
+    for (const m of cfg.models) S.models[m.key] = m;
+    for (const t of cfg.topics || []) S.topics[t.id] = t.name;
+    $("mode").hidden = !cfg.mock;
+    $("today").textContent = "today " + cfg.today;
+    for (const s of cfg.strategies) $("strategy").append(h("option", { value: s }, s));
+    for (const p of cfg.policies) {
+      const label = p.startsWith("fixed:") ? "always " + modelName(p.slice(6)) : p;
+      $("policy").append(h("option", { value: p }, label));
+    }
+    $("strategy").value = cfg.defaults.strategy;
+    $("policy").value = cfg.defaults.policy;
+    $("segtok").value = cfg.defaults.segment_tokens;
+  } catch (e) {
+    showError("Could not load /api/config: " + e.message);
+  }
+  renderLegend();
+  loadIndex();
+  const params = new URLSearchParams(location.search); /* shareable links: ?q=question[&run=1] */
+  if (params.get("q")) {
+    $("q").value = params.get("q");
+    if (params.get("run") === "1" && S.cfg) run();
+  }
+}
+
+async function loadIndex() {
+  try {
+    const res = await fetch("/api/index");
+    S.index = await res.json();
+  } catch (e) {
+    S.index = { available: false, error: e.message };
+  }
+  renderHeatmap();
+}
+
+/* ---------------- run ---------------- */
+function resetRun() {
+  S.cur = {}; S.committed = []; S.answer = null; S.selected = null; S.ttft = null; S.windowTopic = null;
+  placeInspector(); /* move it back to the sidebar before the stream it may sit in is cleared */
+  $("stream").replaceChildren();
+  $("answer").hidden = true; $("answer").classList.remove("streaming");
+  $("answer-text").textContent = ""; $("answer-chip").replaceChildren();
+  $("error").hidden = true;
+  $("window").replaceChildren(h("p", { class: "insp-empty" }, "Waiting for the first routing decision…"));
+  $("win-r").textContent = "";
+  renderInspector(null);
+  setStat("s-seg", "0"); setStat("s-sw", "0"); setStat("s-ttft", "–"); setStat("s-total", "–"); setStat("s-cost", "–");
+  renderLegend(); markActiveRow();
+}
+function setRunning(on) {
+  S.running = on;
+  $("run").disabled = on; $("run").textContent = on ? "Running…" : "Run";
+  $("stop").hidden = !on;
+  if (on) {
+    S.t0 = performance.now();
+    S.timer = setInterval(() => setStat("s-total", secs((performance.now() - S.t0) / 1000)), 100);
+  } else {
+    clearInterval(S.timer);
+    for (const rec of Object.values(S.cur)) rec.el && rec.el.classList.remove("streaming");
+    $("answer").classList.remove("streaming");
+  }
+}
+async function run(ev) {
+  if (ev) ev.preventDefault();
+  if (S.running) return;
+  const question = $("q").value.trim();
+  if (!question) { $("q").focus(); return; }
+  resetRun();
+  setRunning(true);
+  S.ctrl = new AbortController();
+  const body = { question, strategy: $("strategy").value, policy: $("policy").value };
+  const tok = parseInt($("segtok").value, 10);
+  if (Number.isFinite(tok)) body.segment_tokens = tok;
+  try {
+    const res = await fetch("/api/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: S.ctrl.signal });
+    if (!res.ok) {
+      let msg = res.status + " " + res.statusText;
+      try { msg = (await res.json()).detail || msg; } catch (_) { /* not JSON */ }
+      throw new Error(msg);
+    }
+    await readSSE(res.body, onEvent);
+  } catch (e) {
+    if (e.name === "AbortError") $("notes-hint").textContent = "Stopped.";
+    else showError(e.message || String(e));
+  } finally {
+    setRunning(false);
+  }
+}
+async function readSSE(stream, onMessage) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      const data = block.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).replace(/^ /, "")).join("\n");
+      if (data) onMessage(JSON.parse(data));
+    }
+  }
+}
+
+/* ---------------- events ---------------- */
+function onEvent(ev) {
+  if (ev.type === "segment_start") startSegment(ev);
+  else if (ev.type === "phase") startAnswer(ev);
+  else if (ev.type === "delta") {
+    if (S.ttft == null) { S.ttft = (performance.now() - S.t0) / 1000; setStat("s-ttft", secs(S.ttft)); }
+    ev.phase === "answer" ? appendAnswer(ev) : appendSegment(ev);
+  } else if (ev.type === "segment_end") ev.phase === "answer" ? endAnswer(ev) : endSegment(ev);
+  else if (ev.type === "error") showError(ev.text);
+  else if (ev.type === "done") finish(ev.data || {});
+}
+function recordFrom(ev) {
+  const d = ev.data || {};
+  return { index: ev.segment, attempt: d.attempt || 0, model: ev.model, phase: ev.phase, decision: ev.decision,
+    posterior: ev.topic_posterior || {}, scores: ev.scores || {}, probs: d.probs || {}, r: d.r,
+    strategy: d.strategy, available: d.available || [], text: "" };
+}
+function nearBottom() { return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120; }
+function follow(stick) { if (stick && S.running) window.scrollTo({ top: document.documentElement.scrollHeight }); }
+
+function startSegment(ev) {
+  const stick = nearBottom();
+  const rec = recordFrom(ev);
+  const top = topN(rec.posterior, 1)[0];
+  rec.textEl = h("div", { class: "seg-text" });
+  rec.el = h("article", { class: "seg streaming", tabindex: "0", style: `--m:${modelColor(rec.model)}`,
+      "aria-label": `Segment ${rec.index + 1} by ${modelName(rec.model)}` },
+    h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision),
+      h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on" },
+        `#${rec.index + 1}` + (top ? ` · ${topicName(top[0])}` : ""))),
+    rec.textEl);
+  rec.el.addEventListener("mouseenter", () => { if (canHover.matches && !narrow.matches) select(rec); });
+  rec.el.addEventListener("click", () => select(rec, true));
+  rec.el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(rec, true); } });
+  S.cur[rec.index] = rec;
+  $("stream").append(rec.el);
+  updateWindow(rec);
+  follow(stick);
+}
+function appendSegment(ev) {
+  const rec = S.cur[ev.segment];
+  if (!rec) return;
+  const stick = nearBottom();
+  rec.text += ev.text;
+  rec.textEl.textContent = rec.text;
+  follow(stick);
+}
+function endSegment(ev) {
+  const rec = S.cur[ev.segment];
+  if (!rec) return;
+  const d = ev.data || {};
+  rec.el.classList.remove("streaming");
+  if (d.dropped) {
+    rec.dropped = true; rec.reason = d.reason; rec.error = d.error;
+    rec.el.classList.add("dropped");
+    rec.textEl.textContent = `${d.reason || "failed"}${d.error ? ": " + d.error : ""} — re-routed`;
+    return;
+  }
+  Object.assign(rec, { text: ev.text || "", finish: d.finish_reason, drafts: d.drafts, failedDrafts: d.failed_drafts,
+    ttft: d.ttft_s, duration: d.duration_s, final: d.final });
+  if (d.probs) rec.probs = d.probs;
+  rec.textEl.textContent = rec.text || "(concludes the notes)";
+  S.committed.push(rec);
+  setStat("s-seg", String(S.committed.length));
+  setStat("s-sw", String(switches()));
+  renderLegend();
+  if (S.selected === rec) renderInspector(rec);
+}
+function startAnswer(ev) {
+  const stick = nearBottom();
+  const rec = recordFrom(ev);
+  rec.answerMode = (ev.data || {}).answer_mode;
+  S.answer = rec;
+  $("answer").hidden = false;
+  $("answer").classList.add("streaming");
+  $("answer").style.setProperty("--m", modelColor(rec.model));
+  $("answer-chip").replaceChildren(chip(rec.model), " ", badge(rec.decision));
+  $("answer-text").textContent = "";
+  if (rec.decision !== "forced" || Object.keys(rec.posterior).length) updateWindow(rec);
+  follow(stick);
+}
+function appendAnswer(ev) {
+  if (!S.answer) return;
+  const stick = nearBottom();
+  S.answer.text += ev.text;
+  $("answer-text").textContent = S.answer.text;
+  follow(stick);
+}
+function endAnswer(ev) {
+  const d = ev.data || {};
+  $("answer").classList.remove("streaming");
+  if (!S.answer) return;
+  if (d.dropped) {
+    $("answer-text").textContent = `${modelName(ev.model)}: ${d.reason || "failed"} — re-routing the answer…`;
+    return;
+  }
+  Object.assign(S.answer, { text: ev.text || "", finish: d.finish_reason, ttft: d.ttft_s, duration: d.duration_s });
+  $("answer-text").textContent = S.answer.text;
+  if (S.selected === S.answer) renderInspector(S.answer);
+}
+function finish(data) {
+  const lat = data.latency || {};
+  if (lat.total_s != null) setStat("s-total", secs(lat.total_s));
+  if (S.ttft == null && lat.first_delta_s != null) setStat("s-ttft", secs(lat.first_delta_s));
+  setStat("s-sw", String(data.switches != null ? data.switches : switches()));
+  const total = data.usage_total || {};
+  if (total.cost) { $("s-cost-k").textContent = "Cost"; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
+  else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens"; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
+  renderLegend(data.share_by_model);
+  $("notes-hint").textContent = data.status === "ok"
+    ? `${S.committed.length} segments by ${Object.keys(data.share_by_model || {}).length} model(s) · hover or tap for routing`
+    : "The run ended with an error.";
+}
+
+/* ---------------- side panels ---------------- */
+function switches() {
+  const ms = S.committed.filter((r) => r.phase === "think").map((r) => r.model);
+  return ms.reduce((n, m, i) => n + (i > 0 && m !== ms[i - 1] ? 1 : 0), 0);
+}
+function setStat(id, value) { $(id).textContent = value; }
+function showError(msg) { $("error").textContent = msg; $("error").hidden = false; }
+
+function select(rec, pin) {
+  if (S.selected && S.selected.el) S.selected.el.classList.remove("selected");
+  S.selected = rec;
+  if (rec.el) rec.el.classList.add("selected");
+  renderInspector(rec);
+  placeInspector();
+  if (pin && narrow.matches && rec.el) rec.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+function placeInspector() {
+  const insp = $("insp-slot");
+  const target = S.selected && (S.selected === S.answer ? $("answer") : S.selected.el);
+  if (narrow.matches && target && target.isConnected) target.after(insp);
+  else if (insp.parentElement !== document.querySelector(".side")) document.querySelector(".side").prepend(insp);
+}
+narrow.addEventListener("change", placeInspector);
+
+function renderInspector(rec) {
+  const box = $("insp");
+  if (!rec) {
+    box.replaceChildren(h("div", { class: "card-head" }, h("h2", {}, "Routing")),
+      h("p", { class: "insp-empty" }, "Hover or tap a segment to see its topic posterior, time sensitivity r(W), the choice probability of every model and the decision type."));
+    return;
+  }
+  const what = rec.phase === "answer" ? "Answer" : `Segment ${rec.index + 1}`;
+  const kids = [
+    h("div", { class: "card-head" }, h("h2", {}, "Routing"), h("span", { class: "hint" }, what + (rec.attempt ? ` · attempt ${rec.attempt + 1}` : ""))),
+    h("div", { class: "insp-head" }, chip(rec.model), badge(rec.decision)),
+    h("div", { class: "insp-sub" }, DECISIONS[rec.decision] || "", rec.dropped ? ` · dropped (${rec.reason})` : ""),
+  ];
+  const dl = h("dl", { class: "kv" });
+  if (rec.r != null) dl.append(h("dt", {}, "r(W)"), h("dd", {}, rec.r.toFixed(2), h("span", { class: "meter", title: "time sensitivity of the window" }, h("b", { style: `width:${rec.r * 100}%` }))));
+  if (rec.strategy) dl.append(h("dt", {}, "strategy"), h("dd", {}, rec.strategy));
+  if (rec.answerMode) dl.append(h("dt", {}, "answer"), h("dd", {}, rec.answerMode));
+  if (rec.finish) dl.append(h("dt", {}, "finish"), h("dd", {}, rec.finish));
+  if (rec.ttft != null) dl.append(h("dt", {}, "first text"), h("dd", {}, secs(rec.ttft)));
+  if (rec.duration != null) dl.append(h("dt", {}, "duration"), h("dd", {}, secs(rec.duration)));
+  if (dl.childElementCount) kids.push(dl);
+  const post = topN(rec.posterior, 5);
+  if (post.length) kids.push(h("h3", {}, "Topic posterior (top 5)"), bars(post.map(([t, p]) => [topicName(t), p])));
+  const models = Object.keys(rec.probs || {}).length ? Object.keys(rec.probs) : Object.keys(rec.scores || {});
+  if (models.length) {
+    kids.push(h("h3", {}, rec.decision === "speculative" ? "Choice among the drafts" : "Model probabilities"));
+    const rows = models.map((m) => [m, rec.probs[m] || 0, rec.scores && rec.scores[m] != null ? "U " + fmtTau(rec.scores[m]) : ""])
+      .sort((a, b) => b[1] - a[1]);
+    kids.push(h("div", { class: "bars" }, rows.map(([m, p, u]) => h("div", { class: "bar" },
+      h("span", { class: "lbl" }, chipInline(m), u ? h("span", { class: "u", title: "routing score: freshness of the window's topic mix" }, u) : null),
+      h("span", { class: "num" }, pct(p)),
+      h("div", { class: "track" }, h("div", { class: "fill", style: `width:${p * 100}%;--fill:${modelColor(m)}` }))))));
+  }
+  if (rec.drafts) {
+    kids.push(h("h3", {}, "Drafts"));
+    kids.push(h("div", { class: "drafts" }, Object.entries(rec.drafts).map(([m, t]) =>
+      h("div", { class: "draft" + (m === rec.model ? " win" : ""), style: `--m:${modelColor(m)}` },
+        h("b", {}, modelName(m) + (m === rec.model ? " · chosen" : "")), h("p", {}, t || "(concluded)")))));
+    for (const [m, why] of Object.entries(rec.failedDrafts || {})) kids.push(h("div", { class: "insp-sub" }, `${modelName(m)}: ${why}`));
+  }
+  box.replaceChildren(...kids);
+}
+function chipInline(m) { return h("span", {}, h("i", { style: `display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:${modelColor(m)}` }), modelName(m)); }
+
+function updateWindow(rec) {
+  const post = topN(rec.posterior, 5);
+  if (!post.length) return;
+  S.windowTopic = post[0][0];
+  const kids = [bars(post.map(([t, p]) => [topicName(t), p]))];
+  kids.push(h("div", { class: "window-model" }, rec.phase === "answer" ? "answer by" : "next segment:", chip(rec.model), badge(rec.decision)));
+  $("window").replaceChildren(...kids);
+  $("win-r").textContent = rec.r != null ? `r(W) ${rec.r.toFixed(2)}` : "";
+  markActiveRow();
+}
+
+function renderLegend(share) {
+  const counts = {}, chars = {};
+  for (const r of S.committed) if (r.phase === "think") { counts[r.model] = (counts[r.model] || 0) + 1; chars[r.model] = (chars[r.model] || 0) + r.text.length; }
+  const tot = Object.values(chars).reduce((a, b) => a + b, 0) || 1;
+  const keys = Object.keys(S.models);
+  $("legend").replaceChildren(...keys.map((k) => {
+    const s = share ? (share[k] || 0) : (chars[k] || 0) / tot;
+    return h("div", { class: "row", style: `--m:${modelColor(k)}` }, chip(k),
+      h("span", { class: "num" }, `${pct(s)} · ${counts[k] || 0} seg`),
+      h("div", { class: "track" }, h("div", { class: "fill", style: `width:${s * 100}%` })));
+  }));
+}
+
+/* ---------------- heatmap ---------------- */
+function luminance(hex) {
+  const c = hex.replace("#", "").match(/../g).map((x) => parseInt(x, 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+function renderHeatmap() {
+  const idx = S.index, box = $("heat"), foot = $("heat-foot");
+  if (!idx || !idx.available) {
+    box.replaceChildren(h("p", { class: "empty" }, idx && idx.error ? "Could not load the index: " + idx.error
+      : "No cutoff index is loaded, so every model scores the same and routing mixes uniformly. Fit one with 'cutoffmix bench fit'."));
+    foot.hidden = true; $("heat-sub").textContent = "";
+    return;
+  }
+  const ramp = dark.matches ? RAMP.dark : RAMP.light;
+  const cells = {};
+  for (const r of idx.rows) cells[r.topic + "\u0000" + r.model] = r;
+  const taus = idx.rows.map((r) => r.tau).filter((t) => isFinite(t));
+  const lo = Math.min(...taus), hi = Math.max(...taus);
+  const step = (t) => ramp[Math.max(0, Math.min(ramp.length - 1, Math.round(((t - lo) / ((hi - lo) || 1)) * (ramp.length - 1))))];
+  const head = h("tr", {}, h("th", { class: "topic" }, "Topic"), idx.models.map((m) => h("th", {}, chip(m))));
+  const body = idx.topics.map((t) => {
+    const rows = idx.models.map((m) => cells[t + "\u0000" + m]).filter(Boolean);
+    const best = rows.reduce((b, r) => (b && b.p_best >= r.p_best ? b : r), null);
+    return h("tr", { "data-topic": t }, h("th", { class: "topic", title: t }, topicName(t)), idx.models.map((m) => {
+      const r = cells[t + "\u0000" + m];
+      if (!r) return h("td", {}, "–");
+      const bg = isFinite(r.tau) ? step(r.tau) : "transparent";
+      const fg = bg !== "transparent" && luminance(bg) < 0.28 ? "#ffffff" : "#111111";
+      const td = h("td", { class: r === best ? "best" : "", style: `background:${bg};color:${fg}`, tabindex: "0" },
+        fmtTau(r.tau), h("small", {}, "P " + pct(r.p_best)));
+      td.addEventListener("mouseenter", (e) => showTip(e, r));
+      td.addEventListener("mousemove", moveTip);
+      td.addEventListener("mouseleave", hideTip);
+      td.addEventListener("focus", (e) => showTip(e, r));
+      td.addEventListener("blur", hideTip);
+      td.addEventListener("click", (e) => showTip(e, r));
+      return td;
+    }));
+  });
+  box.replaceChildren(h("table", { class: "heat" }, h("thead", {}, head), h("tbody", {}, body)));
+  const src = idx.source || (idx.meta && (idx.meta.source || idx.meta.method)) || "";
+  $("heat-sub").textContent = `probe ${idx.probe}${src ? " · " + src : ""}`;
+  foot.replaceChildren(
+    h("span", {}, "τ = estimated virtual cutoff (YYYY-MM.tenths)"),
+    h("span", {}, fmtTau(lo), h("span", { class: "ramp", style: `background:linear-gradient(90deg, ${ramp.join(",")})` }), fmtTau(hi)),
+    h("span", {}, "outlined = highest P(best) for the topic"),
+    aboutIndex(idx.meta || {}));
+  foot.hidden = false;
+  markActiveRow();
+}
+function aboutIndex(meta) {
+  // provenance of the index: what it is (meta.note), where its data comes from and which period it covers
+  const parts = [];
+  if (meta.note) parts.push(h("p", {}, meta.note));
+  const sources = Array.isArray(meta.sources) ? meta.sources.join(", ") : meta.source;
+  const span = meta.data_range ? `events ${meta.data_range.first} – ${meta.data_range.last}` : "";
+  const counts = meta.n_events ? `${meta.n_events} events, ${meta.n_results} graded answers` : "";
+  const line = [sources && "Data: " + sources, span, counts].filter(Boolean).join(" · ");
+  if (line) parts.push(h("p", {}, line));
+  if (!parts.length) return h("span", {});
+  return h("details", { class: "heat-about" }, h("summary", {}, "About this index"), parts);
+}
+function markActiveRow() {
+  document.querySelectorAll(".heat tr.active").forEach((tr) => tr.classList.remove("active"));
+  if (!S.windowTopic) return;
+  const tr = document.querySelector(`.heat tr[data-topic="${CSS.escape(S.windowTopic)}"]`);
+  if (tr) tr.classList.add("active");
+}
+function showTip(e, r) {
+  const tip = $("tip");
+  tip.replaceChildren(
+    h("div", {}, h("b", {}, topicName(r.topic)), " · ", modelName(r.model)),
+    h("div", { class: "mono" }, `τ ${fmtTau(r.tau)}  ± ${isFinite(r.sd) ? r.sd.toFixed(1) : "?"} mo`),
+    h("div", {}, `P(best) ${pct(r.p_best)} · n = ${r.n}`),
+    h("div", {}, `stale-assertion hazard ${pct(r.hazard)}` + (r.abstain != null ? ` · abstains ${pct(r.abstain)}` : "")));
+  tip.hidden = false;
+  moveTip(e);
+}
+function moveTip(e) {
+  const tip = $("tip");
+  const rect = e.target.getBoundingClientRect();
+  const x = e.clientX != null && e.clientX > 0 ? e.clientX : rect.left + rect.width / 2;
+  const y = e.clientY != null && e.clientY > 0 ? e.clientY : rect.top;
+  const w = tip.offsetWidth, hgt = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, x + 12)) + "px";
+  tip.style.top = (y - hgt - 12 < 8 ? y + 18 : y - hgt - 12) + "px";
+}
+function hideTip() { $("tip").hidden = true; }
+dark.addEventListener("change", renderHeatmap);
+window.addEventListener("scroll", hideTip, { passive: true });
+
+/* ---------------- wiring ---------------- */
+$("ask").addEventListener("submit", run);
+$("stop").addEventListener("click", () => S.ctrl && S.ctrl.abort());
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) run(e); });
+$("answer-head").addEventListener("click", () => { if (S.answer) select(S.answer, true); });
+boot();
+</script>
+</body>
+</html>

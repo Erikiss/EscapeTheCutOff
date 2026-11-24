@@ -1,0 +1,279 @@
+{
+ "head": {
+  "vars": [
+   "cand",
+   "candLabel",
+   "d",
+   "e",
+   "prec",
+   "prevWinner",
+   "prevWinnerLabel"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115632204"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-04T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115632204"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-25T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115632204"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q37181"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Luiz Inácio Lula da Silva"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115632204"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1000001"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tarcísio de Freitas"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q107481430"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-11-03T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q107481430"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1000002"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Mike Collins"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q107481430"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q1000003"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Derek Dooley"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-02-11T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q29207"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Sauli Niinistö"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q312790"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Alexander Stubb"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q434589"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Pekka Haavisto"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q11881512"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Jussi Halla-aho"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "cand": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q11869512"
+    },
+    "candLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Li Andersson"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900001"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-05-04T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900002"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-05-03T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900002"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900011"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Anna Example"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900003"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    }
+   }
+  ]
+ }
+}

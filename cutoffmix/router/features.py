@@ -14,6 +14,7 @@ import math
 import re
 import zlib
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -128,7 +129,7 @@ class SparseSoftmaxRegression:
         l2: float = 1e-6,
         batch_size: int = 32,
         seed: int = 0,
-    ) -> "SparseSoftmaxRegression":
+    ) -> SparseSoftmaxRegression:
         """Train in place on feature dicts ``X`` and integer class labels ``y`` and return ``self``.
 
         Rows without any feature carry no information for ``W`` and are skipped (the bias still learns the class
@@ -137,7 +138,7 @@ class SparseSoftmaxRegression:
         y_arr = np.asarray(y, dtype=np.int64)
         if len(X) != len(y_arr):
             raise ValueError(f"X and y differ in length: {len(X)} != {len(y_arr)}")
-        if len(y_arr) and (y_arr.min() < 0 or y_arr.max() >= self.n_classes):
+        if np.any((y_arr < 0) | (y_arr >= self.n_classes)):
             raise ValueError(f"labels must lie in [0, {self.n_classes})")
         keep = np.fromiter((len(r) > 0 for r in X), dtype=bool, count=len(X))
         rows = [r for r, k in zip(X, keep) if k]
@@ -192,7 +193,7 @@ class SparseSoftmaxRegression:
         """Class probabilities ``[K]`` for one feature dict."""
         return softmax(self.logits(features))
 
-    def to_arrays(self, prefix: str = "") -> dict[str, np.ndarray]:
+    def to_arrays(self, prefix: str = "") -> dict[str, Any]:
         """Compact arrays for ``np.savez``: only the non-zero rows of ``W`` are stored."""
         rows = np.flatnonzero(np.any(self.W != 0, axis=1)).astype(np.int64)
         return {
@@ -203,7 +204,7 @@ class SparseSoftmaxRegression:
         }
 
     @classmethod
-    def from_arrays(cls, arrays: Mapping[str, np.ndarray], prefix: str = "") -> "SparseSoftmaxRegression":
+    def from_arrays(cls, arrays: Mapping[str, np.ndarray], prefix: str = "") -> SparseSoftmaxRegression:
         """Inverse of :meth:`to_arrays`."""
         try:
             dim = int(arrays[prefix + "dim"])

@@ -1,0 +1,243 @@
+{
+ "head": {
+  "vars": [
+   "d",
+   "ed",
+   "humanWinner",
+   "prec",
+   "prevHuman",
+   "prevWinner",
+   "prevWinnerLabel"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q501"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-08-25T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q501"
+    },
+    "humanWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q511"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-08-31T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "humanWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q513"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q512"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "McLaren"
+    },
+    "prevHuman": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "false"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q502"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q511"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Lando Norris"
+    },
+    "prevHuman": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q701"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-07-27T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q701"
+    },
+    "humanWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q701"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tadej Pogačar"
+    },
+    "prevHuman": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q702"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-07-26T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q702"
+    },
+    "humanWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q702"
+    },
+    "prevWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q711"
+    },
+    "prevWinnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Tadej Pogačar"
+    },
+    "prevHuman": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#boolean",
+     "type": "literal",
+     "value": "true"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q703"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-04-12T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "11"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q703"
+    },
+    "humanWinner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q712"
+    }
+   },
+   {
+    "ed": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q602"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-01-01T00:00:00Z"
+    },
+    "prec": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "9"
+    }
+   }
+  ]
+ }
+}

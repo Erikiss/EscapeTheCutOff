@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import re
 
 import pytest
@@ -21,7 +20,7 @@ S = "<<END_STEP>>"
 
 
 class FakeClassifier:
-    """Keyword stand-in for router.topics (owned by another work package)."""
+    """Deterministic one-topic classifier, so text expectations do not depend on the keyword lexicon."""
 
     topics = TOPIC_IDS
     rules = (("model", "ai_ml"), ("moon", "space_astronomy"), ("minister", "government"))
@@ -114,6 +113,28 @@ async def test_routing_relevant_text_is_topic_dependent():
     assert "2026-08" in fable_ai and "2026-04" in sol_ai  # Fable knows AI news four months longer
 
 
+async def test_a_question_about_two_topics_is_covered_topic_by_topic():
+    class TwoTopics:
+        topics = TOPIC_IDS
+
+        def posterior(self, text: str) -> list[float]:
+            hot = {"government", "ai_ml"} if "president" in text.lower() else {"sports"}
+            return [0.45 if t in hot else 0.1 / (len(TOPIC_IDS) - len(hot)) for t in TOPIC_IDS]
+
+    b = mock(classifier=TwoTopics(), segments_to_answer=6)
+    q = "Who is the president, and which AI models are new?"
+    assert b.question_topics(q) == ["government", "ai_ml"]
+    notes: list[str] = []
+    for _ in range(6):
+        notes.append(clean_segment(text_of(await stream(b, FABLE, q, notes, sentinel=S)), "", sentinel=S,
+                                   hard_cut_chars=10_000)[0])
+    assert ["office" in n for n in notes] == [True] * 3 + [False] * 3  # three segments per topic
+    assert all("AI model landscape" in n for n in notes[3:])
+    _, answer = split_final(text_of(await stream(b, FABLE, q, notes, sentinel=S)), "FINAL ANSWER:")
+    assert answer is not None and "who holds the office known as of 2026-03" in answer
+    assert "AI model landscape known as of 2026-08" in answer  # Fable's own per-topic cutoffs
+
+
 async def test_sentinel_and_finish_reason_follow_stop_support():
     b = mock()
     sol = await stream(b, SOL, "Who is the prime minister?", sentinel=S)
@@ -183,8 +204,6 @@ async def test_classifier_topic_outside_taxonomy():
     assert "quantum cooking" in text and f"known as of {month_label(28.75)}" in text
 
 
-@pytest.mark.skipif(importlib.util.find_spec("cutoffmix.router.topics") is None,
-                    reason="router.topics (WP2) not available yet")
 async def test_default_keyword_classifier_is_loaded_lazily():
     b = MockBackend(default_mock_truths(latency_s=0), today="2026-11-24")
     text = text_of(await stream(b, SOL, "Which large language model did OpenAI release last?"))

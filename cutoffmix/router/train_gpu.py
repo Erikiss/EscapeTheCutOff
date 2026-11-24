@@ -150,7 +150,8 @@ def split_by_event(examples: Sequence[Example], eval_frac: float, seed: int = 0)
     if not 0.0 <= eval_frac < 1.0:
         raise ValueError(f"eval_frac must lie in [0, 1), got {eval_frac}")
     cut = eval_frac * 10_000
-    train, held = [], []
+    train: list[Example] = []
+    held: list[Example] = []
     for ex in examples:
         (held if zlib.crc32(f"{seed}:{ex.event_id}".encode()) % 10_000 < cut else train).append(ex)
     return train, held
@@ -197,7 +198,11 @@ def evaluation_metrics(
         "currentness": {},
     }
     for mi, m in enumerate(models):
-        pairs = [(row_p[mi], row_t[mi]) for row_p, row_t in zip(cur_prob, cur_true) if row_t[mi] is not None]
+        pairs: list[tuple[float, float]] = []
+        for row_p, row_t in zip(cur_prob, cur_true):
+            target = row_t[mi]
+            if target is not None:
+                pairs.append((row_p[mi], target))
         metrics["currentness"][m] = {
             "n": len(pairs),
             "brier": sum((p - t) ** 2 for p, t in pairs) / len(pairs) if pairs else None,
@@ -238,7 +243,7 @@ class _Collator:
 def _build_model(torch: Any, encoder: Any, n_topics: int, n_models: int, dropout: float) -> Any:
     nn = torch.nn
 
-    class RouterEncoder(nn.Module):
+    class RouterEncoder(nn.Module):  # type: ignore[name-defined]  # torch is imported lazily (Any here)
         """Encoder + mean pooling + topic / time-sensitivity / currentness heads."""
 
         def __init__(self) -> None:
@@ -384,6 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         dist.barrier()
     model = _build_model(torch, encoder, len(TOPIC_IDS), len(models), args.dropout).to(device)
     collate = _Collator(tokenizer, args.max_length)
+    dataset: Any = train_set  # a list is a valid map-style dataset
     probe_batch = tuple(t.to(device) for t in collate(train_set[: args.batch_size]))
     frozen = _freeze_unused(torch, model, probe_batch, args.w_time, args.w_cur)
     if frozen:
@@ -392,9 +398,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if world > 1:
         model = DistributedDataParallel(model, device_ids=[local_rank] if use_cuda else None)
 
-    sampler = DistributedSampler(train_set, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) \
+    sampler: Any = DistributedSampler(dataset, num_replicas=world, rank=rank, shuffle=True, seed=args.seed) \
         if world > 1 else None
-    loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=sampler is None, sampler=sampler,
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=sampler is None, sampler=sampler,
                         collate_fn=collate, num_workers=args.num_workers, pin_memory=use_cuda, drop_last=False)
     total_steps = max(1, args.epochs * len(loader))
     trainable = [p for p in model.parameters() if p.requires_grad]

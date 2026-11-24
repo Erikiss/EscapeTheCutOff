@@ -241,7 +241,7 @@ class RandomPolicy:
 _POLICY_NAMES = "softmax, thompson, argmax, fixed:<model key>, round_robin, random"
 
 
-def make_policy(name: str, cfg: "RouterConfig | None" = None) -> RoutingPolicy:
+def make_policy(name: str, cfg: RouterConfig | None = None) -> RoutingPolicy:
     """Build a policy by name; parameters (T0, beta, r_min, delta) come from ``cfg`` (defaults if ``None``)."""
     key = name.strip()
     if key == "softmax":

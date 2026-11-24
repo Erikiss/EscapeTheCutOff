@@ -33,7 +33,7 @@ class RouteDecision:
     r: float  # time sensitivity of the window
 
 
-def _default_router_config() -> "RouterConfig":
+def _default_router_config() -> RouterConfig:
     from cutoffmix.config import RouterConfig
 
     return RouterConfig()
@@ -55,7 +55,7 @@ class Router:
         classifier: TopicClassifier | None = None,
         gate: TimeSensitivityGate | None = None,
         policy: RoutingPolicy | None = None,
-        cfg: "RouterConfig | None" = None,
+        cfg: RouterConfig | None = None,
         seed: int | None = None,
     ):
         if not models:
@@ -73,7 +73,7 @@ class Router:
         self._np_rng = np.random.default_rng(self.seed)
 
     @classmethod
-    def from_config(cls, cfg: "AppConfig") -> "Router":
+    def from_config(cls, cfg: AppConfig) -> Router:
         """Router for ``cfg.model_keys()`` with the configured index, classifier, policy and seed."""
         rc = cfg.router
         return cls(

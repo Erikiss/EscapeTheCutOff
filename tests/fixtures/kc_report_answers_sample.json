@@ -1,0 +1,356 @@
+{
+ "claude-fable-5.2": {
+  "direct": {
+   "2024-01-death-beckenbauer": {
+    "l": "c",
+    "r": "Franz Beckenbauer has died. He passed away on 7 January 2024 at the age of 78, at his home in Salzburg, Austria. His family announced his death the following day.\n\nKnown as \"Der Kaiser,\" he was one of the few people to win the World Cup as both a player (1974) and a manager (1990)."
+   },
+   "2024-01-death-musser": {
+    "l": "c",
+    "r": "Alec Musser has died. He passed away on January 12, 2024, at his home in Del Mar, California, at the age of 50. His death was confirmed by his fiancée, Paige Press, and the San Diego County Medical Examiner later ruled it a suicide.\n\nMusser was best known for playing Del Henry on *All My Children* (…"
+   },
+   "2024-03-death-kahneman": {
+    "l": "c",
+    "r": "Daniel Kahneman has died. He passed away on March 27, 2024, at the age of 90, a few weeks after his 90th birthday (he was born March 5, 1934).\n\nIn March 2025, the Wall Street Journal reported that he had ended his life through assisted suicide in Switzerland. He had told close friends and family in …"
+   },
+   "2025-04-death-pope-francis": {
+    "l": "c",
+    "r": "Pope Francis has died. He passed away on April 21, 2025 (Easter Monday), at the age of 88, at his residence in the Casa Santa Marta in Vatican City. The Vatican reported the cause as a stroke followed by coma and irreversible heart failure. He had been hospitalized earlier that year with double pneu…"
+   },
+   "2024-02-death-chao": {
+    "l": "c",
+    "r": "Angela Chao has died. She died on the night of February 10–11, 2024, at age 50, on a private ranch near Johnson City in Blanco County, Texas.\n\nAfter an evening with friends at the ranch, she mistakenly put her Tesla Model X in reverse while making a turn, and the car backed into a pond and sank. She…"
+   },
+   "2024-02-office-finland": {
+    "l": "c",
+    "r": "Alexander Stubb won the 2024 Finnish presidential election, succeeding Sauli Niinistö. Stubb, the National Coalition Party candidate and a former prime minister, narrowly defeated Pekka Haavisto in the second-round runoff on 11 February 2024, with roughly 51.6% of the vote to Haavisto's 48.4%. He to…"
+   },
+   "2024-09-office-hill": {
+    "l": "c",
+    "r": "**Elliott Hill** was named to replace John Donahoe as president and CEO of Nike, Inc. Nike announced the change in September 2024, and it took effect on October 14, 2024. Hill is a longtime Nike veteran who had retired from the company in 2020 after more than 30 years there."
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "Yes, as far as I know, Lionel Messi is alive. He was born on June 24, 1987, and has been playing for Inter Miami in Major League Soccer and captaining the Argentina national team. I can't check real-time news, but I have no information suggesting otherwise."
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "No, as far as I know, Keanu Reeves has not passed away. I have no record of his death, and he has been active in recent years with projects like *John Wick: Chapter 4* (2023) and his band Dogstar.\n\nHe has been the target of celebrity death hoaxes before, including false reports of a snowboarding acc…"
+   },
+   "2024-06-office-nato": {
+    "l": "c",
+    "r": "Mark Rutte, the former Prime Minister of the Netherlands, was selected to succeed Jens Stoltenberg as NATO Secretary General. The North Atlantic Council confirmed his appointment in June 2024, and he took office on October 1, 2024."
+   },
+   "2024-07-death-haniyeh": {
+    "l": "c",
+    "r": "Ismail Haniyeh is dead. He was assassinated on July 31, 2024, in Tehran, Iran, where he had traveled to attend the inauguration of Iranian President Masoud Pezeshkian.\n\nHe was killed in the early hours of the morning at a guesthouse in northern Tehran run by Iran's Islamic Revolutionary Guard Corps.…"
+   },
+   "2024-02-death-weathers": {
+    "l": "c",
+    "r": "Carl Weathers has died. He passed away on February 1, 2024, at the age of 76, at his home in Los Angeles. His family said he died peacefully in his sleep, and the cause was later reported as atherosclerotic cardiovascular disease.\n\nBesides playing Apollo Creed in the first four Rocky films, he was k…"
+   },
+   "2026-05-death-busch": {
+    "l": "w",
+    "r": "As far as I know, Kyle Busch is alive. He was born on May 2, 1985, won Cup Series championships in 2015 and 2019, and has been driving the No. 8 Chevrolet for Richard Childress Racing since 2023.\n\nI have no record of his death, though I can't confirm events after my training data ends. If you've see…"
+   },
+   "2024-03-office-rnc": {
+    "l": "c",
+    "r": "Michael Whatley succeeded Ronna McDaniel as chair of the Republican National Committee. He was elected on March 8, 2024, after McDaniel stepped down. Whatley had previously chaired the North Carolina Republican Party and was endorsed by Donald Trump. Lara Trump was elected co-chair at the same meeti…"
+   }
+  },
+  "mcq": {
+   "2024-01-death-beckenbauer": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-01-death-musser": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-03-death-kahneman": {
+    "l": "c",
+    "r": "C"
+   },
+   "2025-04-death-pope-francis": {
+    "l": "c",
+    "r": "B"
+   },
+   "2024-02-death-chao": {
+    "l": "c",
+    "r": "D"
+   },
+   "2024-02-office-finland": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-09-office-hill": {
+    "l": "c",
+    "r": "A"
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "C"
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "B"
+   },
+   "2024-06-office-nato": {
+    "l": "c",
+    "r": "C"
+   },
+   "2024-07-death-haniyeh": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-02-death-weathers": {
+    "l": "c",
+    "r": "A"
+   },
+   "2026-05-death-busch": {
+    "l": "w",
+    "r": "A"
+   },
+   "2024-03-office-rnc": {
+    "l": "c",
+    "r": "C"
+   }
+  }
+ },
+ "gpt-6.2-sol": {
+  "direct": {
+   "2024-01-death-beckenbauer": {
+    "l": "c",
+    "r": "Franz Beckenbauer died on January 7, 2024, at the age of 78."
+   },
+   "2024-01-death-musser": {
+    "l": "c",
+    "r": "Alec Musser died on January 12, 2024, at the age of 50."
+   },
+   "2024-03-death-kahneman": {
+    "l": "c",
+    "r": "Daniel Kahneman, the Nobel laureate and author of *Thinking, Fast and Slow*, died on March 27, 2024, at age 90."
+   },
+   "2025-04-death-pope-francis": {
+    "l": "c",
+    "r": "Pope Francis died on April 21, 2025, at the age of 88."
+   },
+   "2024-02-death-chao": {
+    "l": "c",
+    "r": "Angela Chao, the chair and CEO of Foremost Group, died on February 11, 2024, at age 50. She drowned after accidentally backing her Tesla into a pond on a private ranch in Blanco County, Texas. Authorities ruled her death an accident."
+   },
+   "2024-02-office-finland": {
+    "l": "c",
+    "r": "Alexander Stubb won Finland’s 2024 presidential election and succeeded Sauli Niinistö on March 1, 2024."
+   },
+   "2024-09-office-hill": {
+    "l": "c",
+    "r": "Elliott Hill was named to succeed John Donahoe as CEO of Nike, Inc."
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "Yes. As far as I know, Lionel Messi is alive."
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "No—there are no credible reports that Keanu Reeves has died. If you saw a post claiming he passed away, it appears to be a rumor."
+   },
+   "2024-06-office-nato": {
+    "l": "c",
+    "r": "Mark Rutte, the former prime minister of the Netherlands, was selected to succeed Jens Stoltenberg as NATO Secretary General. He took office on October 1, 2024."
+   },
+   "2024-07-death-haniyeh": {
+    "l": "c",
+    "r": "Ismail Haniyeh, the head of Hamas’s political bureau, was assassinated on July 31, 2024, in Tehran, Iran. He was staying at a guesthouse after attending the inauguration of Iranian President Masoud Pezeshkian.\n\nReports differ on how he was killed. *The New York Times* reported that a bomb had been p…"
+   },
+   "2024-02-death-weathers": {
+    "l": "c",
+    "r": "Carl Weathers, who played Apollo Creed in the *Rocky* films, died on February 1, 2024, at age 76."
+   },
+   "2026-05-death-busch": {
+    "l": "c",
+    "r": "Kyle Busch, the two-time NASCAR Cup Series champion, died on May 21, 2026, at age 41."
+   },
+   "2024-03-office-rnc": {
+    "l": "c",
+    "r": "Michael Whatley was elected chair of the Republican National Committee in March 2024, succeeding Ronna McDaniel."
+   }
+  },
+  "mcq": {
+   "2024-01-death-beckenbauer": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-01-death-musser": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-03-death-kahneman": {
+    "l": "c",
+    "r": "C"
+   },
+   "2025-04-death-pope-francis": {
+    "l": "c",
+    "r": "B"
+   },
+   "2024-02-death-chao": {
+    "l": "c",
+    "r": "D"
+   },
+   "2024-02-office-finland": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-09-office-hill": {
+    "l": "c",
+    "r": "A"
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "C"
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "B"
+   },
+   "2024-06-office-nato": {
+    "l": "c",
+    "r": "C"
+   },
+   "2024-07-death-haniyeh": {
+    "l": "c",
+    "r": "A"
+   },
+   "2024-02-death-weathers": {
+    "l": "c",
+    "r": "A"
+   },
+   "2026-05-death-busch": {
+    "l": "c",
+    "r": "D"
+   },
+   "2024-03-office-rnc": {
+    "l": "c",
+    "r": "C"
+   }
+  }
+ },
+ "gpt-4o": {
+  "direct": {
+   "2024-01-death-beckenbauer": {
+    "l": "w",
+    "r": "As of my last update in October 2023, Franz Beckenbauer is alive."
+   },
+   "2024-01-death-musser": {
+    "l": "a",
+    "r": "As of my last update in October 2023, there is no public information indicating that actor Alec Musser has passed away."
+   },
+   "2024-03-death-kahneman": {
+    "l": "a",
+    "r": "As of my last update in October 2023, Daniel Kahneman is alive."
+   },
+   "2025-04-death-pope-francis": {
+    "l": "a",
+    "r": "As of my last update in October 2023, Pope Francis is alive. There have been no reports of his death."
+   },
+   "2024-02-death-chao": {
+    "l": "w",
+    "r": "As of my last update in October 2023, Angela Chao, the CEO of Foremost Group, is alive. There have been no reports or announcements regarding her death."
+   },
+   "2024-02-office-finland": {
+    "l": "a",
+    "r": "As of my last update in October 2023, the most recent Finnish presidential election had not yet occurred, and Sauli Niinistö was still serving as President of Finland. Therefore, I do not have information on his successor. Please check the latest sources for the most current information."
+   },
+   "2024-09-office-hill": {
+    "l": "a",
+    "r": "As of my last update, John Donahoe is the current CEO of Nike, Inc., and there has been no announcement regarding his replacement. If there have been any changes after October 2023, I would not be aware of them."
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "Yes, as of the latest information available, Lionel Messi is alive."
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "As of my last update in October 2023, there have been no credible reports of actor Keanu Reeves passing away. It is important to verify such information with reliable news sources, as false rumors about celebrity deaths often circulate online."
+   },
+   "2024-06-office-nato": {
+    "l": "a",
+    "r": "As of October 2023, no successor has been officially selected to replace Jens Stoltenberg as the Secretary General of NATO. Stoltenberg's term has been extended multiple times, and any future announcements regarding his successor would need to be checked from the latest sources."
+   },
+   "2024-07-death-haniyeh": {
+    "l": "a",
+    "r": "As of my last update in October 2023, Ismail Haniyeh, the political leader of Hamas, is alive. There have been no credible reports of his death."
+   },
+   "2024-02-death-weathers": {
+    "l": "a",
+    "r": "As of my last update in October 2023, Carl Weathers is alive."
+   },
+   "2026-05-death-busch": {
+    "l": "w",
+    "r": "As of my last update in October 2023, Kyle Busch is alive. There have been no reports of his death."
+   },
+   "2024-03-office-rnc": {
+    "l": "a",
+    "r": "As of my last update in October 2023, Ronna McDaniel was still serving as the chair of the Republican National Committee. If there has been a change in leadership since then, I do not have that information."
+   }
+  },
+  "mcq": {
+   "2024-01-death-beckenbauer": {
+    "l": "w",
+    "r": "B"
+   },
+   "2024-01-death-musser": {
+    "l": "w",
+    "r": "B"
+   },
+   "2024-03-death-kahneman": {
+    "l": "w",
+    "r": "A"
+   },
+   "2025-04-death-pope-francis": {
+    "l": "w",
+    "r": "A"
+   },
+   "2024-02-death-chao": {
+    "l": "w",
+    "r": "C"
+   },
+   "2024-02-office-finland": {
+    "l": "w",
+    "r": "B) Pekka Haavisto"
+   },
+   "2024-09-office-hill": {
+    "l": "w",
+    "r": "C"
+   },
+   "control-alive-messi": {
+    "l": "c",
+    "r": "C"
+   },
+   "fake-death-keanu-reeves": {
+    "l": "c",
+    "r": "B"
+   },
+   "2024-06-office-nato": {
+    "l": "c",
+    "r": "C"
+   },
+   "2024-07-death-haniyeh": {
+    "l": "w",
+    "r": "B"
+   },
+   "2024-02-death-weathers": {
+    "l": "w",
+    "r": "B"
+   },
+   "2026-05-death-busch": {
+    "l": "w",
+    "r": "A"
+   },
+   "2024-03-office-rnc": {
+    "l": "c",
+    "r": "C"
+   }
+  }
+ }
+}

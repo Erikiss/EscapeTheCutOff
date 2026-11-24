@@ -1,9 +1,9 @@
-import importlib.util
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
+from cutoffmix.config import RouterConfig, default_config
 from cutoffmix.router.gate import TimeSensitivityGate
 from cutoffmix.router.index import CutoffIndex, ProbeIndex
 from cutoffmix.router.policy import FixedPolicy, SoftmaxPolicy
@@ -12,26 +12,6 @@ from cutoffmix.router.topics import KeywordTopicClassifier
 from cutoffmix.taxonomy import TOPIC_IDS
 
 MODELS = ["claude-fable-5.2", "gpt-6.2-sol", "gemini-4-neon"]
-HAS_CONFIG = importlib.util.find_spec("cutoffmix.config") is not None
-
-
-@dataclass
-class FakeRouterConfig:
-    """Local stand-in with the RouterConfig fields the router reads (keeps these tests independent of config.py)."""
-
-    policy: str = "softmax"
-    T0: float = 0.5
-    beta: float = 0.25
-    kappa: float = 1.0
-    lam: float = 2.0
-    r_min: float = 0.05
-    delta: float = 0.5
-    ema: float = 0.5
-    index_path: str | None = None
-    probe_preference: tuple[str, ...] = ("current_d", "current", "recall", "mcq")
-    classifier: str = "auto"
-    classifier_path: str | None = None
-    seed: int | None = None
 
 
 def make_index(draws: bool = True) -> CutoffIndex:
@@ -49,7 +29,7 @@ def make_index(draws: bool = True) -> CutoffIndex:
 
 
 def make_router(**kw) -> Router:
-    cfg = kw.pop("cfg", FakeRouterConfig())
+    cfg = kw.pop("cfg", RouterConfig())
     return Router(MODELS, index=kw.pop("index", make_index()), cfg=cfg, seed=kw.pop("seed", 7), **kw)
 
 
@@ -90,7 +70,7 @@ def test_without_index_scores_are_zero_and_choice_is_uniform():
 
 
 def test_posterior_ema_and_update_flag():
-    router = make_router(cfg=FakeRouterConfig(ema=0.5))
+    router = make_router(cfg=RouterConfig(ema=0.5))
     clf = router.classifier
     first = router.decide(AI_WINDOW, current=None).posterior
     assert first == pytest.approx(dict(zip(clf.topics, clf.posterior(AI_WINDOW))))
@@ -116,7 +96,7 @@ def test_available_restricts_choice():
 
 
 def test_models_missing_from_index_are_never_chosen():
-    router = Router([*MODELS, "gemini-4-hydrogen"], index=make_index(), cfg=FakeRouterConfig(), seed=1)
+    router = Router([*MODELS, "gemini-4-hydrogen"], index=make_index(), cfg=RouterConfig(), seed=1)
     for _ in range(30):
         d = router.decide(AI_WINDOW, current=None)
         assert d.model != "gemini-4-hydrogen" and d.probs["gemini-4-hydrogen"] == 0.0
@@ -131,10 +111,10 @@ def test_reset_reseeds_for_reproducible_runs():
 
 
 def test_thompson_policy_through_router():
-    router = make_router(cfg=FakeRouterConfig(policy="thompson"))
+    router = make_router(cfg=RouterConfig(policy="thompson"))
     d = router.decide("Which space telescope launched most recently? The lander and the rocket matter.", current=None)
     assert d.model == "gemini-4-neon" and d.decision == "sample"
-    router_no_draws = make_router(cfg=FakeRouterConfig(policy="thompson"), index=make_index(draws=False))
+    router_no_draws = make_router(cfg=RouterConfig(policy="thompson"), index=make_index(draws=False))
     assert router_no_draws.decide(AI_WINDOW, current=None).model == "claude-fable-5.2"
 
 
@@ -160,9 +140,11 @@ def test_score_draft_and_speculative_choice():
     window = "We need the most recent facts for this question."
     ai_draft = "The newest Claude model from Anthropic tops the LLM benchmark."
     space_draft = "The lander touched down on the Moon after the rocket launch from the space station."
-    assert router.score_draft(window, ai_draft, "claude-fable-5.2") > router.score_draft(window, ai_draft, "gpt-6.2-sol")
-    assert router.score_draft(window, space_draft, "gemini-4-neon") > router.score_draft(window, space_draft,
-                                                                                         "gpt-6.2-sol")
+    def draft_score(draft, model):
+        return router.score_draft(window, draft, model)
+
+    assert draft_score(ai_draft, "claude-fable-5.2") > draft_score(ai_draft, "gpt-6.2-sol")
+    assert draft_score(space_draft, "gemini-4-neon") > draft_score(space_draft, "gpt-6.2-sol")
     before = router._posterior
     d = router.decide_speculative(window, {"claude-fable-5.2": ai_draft, "gpt-6.2-sol": "Nothing specific."},
                                   current="gpt-6.2-sol")
@@ -175,13 +157,18 @@ def test_score_draft_and_speculative_choice():
 
 def test_router_needs_models():
     with pytest.raises(ValueError):
-        Router([], index=None, cfg=FakeRouterConfig())
+        Router([], index=None, cfg=RouterConfig())
 
 
-@pytest.mark.skipif(not HAS_CONFIG, reason="cutoffmix.config not available yet")
+def test_from_config_uses_the_packaged_prior_index_by_default():
+    router = Router.from_config(default_config())
+    assert router.index is not None and router.probe == "current"
+    assert router.index.models == default_config().model_keys()
+    assert router.index.meta["sources"] == ["apoorvumang/knowledge-cutoff (CC BY 4.0)"]
+    assert router.index.meta["data_range"]["last"] <= "2026-06-30"  # a prior: the data cannot see later cutoffs
+
+
 def test_default_config_and_from_config(tmp_path):
-    from cutoffmix.config import default_config
-
     router = Router(MODELS, index=None)  # cfg=None -> RouterConfig()
     assert router.cfg.policy == "softmax" and router.cfg.ema == 0.5
 

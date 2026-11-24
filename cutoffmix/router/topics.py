@@ -247,7 +247,7 @@ class KeywordTopicClassifier:
     """Zero-training topic classifier from taxonomy keywords and seed sentences (implements ``TopicClassifier``).
 
     For each topic ``z`` the evidence is ``s_z = Σ_k w_k (1 + ln c_k)`` over matched keywords ``k`` with weight
-    ``w_k`` (1 for specific keywords and phrases, 0.3 for generic words, 0.25 for seed-sentence words, 0.8 for German
+    ``w_k`` (1 for specific keywords and phrases, 0.2 for generic words, 0.25 for seed-sentence words, 0.8 for German
     compound heads) and ``c_k`` occurrences. The posterior is ``p_z ∝ (prior + s_z) ** sharpness``: uniform when no
     keyword matches, sharper with more evidence. Matching is longest-phrase-first over word tokens, so ``war`` never
     matches inside ``software`` or ``warm`` while ``gpt`` matches ``GPT-6.2``.
@@ -259,7 +259,7 @@ class KeywordTopicClassifier:
         if sharpness <= 0:
             raise ValueError(f"sharpness must be > 0, got {sharpness}")
         resolved = _resolve_topics(topics)
-        self.topics: list[str] = [t.id for t in resolved]
+        self.topics: Sequence[str] = [t.id for t in resolved]
         self.prior = prior
         self.sharpness = sharpness
         self._lex = _build_lexicon(resolved)
@@ -345,7 +345,7 @@ class LinearTopicClassifier:
     def __init__(self, topics: Sequence[str], model: SparseSoftmaxRegression):
         if len(topics) != model.n_classes:
             raise ValueError(f"{len(topics)} topics but the model has {model.n_classes} classes")
-        self.topics: list[str] = list(topics)
+        self.topics: Sequence[str] = list(topics)
         self.model = model
 
     @classmethod
@@ -360,7 +360,7 @@ class LinearTopicClassifier:
         l2: float = 1e-6,
         seed: int = 0,
         batch_size: int = 32,
-    ) -> "LinearTopicClassifier":
+    ) -> LinearTopicClassifier:
         """Fit on ``texts`` labelled with topic ids.
 
         The topic order follows the taxonomy for known ids, then any other label in sorted order. At least two
@@ -393,10 +393,12 @@ class LinearTopicClassifier:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("wb") as f:
-            np.savez_compressed(f, kind=np.asarray(self._KIND), topics=np.asarray(self.topics), **self.model.to_arrays())
+            np.savez_compressed(
+                f, kind=np.asarray(self._KIND), topics=np.asarray(self.topics), **self.model.to_arrays()
+            )
 
     @classmethod
-    def load(cls, path: str | Path) -> "LinearTopicClassifier":
+    def load(cls, path: str | Path) -> LinearTopicClassifier:
         """Load a classifier written by :meth:`save`."""
         with np.load(Path(path), allow_pickle=False) as z:
             kind = str(z["kind"]) if "kind" in z.files else ""
@@ -437,7 +439,7 @@ class EmbeddingTopicClassifier:
                 ) from e
             encoder = SentenceTransformer(model_name)
         resolved = _resolve_topics(topics)
-        self.topics: list[str] = [t.id for t in resolved]
+        self.topics: Sequence[str] = [t.id for t in resolved]
         self.temperature = temperature
         self._encoder = encoder
         protos = []

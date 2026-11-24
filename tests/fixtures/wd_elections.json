@@ -1,0 +1,369 @@
+{
+ "head": {
+  "vars": [
+   "country",
+   "countryLabel",
+   "d",
+   "e",
+   "eLabel",
+   "sitelinks",
+   "winner",
+   "winnerLabel"
+  ]
+ },
+ "results": {
+  "bindings": [
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115632204"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Brazilian presidential election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-10-25T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q37181"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Luiz Inácio Lula da Silva"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q155"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Brazil"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "7"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q107481430"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 United States Senate election in Georgia"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-11-03T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q28839536"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Jon Ossoff"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q56400471"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2024 Finnish presidential election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2024-02-11T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q312790"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Alexander Stubb"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q33"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Finland"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "60"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900101"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Swedish general election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-09-13T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900201"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Centre Party"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Sweden"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "21"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900101"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Swedish general election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-09-13T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900202"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Green Party"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q34"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Sweden"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "21"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q133933238"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 United States Senate election in Mississippi"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-11-03T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q115492489"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Q115492489"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900001"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2025 Exampleville mayoral election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-05-04T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900011"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Anna Example"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900002"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2026 Exampleville mayoral election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2026-05-03T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900012"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Ben Example"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   },
+   {
+    "e": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900003"
+    },
+    "eLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "2025 Yearonly election"
+    },
+    "d": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+     "type": "literal",
+     "value": "2025-01-01T00:00:00Z"
+    },
+    "winner": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q900013"
+    },
+    "winnerLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "Cara Example"
+    },
+    "country": {
+     "type": "uri",
+     "value": "http://www.wikidata.org/entity/Q30"
+    },
+    "countryLabel": {
+     "xml:lang": "en",
+     "type": "literal",
+     "value": "United States"
+    },
+    "sitelinks": {
+     "datatype": "http://www.w3.org/2001/XMLSchema#integer",
+     "type": "literal",
+     "value": "5"
+    }
+   }
+  ]
+ }
+}
