@@ -389,7 +389,7 @@ The names `lerp`, `scale` and `prim` are both top-level ops and helpers; their p
 
 | WSL | Arguments | Effect |
 |---|---|---|
-| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | All arguments are keyword arguments. Integers: `p`, `steps`, `seed`, every entry of `save`, every `STEP`. Numbers: `frac`, `lr`, `wd`, `alpha`, `lamb`, `C`. `filter` = the bare identifier `none`, or `grokfast(alpha, lamb)`. `intervene` = a list of `at(STEP, scale(C))`. `save` = a list of steps with `0 ≤ s ≤ steps` for each entry (otherwise `E_BAD_ARG` in check 7). `run` = a non-reserved identifier. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**: pass `save_steps = sorted(set(save) | {0, steps})`. Wire `on_eval` and `should_stop` to the callbacks of `run_script` (§5.5). |
+| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | All arguments are keyword arguments. Integers: `p`, `steps`, `seed`, every entry of `save`, every `STEP`. Numbers: `frac`, `lr`, `wd`, `alpha`, `lamb`, `C`. `filter` = the bare identifier `none`, or `grokfast(alpha, lamb)`. `intervene` = a list of `at(STEP, scale(C))`. `save` = a list of steps with `0 ≤ s ≤ steps` for each entry (otherwise `E_BAD_ARG` in check 7). `run` = a non-reserved identifier. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**: pass `save_steps = sorted(set(save).union({0, steps}))`. Wire `on_eval` and `should_stop` to the callbacks of `run_script` (§5.5). |
 | `ckpt(NAME, STEP)` | – | A parameter dict (state_dict) of a stored run. Unknown run → `E_MISSING_RUN`; step not saved → `E_MISSING_RUN`. |
 | `diff(X, Y)` | `X`, `Y` are `ckpt(...)` | Per-key `X − Y`. |
 | `lerp(X, Y, t=RANGE)` | `X`, `Y` = `ckpt` | `path`: for each `t`, evaluate `(1−t)·X + t·Y`. |
@@ -1166,7 +1166,7 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
 
 ## 11. Milestones and acceptance tests
 
-Run `pytest -q`. Network and live tests are opt-in: `pytest -m network` and `pytest -m live`.
+Run `pytest -q`. Network, live and slow tests are opt-in: `pytest -m network`, `pytest -m live` and `pytest -m slow` (rule 0.8).
 
 ### M0 Skeleton
 
