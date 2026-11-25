@@ -246,6 +246,15 @@ named person is `incorrect`, an abstention `correct`, a disclaimer that redirect
 the judges. A distractor pick in the MCQ is `incorrect`, not `outdated`. Judges see "(none: ...)" as the outdated
 answer for both categories and, for controls, the `fact` as the ground truth.
 
+Surface forms (fixed after the 20-event pilot, `runs/papers_pilot.jsonl`, 111 rows): markdown emphasis around a
+name ("The first author is **Sho Maeoki**.") is stripped before name detection, a middle initial is part of a name
+("**Bardienus P. Duisterhof**"), an affiliation in parentheses or a quoted title after a name is not, and the
+paper's own title is masked before the cue search, so the "No" of "Leave No Context Behind: ..." is not a negation.
+The three pilot rows these shapes had left `ungraded` grade `incorrect`, `incorrect` and `correct` after the fix.
+`cutoffmix bench grade --events data/events/papers_events.jsonl --in runs/papers_pilot.jsonl --out NEW.jsonl
+[--regrade-all]` re-grades a results file offline with the rules into a new file (never in place, usage and latency
+kept) and prints the grade counts per model and probe before and after.
+
 ## Licence and attribution
 
 - **arXiv metadata** (titles, author names, dates, categories) is used through the arXiv API under the

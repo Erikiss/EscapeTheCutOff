@@ -504,6 +504,18 @@ _NAME_PARTICLES = frozenset({"van", "von", "de", "der", "den", "da", "di", "du",
 # stop words that are also surnames: inside a run after a name-like token ("Feng He", "Long May") they are names
 _SURNAME_HOMOGRAPHS = frozenset({"he", "an", "will", "may", "so", "do", "no", "see", "well", "long", "young", "new"})
 _POSSESSIVE = re.compile(r"['’]s$")
+# Markdown emphasis around an answer ("**Sho Maeoki**", "*Sho Maeoki*", "`Sho Maeoki`", "__Sho Maeoki__"): the
+# markers are not part of the name and must not stick to it ("Maeoki**." is "Maeoki.").
+_MARKDOWN = re.compile(r"\*+|`+|(?<!\w)_+(?=\w)|(?<=\w)_+(?!\w)")
+# A token that opens with one of these starts a new unit after a name: an affiliation "(University of Tokyo)", a
+# bracketed note or a quoted title.
+_RUN_OPENERS = frozenset('(["“„«')
+_TOKEN_ENDS = ".,;:!?)\"'”’"
+
+
+def _plain(response: str) -> str:
+    """``response`` without markdown emphasis markers (bold, italics, inline code)."""
+    return _MARKDOWN.sub("", response)
 
 
 def _name_like(token: str) -> bool:
@@ -527,7 +539,9 @@ def _unknown_names(response: str, event: Event) -> list[str]:
     accepted or rejected answer form (compared letters-only, so "Jun-sol Kim" is "Junsol Kim") and whose words occur
     neither in the question or title nor in :data:`_NAME_STOP`: people we have no alias for, i.e. wrong or invented
     authors. Leading and trailing stop words of a run ("Perhaps Wei Chen") are ignored, except surname homographs
-    after a name ("Feng He"); a stop word inside the run ("Hugging Face") dismisses it."""
+    after a name ("Feng He"); a stop word inside the run ("Hugging Face") dismisses it. Markdown emphasis around a
+    name is not part of it, a middle initial is ("Bardienus P. Duisterhof"), and an opening parenthesis, bracket or
+    quote ends a run: "Sho Maeoki (Tokyo Tech)" names Sho Maeoki."""
     known = set(normalize_text(f"{event.question_current} {event.question_recall} {event.subject}").split())
     known |= {w.strip(".,;:()'\"") for w in known}
     names = {_compact(a) for a in [event.expected_current, event.expected_recall, *event.aliases,
@@ -557,11 +571,14 @@ def _unknown_names(response: str, event: Event) -> list[str]:
             found.append(name)
 
     run: list[str] = []
-    for raw in response.split():
+    for raw in _plain(response).split():
+        if run and raw[:1] in _RUN_OPENERS:  # "(University of Tokyo)" or a quoted title after a name
+            flush(run)
+            run = []
         token = raw.strip(_TOKEN_TRIM)
-        ends = raw[-1:] in ".,;:!?)\"'" if raw else False
-        if len(token) > 2 and token.endswith("."):
-            token = token[:-1]
+        ends = raw[-1:] in _TOKEN_ENDS
+        if len(token) > 2:  # a trailing period ends a word ("Maeoki).", "Maeoki**."), not an initial ("P.")
+            token = token.rstrip(".").strip(_TOKEN_TRIM)
         if _name_like(token) or _INITIAL.match(token) or (run and token.casefold() in _NAME_PARTICLES):
             run.append(token)
             if ends and not _INITIAL.match(token):
@@ -618,6 +635,30 @@ def _compact_tokens(text: str) -> list[str]:
     return [t for t in re.split(r"[\s\-]+", normalize_text(text)) if re.search(r"[a-z]", t)]
 
 
+_TITLE_MIN_TOKENS = 3
+
+
+def _title_patterns(subject: str) -> list[re.Pattern[str]]:
+    """Patterns (over normalised text) for the paper title and, when it has a colon, for its main title and its
+    subtitle alone, each of at least :data:`_TITLE_MIN_TOKENS` word tokens, with any punctuation between the words
+    (a model may quote "Infini-attention" as "Infini attention", or the main title only)."""
+    parts = [subject, *subject.split(":", 1)] if ":" in subject else [subject]
+    out = []
+    for part in parts:
+        tokens = re.findall(r"\w+", normalize_text(part))
+        if len(tokens) >= _TITLE_MIN_TOKENS:
+            out.append(re.compile(r"(?<!\w)" + r"\W+".join(map(re.escape, tokens)) + r"(?!\w)"))
+    return out
+
+
+def _mask_title(text: str, event: Event) -> str:
+    """``text`` (normalised) with the paper's own title replaced by a space, so that words of the title ("Leave
+    **No** Context Behind ...", "... under Uncertainty") are never read as negation, hedge or abstain cues."""
+    for pat in _title_patterns(event.subject):
+        text = pat.sub(" ", text)
+    return " ".join(text.split())
+
+
 def grade_paper(event: Event, probe: str, response: str) -> tuple[Grade, bool] | None:
     """Rule grade for first-author probes (categories ``paper`` and ``fake_paper``), or ``None`` when unsure.
 
@@ -632,12 +673,17 @@ def grade_paper(event: Event, probe: str, response: str) -> tuple[Grade, bool] |
     ``incorrect`` (a confabulation), an abstention is ``correct``; a name next to a phrase that disclaims the
     paper ("I cannot find this paper; you may mean X by Y") goes to the judges, as does anything else. ``hedged``
     is set when the asserted name comes with uncertainty or knowledge-horizon words or an abstain phrase.
+
+    Surface forms: markdown emphasis around a name (``**bold**``, ``*italics*``, backticks) is not part of it; a
+    name may follow "is", "was", "by" or "first author:" and carry a middle initial ("Bardienus P. Duisterhof");
+    an affiliation in parentheses or a quoted title after a name is not part of it; and the words of the paper's
+    own title ("Leave No Context Behind ...") are never read as negation, hedge or abstain cues.
     """
     if not (response or "").strip():
         return "ungraded", False
     if probe == "mcq":
         return grade_mcq(event, response), False
-    text = normalize_text(response)
+    text = _mask_title(normalize_text(_plain(response)), event)
     abstain = bool(_ABSTAIN.search(text) or _PAPER_ABSTAIN.search(text))
     # "I don't know this paper" / "cannot find it", as opposed to a mere "not sure" about an answer still given
     disclaims = bool(_DISCLAIMS.search(text) or _PAPER_ABSTAIN.search(text))
@@ -852,6 +898,9 @@ async def grade_results(
     By default only rows that are ``ungraded`` although a response exists (rules were unsure, or no judge was
     available at run time) are re-graded; ``regrade_all=True`` re-grades every row with a response. Rows with an
     API ``error`` or an event missing from ``events`` are returned unchanged. ``concurrency`` bounds judge calls.
+    A row keeps an earlier judge verdict when the new pass cannot decide (the rules are unsure and no judge is
+    given, or no two judges agree), so an offline rule-only pass never erases judge grades; every other field
+    (``usage``, ``latency_s``, ...) is kept as it was.
     """
     if concurrency < 1:
         raise ValueError(f"concurrency must be >= 1, got {concurrency}")
@@ -864,6 +913,8 @@ async def grade_results(
             return r
         async with sem:
             grade, hedged, grader = await grade_response(event, r.probe, r.response, backend=backend, judges=judges)
+        if grade == "ungraded" and r.grade != "ungraded" and r.grader.startswith("judge"):
+            return r  # the rules are unsure and no judge decided: the earlier judge verdict stands
         return dataclasses.replace(r, grade=grade, hedged=hedged, grader=grader)
 
     return list(await asyncio.gather(*(one(r) for r in results)))

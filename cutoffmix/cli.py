@@ -13,7 +13,7 @@
                         --anchor-from 2024-01 --anchor-to 2025-09 --anchor-every 3 --anchor-per-month 6
                         --interp-share 0.5 --controls-share 0.1 --seed 0 --meta FILE --cache DIR --candidates 300]
     cutoffmix bench run --events FILE --out FILE --models KEY... --probes P... [--dry-run] [--batch] [--limit N]
-    cutoffmix bench grade --events FILE --results FILE
+    cutoffmix bench grade --events FILE... --in FILE --out FILE [--judges KEY...] [--regrade-all] [--mock]
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
                         [--priors KEY=MONTH...] [--note TEXT]
     cutoffmix router train [options of cutoffmix.router.train]
@@ -21,7 +21,9 @@
 
 ``--mock`` uses the simulated models of :mod:`cutoffmix.backends.mock` everywhere. Commands that call the real
 models stop with a clear message when the API key variable (``OPENROUTER_API_KEY``) is not set. Benchmark modules
-are imported only by the subcommands that need them. ``--preset explore`` (``run`` and ``serve``) merges the packaged
+are imported only by the subcommands that need them. ``bench grade`` re-grades a results file into a *new* file
+(never in place; ``usage`` and ``latency_s`` are kept): offline with the rule grader alone, with ``--judges`` for
+the rows the rules cannot decide; it prints the grade counts per model and probe before and after. ``--preset explore`` (``run`` and ``serve``) merges the packaged
 explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
 and the summary line adds the exploration metrics of the ``done`` event.
 """
@@ -680,11 +682,40 @@ def _print_grades(results: Sequence[Any]) -> None:
         print(f"  {model:<24} {probe:<10} " + "  ".join(f"{g} {n}" for g, n in sorted(grades.items())))
 
 
+_GRADE_ORDER = ("correct", "outdated", "incorrect", "abstain", "ungraded")
+
+
+def _grade_table(before: Sequence[Any], after: Sequence[Any]) -> str:
+    """Grade counts per model and probe (and per model over all probes, ``all``) before and after re-grading, one
+    line each: a count that changed reads ``before->after``; the last column counts the rows whose grade or hedge
+    changed. ``before`` and ``after`` hold the same rows in the same order."""
+    counts: dict[tuple[str, str], dict[str, list[int]]] = {}  # (model, probe) -> grade -> [before, after]
+    changed: dict[tuple[str, str], int] = {}
+    for b, a in zip(before, after, strict=True):
+        for key in ((b.model, b.probe), (b.model, "all")):
+            row = counts.setdefault(key, {})
+            row.setdefault(b.grade, [0, 0])[0] += 1
+            row.setdefault(a.grade, [0, 0])[1] += 1
+            changed[key] = changed.get(key, 0) + int(a.grade != b.grade or a.hedged != b.hedged)
+    seen = {g for row in counts.values() for g in row}
+    grades = [g for g in _GRADE_ORDER if g in seen] + sorted(seen - set(_GRADE_ORDER))
+    lines = [f"  {'model':<24} {'probe':<10} " + " ".join(f"{g:>11}" for g in grades) + f" {'changed':>8}"]
+    for key in sorted(counts, key=lambda k: (k[0], k[1] == "all", k[1])):
+        cells = [f"{b}->{a}" if b != a else str(a) for b, a in (counts[key].get(g, [0, 0]) for g in grades)]
+        lines.append(f"  {key[0]:<24} {key[1]:<10} " + " ".join(f"{c:>11}" for c in cells)
+                     + f" {changed[key]:>8}")
+    return "\n".join(lines)
+
+
 def _cmd_bench_grade(args: argparse.Namespace) -> int:
     from cutoffmix.backends import make_backend
     from cutoffmix.bench.grading import grade_results
     from cutoffmix.bench.io import load_events, load_results, save_results
 
+    src, out = Path(args.results), Path(args.out)
+    if src.resolve() == out.resolve() or (src.exists() and out.exists() and src.samefile(out)):
+        raise CLIError(f"--out must be a new file, not --in itself ({args.results}): results are never re-graded in "
+                       "place")
     cfg = _load_cfg(args)
     events = [e for path in args.events for e in load_events(path)]
     results = load_results(args.results)
@@ -704,10 +735,10 @@ def _cmd_bench_grade(args: argparse.Namespace) -> int:
                 await _close(backend)
 
     graded = asyncio.run(go())
-    out = args.out or args.results
     save_results(out, graded)
-    _print_grades(graded)
-    print(f"{len(graded)} results -> {out}")
+    print(_grade_table(results, graded))
+    changed = sum(a.grade != b.grade or a.hedged != b.hedged for b, a in zip(results, graded, strict=True))
+    print(f"{len(graded)} results ({changed} changed) -> {out}")
     return 0
 
 
@@ -902,12 +933,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(br)
     br.set_defaults(func=_cmd_bench_run)
 
-    bg = bench_sub.add_parser("grade", help="(re-)grade stored results, with judges for unsure open answers")
+    bg = bench_sub.add_parser("grade", help="re-grade stored results into a new file: the rules offline, judges for "
+                                           "unsure open answers when given; prints the grades before and after")
     bg.add_argument("--events", required=True, nargs="+", metavar="FILE")
-    bg.add_argument("--results", required=True, metavar="FILE")
-    bg.add_argument("--out", metavar="FILE", help="default: overwrite --results")
-    bg.add_argument("--judges", nargs="*", default=[], metavar="KEY")
-    bg.add_argument("--regrade-all", action="store_true")
+    bg.add_argument("--in", "--results", dest="results", required=True, metavar="FILE",
+                    help="results JSONL to re-grade (read only)")
+    bg.add_argument("--out", required=True, metavar="FILE",
+                    help="new results JSONL (never --in itself); usage and latency are kept")
+    bg.add_argument("--judges", nargs="*", default=[], metavar="KEY",
+                    help="judge models for the rows the rules cannot decide (default: none, offline)")
+    bg.add_argument("--regrade-all", action="store_true",
+                    help="re-grade every row with a response, not only the ungraded ones")
     bg.add_argument("--concurrency", type=int, default=8)
     bg.add_argument("--mock", action="store_true")
     _add_config(bg)

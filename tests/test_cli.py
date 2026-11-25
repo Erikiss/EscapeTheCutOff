@@ -124,7 +124,9 @@ def events_for_printer() -> list[RelayEvent]:
      "--cache", "cache", "--candidates", "60"],
     ["bench", "run", "--events", "e.jsonl", "--out", "r.jsonl", "--models", "a", "b", "--probes", "current_d", "mcq",
      "--dry-run", "--batch", "--limit", "10"],
-    ["bench", "grade", "--events", "e.jsonl", "--results", "r.jsonl"],
+    ["bench", "grade", "--events", "e.jsonl", "--in", "r.jsonl", "--out", "g.jsonl"],
+    ["bench", "grade", "--events", "e.jsonl", "f.jsonl", "--results", "r.jsonl", "--out", "g.jsonl", "--regrade-all",
+     "--judges", "a", "--concurrency", "2", "--mock"],
     ["bench", "fit", "--events", "e.jsonl", "--results", "r.jsonl", "--out", "i.json", "--priors", "a=27.75"],
     ["router", "train"],
     ["simulate", "--out", "sim"],
@@ -544,6 +546,64 @@ def test_bench_run_passes_max_tokens_to_run_probes(monkeypatch, tmp_path):
             "gpt-6.2-sol", "--probes", "mcq", "--mock"]
     assert main(base) == 0 and "max_tokens" not in seen and seen["n"] == 1  # the runner's own default applies
     assert main([*base, "--max-tokens", "1500"]) == 0 and seen["max_tokens"] == 1500
+
+
+def _pilot_fixture(tmp_path):
+    from cutoffmix.bench.io import save_events, save_results
+    from cutoffmix.types import Event, ProbeResult
+
+    fake = Event(id="fakepaper:1", date="2024-01-18", month="2024-01", topic="ai_ml", category="fake_paper",
+                 subject="Efficient Temporal Adaptation Modeling through Language-Conditioned Video Generation",
+                 fact="control: no such arXiv paper exists",
+                 question_current="Who is the first author of the arXiv paper titled 'Efficient Temporal Adaptation "
+                                  "Modeling through Language-Conditioned Video Generation'?", control=True)
+    rows = [
+        ProbeResult("fakepaper:1", "gpt-6.2-sol", "current_d", "The first author is **Sho Maeoki**.", "ungraded",
+                    latency_s=0.7, usage={"prompt_tokens": 100, "completion_tokens": 12, "cost": 0.001}),
+        ProbeResult("fakepaper:1", "gpt-6.2-sol", "current_d", "I'm not aware of this paper.", "correct", latency_s=0.4,
+                    usage={"prompt_tokens": 100, "completion_tokens": 9}),
+        ProbeResult("fakepaper:1", "gemini-4-neon", "current_d", "", "ungraded", error="timeout"),
+    ]
+    events, results = tmp_path / "events.jsonl", tmp_path / "pilot.jsonl"
+    save_events(events, [fake])
+    save_results(results, rows)
+    return events, results, rows
+
+
+def test_bench_grade_regrades_offline_into_a_new_file_and_prints_before_and_after(tmp_path, capsys):
+    from cutoffmix.bench.io import load_results
+
+    events, src, rows = _pilot_fixture(tmp_path)
+    before = src.read_text(encoding="utf-8")
+    out = tmp_path / "regraded.jsonl"
+    code = main(["bench", "grade", "--events", str(events), "--in", str(src), "--out", str(out)])
+    assert code == 0 and src.read_text(encoding="utf-8") == before  # never in place
+    graded = load_results(out)
+    assert [r.grade for r in graded] == ["incorrect", "correct", "ungraded"]
+    assert (graded[0].grader, graded[0].latency_s, graded[0].usage) == ("rule", 0.7, rows[0].usage)
+    assert graded[1] == rows[1] and graded[2] == rows[2]  # untouched rows, an API error among them
+    text = capsys.readouterr().out
+    lines = {tuple(line.split()[:2]): line.split()[2:] for line in text.splitlines() if line.startswith("  ")}
+    assert lines[("model", "probe")] == ["correct", "incorrect", "ungraded", "changed"]
+    assert lines[("gpt-6.2-sol", "current_d")] == ["1", "0->1", "1->0", "1"]
+    assert lines[("gpt-6.2-sol", "all")] == ["1", "0->1", "1->0", "1"]
+    assert lines[("gemini-4-neon", "all")] == ["0", "0", "1", "0"]
+    assert f"3 results (1 changed) -> {out}" in text
+    again = tmp_path / "again.jsonl"  # --results is the old spelling of --in; --regrade-all keeps sure grades
+    assert main(["bench", "grade", "--events", str(events), "--results", str(out), "--out", str(again),
+                 "--regrade-all"]) == 0
+    assert [r.grade for r in load_results(again)] == ["incorrect", "correct", "ungraded"]
+    assert "3 results (0 changed)" in capsys.readouterr().out
+
+
+def test_bench_grade_refuses_to_regrade_in_place(tmp_path, capsys):
+    events, src, _ = _pilot_fixture(tmp_path)
+    before = src.read_text(encoding="utf-8")
+    code = main(["bench", "grade", "--events", str(events), "--in", str(src), "--out", str(src)])
+    assert code == 2 and "never re-graded in place" in capsys.readouterr().err
+    assert src.read_text(encoding="utf-8") == before
+    with pytest.raises(SystemExit):  # --out is required
+        main(["bench", "grade", "--events", str(events), "--in", str(src)])
 
 
 def test_bench_run_requires_a_key_unless_mocked(monkeypatch, capsys):

@@ -515,6 +515,13 @@ def build_paper_events(dense_from="2025-10", dense_to="2026-11", *, per_month=12
   the judges decide whether an author was claimed for the fake paper; otherwise `None`;
 - `hedged` is set when the asserted name comes with knowledge-horizon words (`_HEDGE`), uncertainty words
   ("I believe", "probably", "not certain", "vermutlich", ...) or an abstain phrase;
+- surface forms (from the pilot of 2026-11-25): markdown emphasis around a name (`**Sho Maeoki**`, `*...*`,
+  backticks, `__...__`) is stripped before name detection (`_plain`); a name may follow "is", "was", "by" or
+  "first author:" and carry a middle initial ("Bardienus P. Duisterhof"); an opening parenthesis, bracket or quote
+  ends a name, so an affiliation ("Sho Maeoki (Tokyo Tech)") or a quoted title after it is not part of it; and the
+  words of the paper's own title (the whole title, its main title or its subtitle, three words or more) are masked
+  before the cue search (`_mask_title`), so "Leave **No** Context Behind" is not a negation and the correct name
+  next to it is asserted, not weak;
 - MCQ: `grade_mcq` as usual, but a distractor pick is `incorrect`, not `outdated` (papers have no stale state);
   controls have no MCQ.
 - Judges see "(none: ...)" as the outdated answer for both categories (`prompts._DEFAULT_OUTDATED`).
@@ -636,7 +643,11 @@ Loop, with i = segment index:
   - `bench build-wikipedia --out FILE --start --end [--probe-model KEY]`
   - `bench run --events --out --models --probes [--dry-run] [--batch] [--limit]` (`--batch` is refused outside
     `--dry-run`, see §3.5)
-  - `bench grade`
+  - `bench grade --events FILE... --in FILE --out FILE [--judges KEY...] [--regrade-all] [--mock]` re-grades a
+    results file into a *new* file (never in place; `--out` equal to `--in` is refused; `usage` and `latency_s` are
+    kept): offline with the rule grader alone, with `--judges` for the rows the rules cannot decide; by default only
+    `ungraded` rows are re-graded, `--regrade-all` every row with a response (a judge verdict stands where the new
+    pass cannot decide). Prints the grade counts per model and probe before and after (`before->after` cells).
   - `bench fit --events --results --out [--priors]`
   - `router train`
   - `simulate [--out DIR]`

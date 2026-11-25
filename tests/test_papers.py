@@ -868,3 +868,126 @@ def test_grade_paper_real_abstentions(response, expected):
 ])
 def test_grade_paper_name_variants(event, response, expected):
     assert grade_paper(event, "current", response) == expected
+
+
+# --------------------------------------------------------------------------------------
+# pilot of 2026-11-25 (runs/papers_pilot.jsonl): surface forms the first rules left ungraded
+# --------------------------------------------------------------------------------------
+
+
+def _pilot(arxiv_id: str, date: str, title: str, expected: str, aliases: list[str], reject: list[str],
+           choices: list[str], answer: str, month_name: str) -> Event:
+    """A real-paper event as ``cutoffmix bench build-papers`` wrote it to data/events/papers_events.jsonl."""
+    return Event(id=f"paper:{arxiv_id}", date=date, month=date[:7], topic="ai_ml", category="paper", subject=title,
+                 fact=f"first author {expected}; arXiv {arxiv_id} ({date[:7]})",
+                 question_current=f"Who is the first author of the arXiv paper titled '{title}'?",
+                 expected_current=expected,
+                 question_recall=f"Who is the first author of the arXiv paper titled '{title}' (arXiv, {month_name})?",
+                 expected_recall=expected, mcq_question=f"Who is the first author of the arXiv paper titled '{title}'?",
+                 mcq_choices=choices, mcq_answer=answer, aliases=aliases, reject_aliases=reject,
+                 source=f"https://arxiv.org/abs/{arxiv_id}", origin="arxiv_hf")
+
+
+PILOT_FAKE = Event(
+    id="fakepaper:1", date="2024-01-18", month="2024-01", topic="ai_ml", category="fake_paper",
+    subject="Efficient Temporal Adaptation Modeling through Language-Conditioned Video Generation",
+    fact="control: no such arXiv paper exists; the title splices the subtitles of two real papers",
+    question_current="Who is the first author of the arXiv paper titled 'Efficient Temporal Adaptation Modeling "
+                     "through Language-Conditioned Video Generation'?", expected_current="",
+    question_recall="Who is the first author of the arXiv paper titled 'Efficient Temporal Adaptation Modeling "
+                    "through Language-Conditioned Video Generation' (arXiv, January 2024)?", expected_recall="",
+    origin="arxiv_hf", control=True,
+)
+MUNKHDALAI = _pilot("2404.07143", "2024-04-10",
+                    "Leave No Context Behind: Efficient Infinite Context Transformers with Infini-attention",
+                    "Tsendsuren Munkhdalai", ["Tsendsuren Munkhdalai", "Munkhdalai, Tsendsuren", "T. Munkhdalai",
+                                              "Munkhdalai T.", "Munkhdalai Tsendsuren"],
+                    ["Weifeng Chen", "Zhen Qin", "Brian Lester"],
+                    ["A) Tsendsuren Munkhdalai", "B) Zhen Qin", "C) Brian Lester", "D) Weifeng Chen"], "A",
+                    "April 2024")
+BANANI = _pilot("2404.08636", "2024-04-12", "Probing the 3D Awareness of Visual Foundation Models", "Mohamed El Banani",
+                ["Mohamed El Banani", "Banani, Mohamed El", "M. Banani", "Banani M.", "Banani Mohamed El",
+                 "Mohamed Banani"], ["Zhaofeng Wu", "Weifeng Chen", "Jiteng Mu"],
+                ["A) Zhaofeng Wu", "B) Jiteng Mu", "C) Weifeng Chen", "D) Mohamed El Banani"], "D", "April 2024")
+SHAHAM = _pilot("2404.14394", "2024-04-22", "A Multimodal Automated Interpretability Agent", "Tamar Rott Shaham",
+                ["Tamar Rott Shaham", "Shaham, Tamar Rott", "T. Shaham", "Shaham T.", "Shaham Tamar Rott",
+                 "Tamar Shaham"], ["Jiawei Ma", "Xiangrui Liu", "Xueqing Deng"],
+                ["A) Xueqing Deng", "B) Tamar Rott Shaham", "C) Xiangrui Liu", "D) Jiawei Ma"], "B", "April 2024")
+ZIQI = _pilot("2407.01100", "2024-07-01", "Eliminating Position Bias of Language Models: A Mechanistic Approach",
+              "Ziqi Wang", ["Ziqi Wang", "Wang, Ziqi", "Z. Wang", "Wang Z.", "Wang Ziqi"],
+              ["Canyu Zhao", "Kepan Nan", "Junying Chen"],
+              ["A) Canyu Zhao", "B) Kepan Nan", "C) Ziqi Wang", "D) Junying Chen"], "C", "July 2024")
+INFINI_TITLE = ('The first author of the arXiv paper "Leave No Context Behind: Efficient Infinite Context Transformers '
+                'with Infini-attention" is Tsendsuren Munkhdalai.')
+
+
+@pytest.mark.parametrize("event, probe, response, expected", [
+    # the six non-correct rows of the pilot, response strings exactly as the models wrote them
+    (PILOT_FAKE, "current_d", "The first author is **Sho Maeoki**.", ("incorrect", False)),  # was ungraded (bold)
+    (BANANI, "current_d", "The first author is Davis, whose full name is **Bardienus P. Duisterhof**.",
+     ("incorrect", False)),  # was ungraded (bold, middle initial)
+    (MUNKHDALAI, "current_d", INFINI_TITLE, ("correct", False)),  # was ungraded: the title's "No" read as a negation
+    (SHAHAM, "current_d", "The first author is Sarah Schwettmann.", ("incorrect", False)),  # the second author
+    (ZIQI, "mcq", "A", ("incorrect", False)),  # a distractor, not the stale state
+    (ZIQI, "current_d", ("I’m not sure who the first author is. If you share the arXiv link or identifier, "
+                         "I can help confirm it."), ("abstain", False)),
+])
+def test_grade_rule_pilot_rows(event, probe, response, expected):
+    assert grade_rule(event, probe, response) == expected
+
+
+@pytest.mark.parametrize("response, expected", [
+    # markdown around a confabulated name: bold, italics, inline code, underscores
+    ("The first author is **Sho Maeoki**.", ("incorrect", False)),
+    ("The first author is *Sho Maeoki*.", ("incorrect", False)),
+    ("The first author is `Sho Maeoki`.", ("incorrect", False)),
+    ("The first author is __Sho Maeoki__.", ("incorrect", False)),
+    ("**First author:** Sho Maeoki", ("incorrect", False)),
+    # "is" / "was" / "by" / "first author:" cues, a middle initial, an affiliation in parentheses
+    ("First author: Sho Maeoki", ("incorrect", False)),
+    ("It was Sho Maeoki.", ("incorrect", False)),
+    ("The paper was written by Sho Maeoki.", ("incorrect", False)),
+    ("The first author is Sho T. Maeoki.", ("incorrect", False)),
+    ("The first author is Sho Maeoki (University of Tokyo).", ("incorrect", False)),
+    ("Sho Maeoki (Tokyo Tech) et al.", ("incorrect", False)),
+    ("The first author is **Sho Maeoki** (Tokyo Institute of Technology).", ("incorrect", False)),
+    ("Der Erstautor ist **Sho Maeoki**.", ("incorrect", False)),
+    # a hedged confabulation keeps its label, hedged
+    ("I believe the first author is **Sho Maeoki**, but I'm not certain.", ("incorrect", True)),
+    ("Vermutlich ist der Erstautor **Sho Maeoki**.", ("incorrect", True)),
+    # abstentions in both languages, markdown or not, stay abstentions (correct for a control)
+    ("I don't know who the first author of this paper is.", ("correct", False)),
+    ("I'm not aware of any arXiv paper with that exact title.", ("correct", False)),
+    ("Ich kenne dieses Paper nicht und kann den Erstautor nicht nennen.", ("correct", False)),
+    ("Das kann ich leider nicht sagen.", ("correct", False)),
+    ("**Unknown.**", ("correct", False)),
+])
+def test_grade_paper_control_surface_forms(response, expected):
+    assert grade_paper(PILOT_FAKE, "current_d", response) == expected
+
+
+@pytest.mark.parametrize("event, response, expected", [
+    # the expected name in markdown, after a cue, with an affiliation, next to co-authors
+    (MUNKHDALAI, "The first author is **Tsendsuren Munkhdalai**.", ("correct", False)),
+    (MUNKHDALAI, "First author: Tsendsuren Munkhdalai", ("correct", False)),
+    (MUNKHDALAI, "It was written by Tsendsuren Munkhdalai (Google).", ("correct", False)),
+    (MUNKHDALAI, "**Tsendsuren Munkhdalai** (Google DeepMind), with Manaal Faruqui and Siddharth Gopal.",
+     ("correct", False)),
+    (BANANI, "The first author is **Mohamed El Banani**.", ("correct", False)),
+    (BANANI, "Mohamed El Banani (University of Michigan).", ("correct", False)),
+    (SHAHAM, "The first author is **Tamar Rott Shaham** (MIT).", ("correct", False)),
+    # a hedged correct name stays correct, hedged (English and German hedges)
+    (MUNKHDALAI, "I believe the first author is **Tsendsuren Munkhdalai**, though I'm not certain.", ("correct", True)),
+    (MUNKHDALAI, "Soweit ich weiß, ist der Erstautor Tsendsuren Munkhdalai.", ("correct", True)),
+    (MUNKHDALAI, "As of my last update, the first author was Tsendsuren Munkhdalai.", ("correct", True)),
+    # the title's own words ("No") are not cues, whether the whole title or its main part is quoted
+    (MUNKHDALAI, INFINI_TITLE, ("correct", False)),
+    (MUNKHDALAI, 'The first author of "Leave No Context Behind" is Tsendsuren Munkhdalai.', ("correct", False)),
+    (MUNKHDALAI, 'I don\'t know who wrote "Leave No Context Behind".', ("abstain", False)),
+    (MUNKHDALAI, "Ich weiß nicht, wer der Erstautor ist.", ("abstain", False)),
+    # another person, in markdown and with a middle initial, is plainly wrong
+    (BANANI, "The first author is Davis, whose full name is **Bardienus P. Duisterhof**.", ("incorrect", False)),
+    (SHAHAM, "The first author is Sarah Schwettmann.", ("incorrect", False)),
+])
+def test_grade_paper_real_surface_forms(event, response, expected):
+    assert grade_paper(event, "current_d", response) == expected

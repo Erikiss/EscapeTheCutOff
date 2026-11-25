@@ -291,3 +291,18 @@ async def test_grade_results_regrades_only_unsure_rows() -> None:
     assert [r.grade for r in again][:2] == ["ungraded", "correct"]
     with pytest.raises(ValueError):
         await grade_results(rows, [OFFICE], concurrency=0)
+
+
+async def test_grade_results_keeps_judge_verdicts_the_rules_cannot_replace() -> None:
+    rows = [
+        ProbeResult("e-office", "m", "current", "Carol White.", "outdated", hedged=True, grader="judge:j1+j2",
+                    latency_s=1.5, usage={"total_tokens": 42}),
+        ProbeResult("e-office", "m", "current", "Alice Smith.", "incorrect", grader="judge:x", latency_s=0.2,
+                    usage={"total_tokens": 7}),
+        ProbeResult("e-office", "m", "current", "Carol White.", "ungraded", grader="judge:j1+j2", latency_s=0.3),
+    ]
+    out = await grade_results(rows, [OFFICE], regrade_all=True)  # offline: no judges
+    assert out[0] == rows[0]  # the rules are unsure and no judge decided: the judge verdict stands
+    assert (out[1].grade, out[1].hedged, out[1].grader) == ("correct", False, "rule")  # the rules are sure: replaced
+    assert (out[1].latency_s, out[1].usage) == (0.2, {"total_tokens": 7})  # everything else is kept
+    assert (out[2].grade, out[2].grader) == ("ungraded", "rule")  # nothing to keep
