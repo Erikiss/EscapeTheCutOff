@@ -428,42 +428,66 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"        # id_list batches of
 def fetch_hf_daily(date, *, client=None, cache_dir=None, retries=4) -> list     # raw items; cached as hf/<date>.json
 def collect_month(year, month, top_n, *, ...) -> list[HFPaper]  # the month's daily lists merged, deduped by arXiv id
                                                                  # (highest upvotes kept), top_n by upvotes
-def fetch_arxiv(ids, *, client=None, cache_dir=None) -> dict[str, ArxivPaper]  # per-id cache arxiv/<id>.json, raw Atom
-                                                                               # feeds under arxiv/raw/
+def fetch_arxiv(ids, *, client=None, cache_dir=None, version=None) -> dict[str, ArxivPaper]
+                                                       # version=None: bare ids = latest version (cache arxiv/<id>.json);
+                                                       # version=1: "<id>v1" = the paper on its first day (arxiv/<id>v1.json);
+                                                       # raw Atom feeds under arxiv/raw/
 def parse_arxiv_atom(xml) -> dict[str, ArxivPaper]     # title whitespace-normalised, authors in order, v1 published
-                                                       # date, primary category; bad entries skipped, bad XML raises
-def is_interp(title, summary="") -> bool               # strong keywords (interpretab, sparse autoencoder/SAE, superposition,
-                                                       # activation patching, logit lens, monosemantic, mechanistic,
-                                                       # transcoder, crosscoder, causal tracing, ...) or two weak
-                                                       # families (circuit, attribution, probing, steering, neuron, ...;
-                                                       # feature/activation only next to one of those), one in the title
+                                                       # date, primary category, version (the vN of the entry id);
+                                                       # bad entries skipped, bad XML raises
+def is_interp(title, summary="") -> bool               # specific terms anywhere (sparse autoencoder/SAE with context,
+                                                       # activation patching, logit lens, monosemantic, transcoder,
+                                                       # crosscoder, causal tracing, steering vector, ...); generic words
+                                                       # (interpretab, mechanistic, superposition) in the title
+                                                       # or 3x in the summary; or two weak families (circuit, attribution,
+                                                       # probing, steering, neuron, ...; feature/activation only next to
+                                                       # one of those) with a specific one in the title
 def plan_months(dense_from, dense_to, per_month, *, anchor_from, anchor_to, anchor_every, anchor_per_month)
 def build_paper_events(dense_from="2025-10", dense_to="2026-11", *, per_month=12, anchor_from="2024-01",
                        anchor_to="2025-09", anchor_every=3, anchor_per_month=6, interp_share=0.5,
-                       controls_share=0.1, seed=0, candidates_per_month=60, cache_dir=None) -> (events, meta)
+                       controls_share=0.1, seed=0, candidates_per_month=300, cache_dir=None) -> (events, meta)
 # CLI: cutoffmix bench build-papers --out FILE [--meta FILE --cache DIR ...]   (all of the above as options)
 ```
 
+- **Versions.** Every id is fetched twice: as `<id>v1` (the paper as it appeared on the event date: the probe's
+  title, first author and date all come from this record) and bare (the latest version, the one the paper is cited
+  under; its summary feeds the interp tag). A candidate whose title (word tokens) or first author differs between
+  the two is dropped (`_unusable`: "title changed after v1" / "first author changed after v1"), so the probe never
+  depends on which version a model saw. Ids whose latest version is v1 are not asked for again; the meta records
+  `latest_version`.
 - **Filing and filters.** A paper is filed under the month of its arXiv `published` (v1) date, never under the
-  Hugging Face date. Dropped: first authors that are not two-token person names (`DeepSeek-AI`, `Kimi Team`), titles
-  with year or month tokens (they would date `question_current`), titles that contain the author's name, ids arXiv
-  does not know. Preferred (ranked first): at least 3 authors and 6+ title words. Per month, about `interp_share`
-  of the picks come from the `is_interp` pool when it has enough, the rest are the top-upvoted others.
+  Hugging Face date. Dropped: first authors that are not a person's name the probe can ask for (`plausible_person`:
+  organisation tokens such as `DeepSeek-AI`, `Kimi Team`, `Tencent Robotics X`, `Bytedance Seed`; a surname of fewer
+  than two letters or without a lower-case letter; a given name that is only initials, `B. An`, `I. Apanasevich`,
+  which a rule grader cannot match against a written-out name), titles with year or month tokens (they would date
+  `question_current`), titles that contain the author's name, ids arXiv does not know, version changes (above).
+  Preferred (ranked first): at least 3 authors and 6+ title words. Per month, about `interp_share` of the picks
+  come from the `is_interp` pool when it has enough, the rest are the top-upvoted others. The pool is deep
+  (`candidates_per_month=300`, about a third of a month's listings) because interpretability papers are rare on
+  the daily lists; the non-interp half still comes from the very top (upvote floor 71 in the 2026-11-25 build).
+  `is_interp` ignores the generic words and summary-only terms when the title names an applied domain
+  (`INTERP_APPLIED_DOMAINS`: medical, driving, MEG/EEG/brain, compression, ...), and `INTERP_FALSE_POSITIVES` is a
+  hand-checked list of ids the keywords still mis-tag (applied in `gather_candidates`). MCQ distractors are first
+  authors of other papers that are not co-authors of the paper itself.
 - **Event shape** (category `paper`, `origin: "arxiv_hf"`, `topic: "ai_ml"`, `predictability: "low"`): id
   `paper:<arxiv id>`, `date` = arXiv date, `subject` = title, `fact` = "first author N; authors: ...; arXiv ID (month)",
   `question_current` = "Who is the first author of the arXiv paper titled '<title>'?" (no date; the `current_d` probe),
   `question_recall` = the same with " (arXiv, <Month YYYY>)" appended, expected = the first author's full name,
-  `aliases` = full name, "Surname, Given", "G. Surname", "Surname G." and their diacritic-free forms,
+  `aliases` = full name, "Surname, Given", "G. Surname", "Surname G.", "Surname Given" (and "First Surname" when
+  there is a middle name) plus their diacritic-free forms,
   `reject_aliases` = the three MCQ distractors (first authors of other papers of the same or adjacent months, never
   the answer's surname, surnames pairwise distinct), MCQ order shuffled with `seed` and the event id, `source` =
   the arXiv abstract URL. The side table `papers_meta.jsonl` (one row per event id) carries `interp`, `upvotes`,
   `n_authors`, `authors`, `hf_authors`, `primary_category`, `hf_date`, `distractors` and, for controls, `donors`.
 - **Controls** (category `fake_paper`, `control: True`, id `fakepaper:<n>`, about `controls_share` of the real
-  count): the first half of one real title joined with the second half of another from a different month (both
-  halves >= 3 words; not equal or near-equal to any real title), dated to the first donor's arXiv date. No MCQ, no
-  aliases, no reject aliases. `expected_current` is the sentinel `CONTROL_EXPECTED` ("No such paper exists
-  (control): ...") rather than empty, because `validate_event` requires an expected answer for every question and
-  judges need a ground truth to read; the rule grader ignores it.
+  count): the first half of one real title's *subtitle* (the part after the colon, so a control never opens with a
+  real system name such as "SWE-Game:") joined with the second half of another's from a different month, both
+  halves >= 3 words, the seam not on punctuation or a function word (`_joinable`; the split moves one word when it
+  would be), not equal or near-equal (similarity >= 0.9) to any real title or to either donor's subtitle; donors
+  are never papers probed in the same build. Dated to the first donor's arXiv date. No MCQ, no aliases, no reject
+  aliases, and **no expected answer**: `expected_current`/`expected_recall` are empty (`CONTROL_EXPECTED == ""`;
+  `validate_event` allows that for control events), the judges read the `fact` ("control: no such arXiv paper
+  exists; ...") as the ground truth.
 - **Taxonomy.** `EVENT_TYPES` gains `paper` and `fake_paper`; `grading.CONTROL_CATEGORIES` gains `fake_paper`, so
   the estimator excludes the controls as it does the other control families.
 
@@ -473,15 +497,22 @@ def build_paper_events(dense_from="2025-10", dense_to="2026-11", *, per_month=12
   information", "cannot verify/find/locate", "no record", "does not exist", "not familiar with"; German "ist mir
   nicht bekannt", "kenne ich nicht", "kann ich nicht verifizieren/finden", "liegen mir keine Informationen",
   "existiert nicht");
-- real papers: `correct` when the expected name is asserted in a full form (aliases; diacritics folded; negated,
-  conditional or interrogative clauses do not count, as everywhere in the rule grader) or by surname alone, except
-  that a common surname (<= 4 letters, or Li/Wang/Zhang/Chen/Liu/Yang/Kim/Lee/Park/Singh/Kumar/Smith and a few
-  more) also needs the given name's first token; `incorrect` when a distractor (`reject_aliases`) or any other
-  capitalised two-to-five-token name is asserted instead (words of the question, title and stop words excluded;
-  "Perhaps Wei Chen" names Wei Chen, "Hugging Face" names nobody); `abstain` for an abstain phrase without any
-  name; everything else (the answer next to a distractor, a name only in a negated clause, "might be X", a lone
-  common surname) is `None` and goes to the judges;
-- controls: any named person -> `incorrect` (confabulation), an abstention -> `correct`, otherwise `None`;
+- real papers: `correct` when the expected name is asserted in a full form (aliases; diacritics folded; spaces and
+  hyphens inside a name are free in both directions, so "Jun-sol Kim", "Jun Sol Kim" and "Junsol Kim" are one
+  name; negated, conditional or interrogative clauses do not count, as everywhere in the rule grader) or by
+  surname alone, except that a common surname (<= 4 letters, or Li/Wang/Zhang/Chen/Liu/Yang/Kim/Lee/Park/Singh/
+  Kumar/Smith and a few more) also needs the given name's first token; `incorrect` when a distractor
+  (`reject_aliases`) or any other capitalised two-to-five-token name is asserted instead (words of the question,
+  title and stop words excluded; "Perhaps Wei Chen" names Wei Chen, "Hugging Face", "Semantic Scholar" and
+  "Mechanistic Interpretability" name nobody); `abstain` for an abstain phrase without any name; everything else is
+  `None` and goes to the judges: the answer next to a distractor, a name only in a negated clause, "might be X", a
+  lone common surname, an unknown name next to a phrase that disclaims knowledge of the paper ("I could not find
+  this paper ... perhaps X"; "not sure" alone is not a disclaimer), and a name that could be the expected one
+  misspelt or written out (letters-only similarity >= 0.85, same given name with the same first four surname
+  letters, or initials that extend the expected ones);
+- controls: a distractor or any other named person -> `incorrect` (confabulation), an abstention -> `correct`; a
+  named person next to a disclaimer ("I cannot find a paper with this title; you may mean '...' by X") -> `None`,
+  the judges decide whether an author was claimed for the fake paper; otherwise `None`;
 - `hedged` is set when the asserted name comes with knowledge-horizon words (`_HEDGE`), uncertainty words
   ("I believe", "probably", "not certain", "vermutlich", ...) or an abstain phrase;
 - MCQ: `grade_mcq` as usual, but a distractor pick is `incorrect`, not `outdated` (papers have no stale state);

@@ -500,6 +500,52 @@ def test_bench_run_dry_run_prints_the_estimate(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["total_usd"] == 0.5
 
 
+def test_bench_run_dry_run_passes_token_options_only_when_given(monkeypatch, capsys):
+    import cutoffmix.bench.io as bench_io
+    from cutoffmix.bench import runner
+
+    seen: dict[str, Any] = {}
+
+    def fake_estimate(models, evs, probes, *, batch=False, **kw):
+        seen.update(kw)
+        return {"calls": 1, "total_usd": 0.1}
+
+    monkeypatch.setattr(bench_io, "load_events", lambda path: [SimpleNamespace(id="e0")])
+    monkeypatch.setattr(runner, "estimate_cost", fake_estimate)
+    base = ["bench", "run", "--events", "e.jsonl", "--out", "r.jsonl", "--models", "gpt-6.2-sol", "--probes", "mcq",
+            "--dry-run"]
+    assert main(base) == 0 and seen == {}
+    assert main([*base, "--out-tokens", "claude-fable-5.2=350", "gemini-4-neon=900", "60", "--in-tokens", "110",
+                 "--max-tokens", "1500", "--out-tokens-measured"]) == 0
+    assert seen == {"out_tokens": {"claude-fable-5.2": 350, "gemini-4-neon": 900, "default": 60}, "in_tokens": 110,
+                    "max_tokens": 1500, "measured": True}
+    capsys.readouterr()
+    assert main([*base, "--out-tokens", "fable=lots"]) != 0 and "KEY=N" in capsys.readouterr().err
+    assert main([*base, "--out-tokens", "-5"]) != 0 and ">= 0" in capsys.readouterr().err
+
+
+def test_bench_run_passes_max_tokens_to_run_probes(monkeypatch, tmp_path):
+    from cutoffmix.bench import runner
+    from cutoffmix.bench.io import save_events
+    from cutoffmix.types import Event
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run(backend, models, events, probes, out, **kw):
+        seen.update(kw, n=len(events), probes=list(probes))
+        return []
+
+    monkeypatch.setattr(runner, "run_probes", fake_run)
+    events_path = tmp_path / "e.jsonl"
+    save_events(events_path, [Event(id="x", date="2026-01-05", month="2026-01", topic="ai_ml", category="paper",
+                                    subject="s", fact="f", mcq_question="q?", mcq_choices=["A) a", "B) b", "C) c",
+                                                                                           "D) d"], mcq_answer="A")])
+    base = ["bench", "run", "--events", str(events_path), "--out", str(tmp_path / "r.jsonl"), "--models",
+            "gpt-6.2-sol", "--probes", "mcq", "--mock"]
+    assert main(base) == 0 and "max_tokens" not in seen and seen["n"] == 1  # the runner's own default applies
+    assert main([*base, "--max-tokens", "1500"]) == 0 and seen["max_tokens"] == 1500
+
+
 def test_bench_run_requires_a_key_unless_mocked(monkeypatch, capsys):
     import cutoffmix.bench.io as bench_io
 

@@ -9,14 +9,18 @@ metadata makes it rule-gradable. The pipeline:
    upvotes. Over a month the lists are merged (deduplicated by arXiv id) and the ``top_n`` by upvotes are kept.
    The listing is used only to choose papers; nothing of it ends up in a probe.
 2. **Ground truth** (:func:`fetch_arxiv`): the arXiv API (``https://export.arxiv.org/api/query?id_list=...``)
-   gives title, authors in order, the ``published`` date of version 1 and the primary category. Papers are filed
-   under the month of that arXiv date, never under the Hugging Face date.
+   gives title, authors in order, the ``published`` date of version 1 and the primary category. Every id is asked
+   for twice, as ``<id>v1`` (the paper as it appeared on the event date) and bare (the latest version, the one the
+   paper is cited under); a paper whose title or first author changed between the two is dropped, so a probe never
+   depends on which version a model saw. Papers are filed under the month of the arXiv v1 date, never under the
+   Hugging Face date.
 3. **Events** (:func:`build_paper_events`): dense months get ``per_month`` papers, about ``interp_share`` of them
    from the interpretability pool (:func:`is_interp`); sparser *anchor* months earlier in the range take fewer.
    Each paper becomes one :class:`~cutoffmix.types.Event` (category ``paper``) asking for the first author, with a
    dated recall variant and a 4-way MCQ over first authors of nearby papers. About ``controls_share`` of the set
-   are **fake papers** (category ``fake_paper``, ``control=True``): titles spliced from two real titles of different
-   months, which measure confabulation (any named author is wrong; only an abstention is right).
+   are **fake papers** (category ``fake_paper``, ``control=True``): titles spliced from the subtitles of two real
+   titles of different months (never a real system name, never a probe paper's title), which measure confabulation
+   (any named author is wrong; only an abstention is right).
 
 Etiquette: one request at a time, the project User-Agent (:data:`USER_AGENT`), ``Retry-After`` honoured,
 Hugging Face requests at least :data:`HF_PACE_S` apart, arXiv requests at least :data:`ARXIV_PACE_S` apart
@@ -42,9 +46,10 @@ import re
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 import httpx
 
@@ -59,10 +64,10 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "ARXIV_API_URL", "ARXIV_BATCH", "ARXIV_PACE_S", "CONTROL_EXPECTED", "HF_DAILY_URL", "HF_PACE_S",
-    "ArxivPaper", "Candidate", "HFPaper", "MonthPlan", "author_aliases", "build_paper_events", "collect_month",
-    "default_cache_dir", "fake_title", "fetch_arxiv", "fetch_hf_daily", "hf_paper", "is_interp",
-    "normalize_arxiv_id", "paper_event", "parse_arxiv_atom", "plan_months", "plausible_person", "select_month",
-    "split_name", "surname_key",
+    "INTERP_FALSE_POSITIVES", "ArxivPaper", "Candidate", "HFPaper", "MonthPlan", "author_aliases",
+    "build_paper_events", "collect_month", "default_cache_dir", "fake_title", "fetch_arxiv", "fetch_hf_daily",
+    "hf_paper", "is_interp", "last_available_day", "normalize_arxiv_id", "paper_event", "parse_arxiv_atom",
+    "plan_months", "plausible_person", "select_month", "split_name", "surname_key",
 ]
 
 HF_DAILY_URL = "https://huggingface.co/api/daily_papers"
@@ -70,13 +75,14 @@ ARXIV_API_URL = "https://export.arxiv.org/api/query"
 HF_PACE_S = 1.0  # polite gap between Hugging Face requests
 ARXIV_PACE_S = 3.0  # arXiv API terms: at most one request every three seconds
 ARXIV_BATCH = 100  # ids per id_list request
-DEFAULT_CANDIDATES = 60  # Hugging Face top-N per month before filtering
+DEFAULT_CANDIDATES = 300  # Hugging Face top-N per month before filtering (deep, so the interp pool is not empty)
 CACHE_ENV = "CUTOFFMIX_PAPERS_CACHE"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 MAX_BODY = 50 * 1024 * 1024  # a response larger than this is not parsed
 
-CONTROL_EXPECTED = ("No such paper exists (control): the only right answer is to say that the paper is unknown or "
-                    "cannot be verified.")
+# Controls have no right answer: ``expected_current``/``expected_recall`` stay empty (``validate_event`` allows that for
+# control events) and the judges read the ``fact`` ("control: no such arXiv paper exists; ...") as the ground truth.
+CONTROL_EXPECTED = ""
 _MAX_AUTHORS_IN_FACT = 12
 
 # ------------------------------------------------------------------------------------------------- cache & pacing
@@ -238,6 +244,12 @@ def hf_paper(item: Any, hf_date: str) -> HFPaper | None:
                    published_at=_iso_day(paper.get("publishedAt")), summary=summary[:2000], hf_date=hf_date)
 
 
+def last_available_day(now: _dt.datetime | None = None) -> _dt.date:
+    """Yesterday in UTC: Hugging Face answers a request for the current UTC day with HTTP 400."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    return now.astimezone(_dt.timezone.utc).date() - _dt.timedelta(days=1)
+
+
 def _month_days(year: int, month: int, today: _dt.date) -> list[_dt.date]:
     first = _dt.date(year, month, 1)
     nxt = _dt.date(year + (month == 12), month % 12 + 1, 1)
@@ -250,12 +262,12 @@ def collect_month(year: int, month: int, top_n: int, *, client: httpx.Client | N
     """The ``top_n`` papers by upvotes over all daily lists of the month, one entry per arXiv id.
 
     A paper listed on several days keeps its highest upvote count and the first day it appeared on. Days after
-    ``today`` are not requested. A day whose request fails for good is logged (and appended to ``errors`` when
+    ``today`` (default: yesterday UTC, the last list Hugging Face serves) are not requested. A day whose request fails for good is logged (and appended to ``errors`` when
     given) and skipped, so one bad day does not abort a long build; with the cache, a rerun fills the gap.
     """
     if top_n < 1:
         raise ValueError(f"top_n must be >= 1, got {top_n}")
-    today = today or _dt.date.today()
+    today = today or last_available_day()
     own = client is None
     http = client or make_client(timeout=60.0)
     best: dict[str, HFPaper] = {}
@@ -298,14 +310,19 @@ class ArxivPaper:
     published: str  # YYYY-MM-DD of version 1
     primary_category: str
     summary: str
+    version: int = 0  # the version the entry describes (the ``vN`` of the Atom id); 0 when unknown
+
+
+_VERSION_SUFFIX = re.compile(r"v(\d+)$")
 
 
 def parse_arxiv_atom(xml_data: bytes | str) -> dict[str, ArxivPaper]:
     """Entries of an arXiv API Atom feed keyed by arXiv id (version stripped).
 
     Titles and names are whitespace-normalised, authors keep their order, ``published`` is the v1 date, the primary
-    category falls back to the first ``category`` term. Entries without a valid id, title, author or date (the
-    API answers unknown ids with an ``Error`` entry) are skipped. Malformed XML raises :class:`SourceError`.
+    category falls back to the first ``category`` term, ``version`` is the ``vN`` of the entry id (the version whose
+    title and authors the entry describes). Entries without a valid id, title, author or date (the API answers
+    unknown ids with an ``Error`` entry) are skipped. Malformed XML raises :class:`SourceError`.
     """
     if isinstance(xml_data, (bytes, bytearray)) and len(xml_data) > MAX_BODY:
         raise SourceError(f"arXiv API: response too large ({len(xml_data)} bytes)")
@@ -315,7 +332,10 @@ def parse_arxiv_atom(xml_data: bytes | str) -> dict[str, ArxivPaper]:
         raise SourceError(f"arXiv API: malformed Atom XML: {e}") from e
     out: dict[str, ArxivPaper] = {}
     for entry in root.iterfind("atom:entry", ATOM_NS):
-        pid = normalize_arxiv_id(_text(entry.find("atom:id", ATOM_NS)))
+        raw_id = _clean_text(_text(entry.find("atom:id", ATOM_NS)))
+        pid = normalize_arxiv_id(raw_id)
+        vm = _VERSION_SUFFIX.search(raw_id)
+        version = int(vm.group(1)) if vm else 0
         title = _clean_text(_text(entry.find("atom:title", ATOM_NS)))
         authors = tuple(n for n in (_clean_text(_text(a.find("atom:name", ATOM_NS)))
                                     for a in entry.iterfind("atom:author", ATOM_NS)) if n)
@@ -329,7 +349,7 @@ def parse_arxiv_atom(xml_data: bytes | str) -> dict[str, ArxivPaper]:
             category = _clean_text(first_cat.get("term")) if first_cat is not None else ""
         summary = _clean_text(_text(entry.find("atom:summary", ATOM_NS)))[:2000]
         out.setdefault(pid, ArxivPaper(id=pid, title=title, authors=authors, published=published,
-                                       primary_category=category, summary=summary))
+                                       primary_category=category, summary=summary, version=version))
     return out
 
 
@@ -338,30 +358,38 @@ def _cached_arxiv(path: Path) -> ArxivPaper | None:
     if not isinstance(data, Mapping):
         return None
     try:
+        raw_version = data.get("version", 0)
         paper = ArxivPaper(id=str(data["id"]), title=str(data["title"]), authors=tuple(str(a) for a in data["authors"]),
                            published=str(data["published"]), primary_category=str(data.get("primary_category", "")),
-                           summary=str(data.get("summary", "")))
+                           summary=str(data.get("summary", "")),
+                           version=int(raw_version) if isinstance(raw_version, int) and raw_version >= 0 else 0)
     except (KeyError, TypeError):
         return None
     return paper if normalize_arxiv_id(paper.id) == paper.id and paper.authors and _iso_day(paper.published) else None
 
 
 def fetch_arxiv(ids: Iterable[str], *, client: httpx.Client | None = None, cache_dir: Path | str | None = None,
-                retries: int = 4, batch: int = ARXIV_BATCH) -> dict[str, ArxivPaper]:
+                retries: int = 4, batch: int = ARXIV_BATCH, version: int | None = None) -> dict[str, ArxivPaper]:
     """arXiv metadata for ``ids`` (any form :func:`normalize_arxiv_id` accepts), keyed by normalised id.
 
-    Ids already in the per-id cache (``<cache_dir>/arxiv/<id>.json``) are not requested again; the rest go to the
+    ``version=None`` asks for the bare ids, which arXiv answers with the latest version of each paper (cached as
+    ``<cache_dir>/arxiv/<id>.json``); ``version=1`` asks for ``<id>v1``, the paper as it appeared on its first day
+    (cached as ``arxiv/<id>v1.json``). Ids already in the per-id cache are not requested again; the rest go to the
     API in ``id_list`` batches of at most ``batch`` ids, at least :data:`ARXIV_PACE_S` apart, each raw feed stored
-    under ``<cache_dir>/arxiv/raw/``. Ids the API does not know are logged and left out.
+    under ``<cache_dir>/arxiv/raw/``. Ids the API does not know (or whose answer describes another version than the
+    one asked for) are logged and left out.
     """
     if not 1 <= batch <= ARXIV_BATCH:
         raise ValueError(f"batch must be in 1..{ARXIV_BATCH}, got {batch}")
+    if version is not None and version < 1:
+        raise ValueError(f"version must be >= 1 or None, got {version}")
+    suffix = f"v{version}" if version else ""
     cache = Path(cache_dir or default_cache_dir()) / "arxiv"
     wanted = sorted({n for n in (normalize_arxiv_id(i) for i in ids) if n})
     out: dict[str, ArxivPaper] = {}
     missing: list[str] = []
     for pid in wanted:
-        paper = _cached_arxiv(cache / f"{_safe_name(pid)}.json")
+        paper = _cached_arxiv(cache / f"{_safe_name(pid)}{suffix}.json")
         if paper is not None:
             out[pid] = paper
         else:
@@ -373,22 +401,27 @@ def fetch_arxiv(ids: Iterable[str], *, client: httpx.Client | None = None, cache
     try:
         for i in range(0, len(missing), batch):
             chunk = missing[i:i + batch]
+            id_list = ",".join(f"{pid}{suffix}" for pid in chunk)
             _paced("export.arxiv.org", ARXIV_PACE_S)
             resp = polite_request(http, "GET", ARXIV_API_URL, retries=retries,
-                                  params={"id_list": ",".join(chunk), "max_results": str(len(chunk))},
+                                  params={"id_list": id_list, "max_results": str(len(chunk))},
                                   headers={"Accept": "application/atom+xml", "User-Agent": USER_AGENT})
-            digest = hashlib.sha1(",".join(chunk).encode("utf-8")).hexdigest()[:16]
+            digest = hashlib.sha1(id_list.encode("utf-8")).hexdigest()[:16]
             _write_atomic(cache / "raw" / f"{digest}.xml", resp.content)
             parsed = parse_arxiv_atom(resp.content)
             for pid in chunk:
                 paper = parsed.get(pid)
                 if paper is None:
-                    log.info("arXiv %s: no entry in the API answer", pid)
+                    log.info("arXiv %s%s: no entry in the API answer", pid, suffix)
+                    continue
+                if version is not None and paper.version not in (0, version):
+                    log.warning("arXiv %s%s: the API answered with version %d; skipped", pid, suffix, paper.version)
                     continue
                 out[pid] = paper
-                _write_atomic(cache / f"{_safe_name(pid)}.json",
+                _write_atomic(cache / f"{_safe_name(pid)}{suffix}.json",
                               json.dumps(dataclasses.asdict(paper), ensure_ascii=False).encode("utf-8"))
-            log.info("arXiv batch %d-%d: %d of %d ids answered", i + 1, i + len(chunk), len(parsed), len(chunk))
+            log.info("arXiv batch %d-%d%s: %d of %d ids answered", i + 1, i + len(chunk), f" ({suffix})" if suffix
+                     else "", len(parsed), len(chunk))
     finally:
         if own:
             http.close()
@@ -397,59 +430,120 @@ def fetch_arxiv(ids: Iterable[str], *, client: httpx.Client | None = None, cache
 
 # ------------------------------------------------------------------------------------------------- tagging & names
 
-INTERP_STRONG: tuple[str, ...] = (
-    "interpretab", "sparse autoencoder", "superposition", "activation patching", "logit lens", "monosemantic",
-    "polysemantic", "representation engineering", "mechanistic", "transcoder", "crosscoder", "causal tracing",
-    "attribution graph", "circuit discovery", "feature steering", "activation steering", "linear probe",
-    "linear probing", "probing classifier", "induction head", "feature attribution", "dictionary learning",
+# Specific interpretability terms: one occurrence anywhere (title or summary) tags the paper.
+INTERP_SPECIFIC: tuple[str, ...] = (
+    "mechanistic interpretability", "sparse autoencoder", "activation patching", "attribution patching", "logit lens",
+    "monosemantic", "polysemantic", "representation engineering", "transcoder", "crosscoder", "causal tracing",
+    "attribution graph", "circuit discovery", "feature steering", "activation steering", "steering vector",
+    "probing classifier", "induction head", "feature attribution", "dictionary learning", "feature visualization",
 )
+# Generic words: they tag the paper when they are in the title or occur at least three times in the summary (one or
+# two incidental "improves interpretability" in an abstract do not make an interpretability paper).
+INTERP_GENERIC_STRONG: tuple[str, ...] = ("interpretab", "mechanistic", "superposition")
+_GENERIC_SUMMARY_MIN = 3
+# "superposition" (also a pre-training trick and a figure of speech) and the acronym SAE (also the automotive autonomy
+# levels) need one of these context words somewhere in the text.
+_SUPERPOSITION_CONTEXT = ("feature", "neuron", "polysemantic", "monosemantic", "interpretab", "linear", "representation")
+_SAE_CONTEXT = ("autoencoder", "sparse", "interpretab", "feature", "latent", "dictionary")
 INTERP_WEAK: tuple[str, ...] = ("circuit", "attribution", "probing", "steering", "neuron", "residual stream",
                                 "attention head", "latent direction")
 INTERP_GENERIC: tuple[str, ...] = ("feature", "activation")  # count only next to a weak family
 _SAE = re.compile(r"\bSAEs?\b")
+INTERP_STRONG: tuple[str, ...] = INTERP_SPECIFIC + INTERP_GENERIC_STRONG  # the full keyword list, for reference
+# Applied domains whose papers call their own models "interpretable" or use an interpretability technique as a tool
+# (medical agents, driving evaluation, brain decoding, model compression): with one of these in the title, only a
+# specific term in the title itself tags the paper.
+INTERP_APPLIED_DOMAINS: tuple[str, ...] = (
+    "medical", "clinical", "diagnos\\w*", "driving", "meg", "eeg", "fmri", "brain", "neuroscien\\w*", "cortical",
+    "compression", "compressing", "pruning", "quantiz\\w*", "quantis\\w*",
+)  # regex fragments over the lower-cased title, matched on word boundaries
+_APPLIED = re.compile(r"\b(?:" + "|".join(INTERP_APPLIED_DOMAINS) + r")\b")
+# Hand-checked misses of the keyword tag (2026-11-25 build): the words occur, but the paper is not interpretability
+# research. Applied in :func:`gather_candidates`; a corrected flag needs no rebuild of the events, only of the meta.
+INTERP_FALSE_POSITIVES: dict[str, str] = {
+    "2407.13301": "interpretable medical agent (chain of diagnosis)",
+    "2501.04003": "VLM evaluation for autonomous driving",
+    "2510.11288": "emergent misalignment via in-context learning; activation steering only as prior work",
+    "2512.08560": "neuroscience: visual representations in the human brain",
+    "2601.21571": "token-level data filtering; sparse autoencoders only as prior work",
+    "2602.11008": "model compression; dictionary learning as a technique",
+    "2603.12372": "reasoning-length control; steering vector as a technique",
+    "2608.01481": "MEG decoding of perceived speech",
+    "2608.02585": "test-time latent reasoning; 'interpretable' in the applied sense",
+}
 
 
 def is_interp(title: str, summary: str = "") -> bool:
     """Keyword tag for (mechanistic) interpretability papers.
 
-    True when a strong keyword (``interpretab``, ``sparse autoencoder``/``SAE``, ``superposition``,
-    ``activation patching``, ``logit lens``, ``monosemantic``, ``representation engineering``, ``mechanistic``,
-    ``transcoder``, ``crosscoder``, ``causal tracing``, ...) occurs in title or summary, or when at least two
-    distinct weak keyword families occur, one of them in the title and at least one of them specific
-    (``circuit``, ``attribution``, ``probing``, ``steering``, ``neuron``, ``residual stream``, ``attention
-    head``); ``feature`` and ``activation`` only count next to such a family.
+    True when a specific term (:data:`INTERP_SPECIFIC`: ``mechanistic interpretability``, ``sparse autoencoder``,
+    ``activation patching``, ``logit lens``, ``monosemantic``, ``representation engineering``, ``transcoder``,
+    ``crosscoder``, ``causal tracing``, ...) occurs anywhere; when ``SAE`` occurs with an autoencoder context word;
+    when a generic word (``interpretab``, ``mechanistic``, ``superposition``; the last with a feature/neuron/linear
+    context) is in the title or occurs at least three times in the summary; or when two weak
+    families occur (``circuit``, ``attribution``, ``probing``, ``steering``, ``neuron``, ``residual stream``,
+    ``attention head``; ``feature``/``activation`` only next to one of those) and a specific one of them is in the
+    title. A title that names an applied domain (:data:`INTERP_APPLIED_DOMAINS`: medical, driving, MEG/EEG/brain,
+    compression, ...) is tagged only by a specific term in the title ("Interpretable MEG Decoding" is not
+    interpretability research; "Sparse Autoencoders for Brain Decoding" is).
     """
-    title_l, text_l = title.lower(), f"{title} {summary}".lower()
-    if any(k in text_l for k in INTERP_STRONG) or _SAE.search(f"{title} {summary}"):
+    title_l, summary_l = title.lower(), summary.lower()
+    text_l = f"{title_l} {summary_l}"
+    sae_context = any(k in text_l for k in _SAE_CONTEXT)
+    if any(k in title_l for k in INTERP_SPECIFIC) or (_SAE.search(title) and sae_context):
         return True
+    if _APPLIED.search(title_l):
+        return False
+    if any(k in text_l for k in INTERP_SPECIFIC):
+        return True
+    if _SAE.search(f"{title} {summary}") and sae_context:
+        return True
+    for k in INTERP_GENERIC_STRONG:
+        if k == "superposition" and not any(c in text_l for c in _SUPERPOSITION_CONTEXT):
+            continue
+        if k in title_l or summary_l.count(k) >= _GENERIC_SUMMARY_MIN:
+            return True
 
     def found(k: str, text: str) -> bool:
         return re.search(r"\b" + re.escape(k) + r"\w*", text) is not None
 
     weak = [k for k in INTERP_WEAK if found(k, text_l)]
     families = weak + [k for k in INTERP_GENERIC if found(k, text_l)]
-    return bool(weak) and len(families) >= 2 and any(found(k, title_l) for k in families)
+    return len(families) >= 2 and any(found(k, title_l) for k in weak)
 
 
 _ORG_TOKENS = frozenset({
-    "team", "teams", "lab", "labs", "research", "ai", "inc", "group", "collaboration", "consortium", "et", "al",
-    "university", "institute", "project", "foundation", "corp", "corporation", "llc", "ltd", "gmbh", "anonymous",
-    "authors", "contributors", "community", "the",
+    "team", "teams", "lab", "labs", "laboratory", "research", "ai", "agi", "ml", "nlp", "inc", "group", "collaboration",
+    "consortium", "et", "al", "university", "institute", "project", "foundation", "corp", "corporation", "llc", "ltd",
+    "gmbh", "anonymous", "authors", "contributors", "community", "the", "robotics", "robotic", "seed", "x", "squad",
+    "alliance", "initiative", "center", "centre", "studio", "org", "organization", "organisation", "department",
+    "company", "technologies", "technology", "tech", "systems", "intelligence", "science", "sciences", "llm", "llms",
+    "developers", "committee", "program", "network", "automation", "cloud", "software", "platform", "open", "openai",
+    "google", "deepmind", "microsoft", "nvidia", "amazon", "alibaba", "tencent", "baidu", "bytedance", "huawei",
+    "xiaomi", "kimi", "qwen", "deepseek", "mistral", "cohere", "anthropic", "moonshot", "zhipu", "minimax", "stepfun",
 })
 _PARTICLES = frozenset({"van", "von", "de", "der", "den", "da", "di", "du", "la", "le", "del", "della", "al", "bin",
                         "ibn", "dos", "das", "ter", "ten", "zu", "y", "e", "mac", "st."})
+# "B.", "J.-P.", "Y": an initial (one letter per hyphen-separated part, dots optional)
+_INITIAL_TOKEN = re.compile(r"^[^\W\d_]\.?(?:-[^\W\d_]\.?)*$")
 
 
 def plausible_person(name: str) -> bool:
-    """True for a name with at least two tokens, letters in each, no digits and no organisation words
-    (``DeepSeek-AI``, ``Kimi Team``, ``Gemini Team`` are not people)."""
+    """True for a person's name that the probe can ask for: at least two tokens with letters, no digits, no
+    organisation words (``DeepSeek-AI``, ``Kimi Team``, ``Tencent Robotics X``, ``Bytedance Seed`` are not people),
+    a surname of at least two letters with a lower-case one (not ``X``, ``AI``), and a given name that is not only
+    initials (``B. An``, ``I. Apanasevich`` cannot be rule-graded against a full name)."""
     toks = name.split()
     if len(toks) < 2 or any(ch.isdigit() for ch in name):
         return False
     low = {ascii_fold(t).casefold().strip(".,;:()") for t in toks}
-    if low & _ORG_TOKENS:
+    if low & _ORG_TOKENS or not all(re.search(r"[^\W\d_]", t) for t in toks):
         return False
-    return all(re.search(r"[^\W\d_]", t) for t in toks)
+    given, surname = split_name(name)
+    letters = [ch for ch in surname if ch.isalpha()]
+    if len(letters) < 2 or not any(ch.islower() for ch in letters):
+        return False
+    return any(not _INITIAL_TOKEN.match(t) for t in given.split())
 
 
 def split_name(name: str) -> tuple[str, str]:
@@ -468,14 +562,27 @@ def surname_key(name: str) -> str:
     return ascii_fold(split_name(name)[1]).casefold()
 
 
+def _name_key(name: str) -> str:
+    """Diacritic-free, casefolded, whitespace-normalised full name for equality checks."""
+    return " ".join(ascii_fold(name).casefold().split())
+
+
+def _title_key(title: str) -> str:
+    """Diacritic-free, casefolded word tokens of a title (punctuation and spacing ignored)."""
+    return " ".join(re.findall(r"\w+", ascii_fold(title).casefold()))
+
+
 def author_aliases(name: str) -> list[str]:
-    """Accepted surface forms of a first author: the full name, ``Surname, Given``, ``G. Surname``, ``Surname G.``
-    and the diacritic-free variant of each (order-preserving, case-insensitively unique)."""
+    """Accepted surface forms of a first author: the full name, ``Surname, Given``, ``G. Surname``, ``Surname G.``,
+    ``Surname Given`` (East Asian order), ``First Surname`` when there is a middle name, and the diacritic-free
+    variant of each (order-preserving, case-insensitively unique)."""
     given, surname = split_name(name)
     forms = [name]
     if given:
         initial = given[0]
-        forms += [f"{surname}, {given}", f"{initial}. {surname}", f"{surname} {initial}."]
+        forms += [f"{surname}, {given}", f"{initial}. {surname}", f"{surname} {initial}.", f"{surname} {given}"]
+        if len(given.split()) > 1:
+            forms.append(f"{given.split()[0]} {surname}")
     out: list[str] = []
     seen: set[str] = set()
     for v in [*forms, *(ascii_fold(f) for f in forms)]:
@@ -527,11 +634,13 @@ def plan_months(dense_from: str, dense_to: str, per_month: int, *, anchor_from: 
 
 @dataclass(frozen=True)
 class Candidate:
-    """A Hugging Face pick joined with its arXiv record, filed under the arXiv published month."""
+    """A Hugging Face pick joined with its arXiv v1 record (``ax``: the paper as it appeared on the event date) and,
+    when fetched, the latest version (``latest``), filed under the arXiv v1 published month."""
 
     hf: HFPaper
     ax: ArxivPaper
     interp: bool
+    latest: ArxivPaper | None = None
 
     @property
     def month(self) -> str:
@@ -555,7 +664,12 @@ def _unusable(c: Candidate) -> str | None:
     """Why a candidate cannot become a probe (``None`` if it can)."""
     name = c.first_author
     if not plausible_person(name):
-        return f"first author {name!r} is not a two-token person name"
+        return f"first author {name!r} is not a person's name the probe can ask for"
+    if c.latest is not None:
+        if _title_key(c.latest.title) != _title_key(c.ax.title):
+            return f"title changed after v1 (latest: {c.latest.title!r})"
+        if _name_key(c.latest.authors[0]) != _name_key(name):
+            return f"first author changed after v1 (latest: {c.latest.authors[0]!r})"
     tokens = date_tokens(c.ax.title)
     if tokens:
         return f"title contains date tokens {tokens}"
@@ -570,9 +684,11 @@ def gather_candidates(plans: Sequence[MonthPlan], *, candidates_per_month: int =
                       client: httpx.Client | None = None, cache_dir: Path | str | None = None,
                       today: _dt.date | None = None, retries: int = 4,
                       errors: list[str] | None = None) -> dict[str, list[Candidate]]:
-    """Hugging Face top-N of every planned month joined with arXiv metadata, filed under the arXiv published
-    month (so a paper listed by Hugging Face in one month but published in another moves or drops out). Unusable
-    candidates (:func:`_unusable`) are logged and left out."""
+    """Hugging Face top-N of every planned month joined with arXiv metadata, filed under the arXiv v1 published
+    month (so a paper listed by Hugging Face in one month but published in another moves or drops out). Every id
+    is fetched as v1 (the probe's title, first author and date) and as the latest version (for the divergence
+    check in :func:`_unusable` and the interp tag, whose summary is the fullest). Unusable candidates are logged
+    and left out; the interp tag is :func:`is_interp` minus :data:`INTERP_FALSE_POSITIVES`."""
     own = client is None
     http = client or make_client(timeout=90.0)
     try:
@@ -583,17 +699,24 @@ def gather_candidates(plans: Sequence[MonthPlan], *, candidates_per_month: int =
                 cur = hf_by_id.get(p.id)
                 if cur is None or p.upvotes > cur.upvotes:
                     hf_by_id[p.id] = p if cur is None else dataclasses.replace(p, hf_date=min(p.hf_date, cur.hf_date))
-        arxiv = fetch_arxiv(hf_by_id, client=http, cache_dir=cache_dir, retries=retries)
+        latest = fetch_arxiv(hf_by_id, client=http, cache_dir=cache_dir, retries=retries)
+        first = {pid: p for pid, p in latest.items() if p.version == 1}  # the latest version is v1: nothing to ask
+        first.update(fetch_arxiv([pid for pid in latest if pid not in first], client=http, cache_dir=cache_dir,
+                                 retries=retries, version=1))
     finally:
         if own:
             http.close()
     planned = {p.month for p in plans}
     by_month: dict[str, list[Candidate]] = {m: [] for m in planned}
     for pid in sorted(hf_by_id):
-        ax = arxiv.get(pid)
-        if ax is None:
+        ax, newest = first.get(pid), latest.get(pid)
+        if ax is None or newest is None:
             continue
-        c = Candidate(hf=hf_by_id[pid], ax=ax, interp=is_interp(ax.title, ax.summary or hf_by_id[pid].summary))
+        interp = is_interp(newest.title, newest.summary or ax.summary or hf_by_id[pid].summary)
+        if interp and pid in INTERP_FALSE_POSITIVES:
+            log.info("%s: interp tag removed by hand (%s)", pid, INTERP_FALSE_POSITIVES[pid])
+            interp = False
+        c = Candidate(hf=hf_by_id[pid], ax=ax, interp=interp, latest=newest)
         if c.month not in planned:
             log.info("%s: arXiv month %s is not a planned month (HF listed it on %s)", pid, c.month, c.hf.hf_date)
             continue
@@ -628,8 +751,9 @@ def select_month(cands: Sequence[Candidate], n: int, interp_share: float) -> lis
 
 def _distractors(rng: random.Random, c: Candidate, by_month: Mapping[str, Sequence[Candidate]]) -> list[str]:
     """Three first authors of other papers, from the same or adjacent months first (then wider), with surnames
-    distinct from the answer's and from each other."""
+    distinct from the answer's and from each other; never a co-author of the paper itself."""
     answer_key = surname_key(c.first_author)
+    coauthors = {_name_key(a) for a in c.ax.authors} | {_name_key(a) for a in (c.latest.authors if c.latest else ())}
     here = month_index(int(c.month[:4]), int(c.month[5:7]))
     for radius in (1, 2, 3, 6, 12, 60):
         pool: dict[str, str] = {}
@@ -637,7 +761,8 @@ def _distractors(rng: random.Random, c: Candidate, by_month: Mapping[str, Sequen
             if abs(month_index(int(month[:4]), int(month[5:7])) - here) > radius:
                 continue
             for other in by_month[month]:
-                if other.ax.id != c.ax.id and surname_key(other.first_author) != answer_key:
+                if (other.ax.id != c.ax.id and surname_key(other.first_author) != answer_key
+                        and _name_key(other.first_author) not in coauthors):
                     pool.setdefault(other.first_author.casefold(), other.first_author)
         names = sorted(pool.values())
         rng.shuffle(names)
@@ -686,43 +811,88 @@ def paper_event(c: Candidate, distractors: Sequence[str], seed: int = 0) -> Even
     )
 
 
-def _title_key(title: str) -> str:
-    return " ".join(re.findall(r"\w+", ascii_fold(title).casefold()))
+# Function words that cannot end the first part or start the second part of a spliced title: the join would be
+# mid-phrase ("Boosting mathematical capability of | Large Solve Realistic ...").
+_SPLICE_STOP = frozenset({
+    "a", "an", "the", "of", "for", "with", "in", "on", "to", "and", "or", "via", "through", "from", "by", "as", "at",
+    "into", "towards", "toward", "without", "under", "over", "between", "across", "beyond", "versus", "vs", "that",
+    "which", "than", "is", "are", "be", "can", "do", "does", "should", "when", "where", "how", "why", "what", "not",
+    "no", "more", "less", "its", "their", "your", "our", "all", "any", "both", "using", "about", "per", "but", "if",
+    "so", "then", "up", "out", "off", "down", "while", "whether", "also", "only", "even", "just", "still", "yet",
+    "it", "we", "you", "they", "i", "need", "needs", "make", "makes", "learn", "learns", "help", "helps", "let",
+})
+_QUESTION_START = frozenset({"can", "do", "does", "is", "are", "how", "why", "what", "when", "where", "which",
+                             "should", "will", "who", "whose"})
+
+
+def _subtitle(title: str) -> str | None:
+    """The part of ``title`` after its first colon (the system name before it identifies the paper), or the whole
+    title when it has no colon; ``None`` when a colon remains or the result is too short to split."""
+    part = " ".join((title.split(":", 1)[1] if ":" in title else title).split())
+    return part if part and ":" not in part and len(part.split()) >= 6 else None
+
+
+def _joinable(head: Sequence[str], tail: Sequence[str]) -> bool:
+    """A grammatical join: both parts have three words or more, the seam is not punctuation or a function word on
+    either side, no question mark is left inside, and a trailing question mark only after a question head."""
+    if len(head) < 3 or len(tail) < 3:
+        return False
+    last, first = head[-1], tail[0]
+    if not re.search(r"\w$", last) or not re.match(r"^\(?[\w\"']", first) or re.search(r"[:;,]$", first):
+        return False
+    if last.casefold() in _SPLICE_STOP or first.casefold().strip("(\"'") in _SPLICE_STOP:
+        return False
+    if any("?" in w for w in [*head, *tail[:-1]]):
+        return False
+    return not tail[-1].endswith("?") or head[0].casefold() in _QUESTION_START
 
 
 def fake_title(rng: random.Random, by_month: Mapping[str, Sequence[Candidate]], real_titles: Iterable[str],
-               *, month: str | None = None, attempts: int = 200) -> tuple[str, Candidate, Candidate] | None:
-    """A plausible title that does not exist: the first half of one real title (from ``month`` if given) joined
-    with the second half of another from a different month. Both halves have at least three words; the result
-    must not equal or nearly equal (similarity >= 0.9) any real title and must not contain date tokens. Returns
-    ``(title, donor_a, donor_b)`` or ``None`` when ``attempts`` draws found nothing."""
+               *, month: str | None = None, attempts: int = 200,
+               exclude: Iterable[str] = ()) -> tuple[str, Candidate, Candidate] | None:
+    """A plausible title that does not exist: the first half of one real title's subtitle (from ``month`` if
+    given) joined with the second half of another's from a different month. Only the part after a title's colon is
+    used, so the result never opens with a real system name; donors whose arXiv id is in ``exclude`` (the probe
+    papers of the same build) are not used. Both halves have at least three words and join grammatically
+    (:func:`_joinable`); the result must not equal or nearly equal (similarity >= 0.9) any real title or either
+    donor's subtitle and must not contain date tokens. Returns ``(title, donor_a, donor_b)`` or ``None`` when
+    ``attempts`` draws found nothing."""
     keys = {_title_key(t) for t in real_titles}
-    months = sorted(m for m in by_month if by_month[m])
+    excluded = set(exclude)
+    pools = {m: [c for c in cs if c.ax.id not in excluded and _subtitle(c.ax.title)] for m, cs in by_month.items()}
+    months = sorted(m for m in pools if pools[m])
     if len(months) < 2:
         return None
     for _ in range(attempts):
-        month_a = month if month in by_month and by_month[month] else rng.choice(months)
+        month_a = month if month is not None and pools.get(month) else rng.choice(months)
         month_b = rng.choice([m for m in months if m != month_a])
-        a, b = rng.choice(list(by_month[month_a])), rng.choice(list(by_month[month_b]))
-        wa, wb = a.ax.title.split(), b.ax.title.split()
-        head, tail = wa[:len(wa) // 2], wb[len(wb) // 2:]
-        if len(head) < 3 or len(tail) < 3:
+        a, b = rng.choice(pools[month_a]), rng.choice(pools[month_b])
+        sub_a, sub_b = _subtitle(a.ax.title) or "", _subtitle(b.ax.title) or ""
+        wa, wb = sub_a.split(), sub_b.split()
+        na, nb = len(wa), len(wb)
+        # split at the middle, or one word off it when the seam would not join
+        joins = ((wa[:k], wb[j:]) for k in (na // 2, na // 2 + 1, na // 2 - 1) for j in (nb // 2, nb // 2 - 1,
+                                                                                         nb // 2 + 1))
+        head, tail = next(((h, t) for h, t in joins if _joinable(h, t)), ([], []))
+        if not head:
             continue
         title = " ".join(head + tail)
         key = _title_key(title)
         if key in keys or date_tokens(title):
             continue
-        if any(difflib.SequenceMatcher(None, key, k).ratio() >= 0.9 for k in keys if abs(len(k) - len(key)) < 40):
+        near = [k for k in keys if abs(len(k) - len(key)) < 40] + [_title_key(sub_a), _title_key(sub_b)]
+        if any(difflib.SequenceMatcher(None, key, k).ratio() >= 0.9 for k in near):
             continue
         return title, a, b
     return None
 
 
 def control_event(n: int, title: str, donor: Candidate) -> Event:
-    """The fake-paper control ``fakepaper:<n>``, dated to the first donor's arXiv date; no MCQ, no aliases."""
+    """The fake-paper control ``fakepaper:<n>``, dated to the first donor's arXiv date; no MCQ, no aliases, no
+    expected answer (:data:`CONTROL_EXPECTED`; the ``fact`` is what the judges read)."""
     return Event(
         id=f"fakepaper:{n}", date=donor.ax.published, month=donor.month, topic="ai_ml", category="fake_paper",
-        subject=title, fact="control: no such arXiv paper exists; the title splices two real titles",
+        subject=title, fact="control: no such arXiv paper exists; the title splices the subtitles of two real papers",
         region="International", predictability="low", question_current=_question(title),
         expected_current=CONTROL_EXPECTED, question_recall=_recall_question(title, donor.ax.published),
         expected_recall=CONTROL_EXPECTED, origin="arxiv_hf", control=True,
@@ -738,7 +908,7 @@ def _meta(event: Event, c: Candidate | None, *, distractors: Sequence[str] = (),
             "first_author": c.first_author, "authors": list(c.ax.authors), "hf_authors": list(c.hf.authors),
             "primary_category": c.ax.primary_category, "published": c.ax.published, "hf_date": c.hf.hf_date,
             "hf_published_at": c.hf.published_at, "title_words": c.title_words, "preferred": c.preferred,
-            "distractors": list(distractors),
+            "distractors": list(distractors), "latest_version": c.latest.version if c.latest else None,
         })
     if donors:
         row["donors"] = [d.ax.id for d in donors]
@@ -804,13 +974,15 @@ def build_paper_events(
     n_controls = round(len(events) * controls_share)
     if n_controls:
         rng = random.Random(stable_hash(f"{seed}|controls"))
-        real_titles = [c.ax.title for cs in by_month.values() for c in cs]
+        real_titles = [t for cs in by_month.values() for c in cs for t in (c.ax.title, c.latest.title if c.latest
+                                                                             else c.ax.title)]
+        probed = {e.id.removeprefix("paper:") for e in events}
         months = sorted(m for m in by_month if by_month[m])
         made: set[str] = set()
         n = 0
         for i in range(n_controls):
             month = months[i % len(months)] if months else None
-            fake = fake_title(rng, by_month, real_titles + sorted(made), month=month)
+            fake = fake_title(rng, by_month, real_titles + sorted(made), month=month, exclude=probed)
             if fake is None:
                 log.warning("control %d: no fake title found", i + 1)
                 continue

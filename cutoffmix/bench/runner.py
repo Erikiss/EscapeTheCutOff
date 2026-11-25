@@ -248,27 +248,45 @@ def _price(model: ModelSpec, pricing: Mapping[str, Any]) -> tuple[float, float] 
     return float(inp), float(out)
 
 
+DEFAULT_OUT_TOKENS = 600
+DEFAULT_IN_TOKENS = 200
+
+
+def _per_model_tokens(value: int | Mapping[str, int], model: ModelSpec, default: int) -> int:
+    """``value`` itself when it is one number; from a mapping, the model's key, then its provider id, then the
+    mapping's ``"default"`` entry, then ``default``."""
+    if isinstance(value, Mapping):
+        value = value.get(model.key, value.get(model.provider_id, value.get("default", default)))
+    n = int(value)
+    if n < 0:
+        raise ValueError(f"token counts must be >= 0, got {n} for {model.key!r}")
+    return n
+
+
 def estimate_cost(
     models: Sequence[ModelSpec],
     events: Sequence[Event],
     probes: Sequence[str],
     *,
-    out_tokens: int = 600,
-    in_tokens: int = 200,
+    out_tokens: int | Mapping[str, int] = DEFAULT_OUT_TOKENS,
+    in_tokens: int | Mapping[str, int] = DEFAULT_IN_TOKENS,
     pricing: Mapping[str, Any] | None = None,
     batch: bool = False,
     max_tokens: int = 4096,
+    measured: bool = False,
 ) -> dict[str, Any]:
     """Estimate calls, tokens and USD for :func:`run_probes` (judge calls not included).
 
     ``pricing`` maps a model key or provider id to ``(input, output)`` or ``{"input": .., "output": ..}`` in USD per
     million tokens (e.g. the OpenRouter list prices from a config); without it, :data:`DEFAULT_PRICING` (Fable
-    8/40, Sol 2/10, Neon 3/15). ``out_tokens`` must include the hidden reasoning, which is billed as output; the
-    default of 600 is an unmeasured guess, so ``max_usd`` (and ``max_usd`` per model) gives the bound when every
-    call uses its full ``max_tokens`` (:func:`run_probes` default 4096). Measure ``usage.completion_tokens`` on a
-    small ``--limit`` pilot and re-estimate before a full run. ``batch=True`` no longer applies a discount (see
-    :data:`BATCH_UNSUPPORTED`); the estimate says so in ``assumptions["batch"]``. Only probes the event has a
-    question for are counted. Raises ``ValueError`` for a model without a price.
+    8/40, Sol 2/10, Neon 3/15). ``out_tokens`` and ``in_tokens`` are one number for every model or a mapping from
+    model key (or provider id, or ``"default"``) to a number, because the hidden reasoning, billed as output,
+    differs by an order of magnitude between models; ``out_tokens`` must include it. The default of 600 is an
+    unmeasured guess, so ``max_usd`` (and ``max_usd`` per model) gives the bound when every call uses its full
+    ``max_tokens`` (:func:`run_probes` default 4096). Measure ``usage.completion_tokens`` on a small ``--limit``
+    pilot, re-estimate with per-model ``out_tokens`` and ``measured=True`` before a full run. ``batch=True`` no
+    longer applies a discount (see :data:`BATCH_UNSUPPORTED`); the estimate says so in ``assumptions["batch"]``.
+    Only probes the event has a question for are counted. Raises ``ValueError`` for a model without a price.
     """
     _validate(models, probes)
     table: Mapping[str, Any] = DEFAULT_PRICING if pricing is None else pricing
@@ -276,23 +294,29 @@ def estimate_cost(
     missing = [k for k, p in prices.items() if p is None]
     if missing:
         raise ValueError(f"no price for model(s) {missing}; pass pricing={{key: (input_usd_per_M, output_usd_per_M)}}")
+    if max_tokens < 1:
+        raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
     day = _dt.date.today().isoformat()
     calls_per_model = sum(1 for e in events for p in probes if _probe_messages(e, p, day, None) is not None)
     per_model: dict[str, dict[str, Any]] = {}
     for m in models:
         inp, out = prices[m.key]  # type: ignore[misc]
-        usd = calls_per_model * (in_tokens * inp + out_tokens * out) / 1e6
-        max_usd = calls_per_model * (in_tokens * inp + max_tokens * out) / 1e6
-        per_model[m.key] = {"calls": calls_per_model, "in_tokens": calls_per_model * in_tokens,
-                            "out_tokens": calls_per_model * out_tokens, "usd_per_m_in": inp,
-                            "usd_per_m_out": out, "usd": round(usd, 4), "max_usd": round(max_usd, 4)}
+        n_in = _per_model_tokens(in_tokens, m, DEFAULT_IN_TOKENS)
+        n_out = _per_model_tokens(out_tokens, m, DEFAULT_OUT_TOKENS)
+        usd = calls_per_model * (n_in * inp + n_out * out) / 1e6
+        max_usd = calls_per_model * (n_in * inp + max_tokens * out) / 1e6
+        per_model[m.key] = {"calls": calls_per_model, "in_tokens": calls_per_model * n_in,
+                            "out_tokens": calls_per_model * n_out, "in_tokens_per_call": n_in,
+                            "out_tokens_per_call": n_out, "usd_per_m_in": inp, "usd_per_m_out": out,
+                            "usd": round(usd, 4), "max_usd": round(max_usd, 4)}
     return {
         "calls": calls_per_model * len(models),
         "per_model": per_model,
         "total_usd": round(sum(v["usd"] for v in per_model.values()), 4),
         "max_usd": round(sum(v["max_usd"] for v in per_model.values()), 4),
-        "assumptions": {"in_tokens": in_tokens, "out_tokens": out_tokens, "max_tokens": max_tokens,
-                        "out_tokens_measured": False, "judge_calls": "not included",
+        "assumptions": {"in_tokens": dict(in_tokens) if isinstance(in_tokens, Mapping) else in_tokens,
+                        "out_tokens": dict(out_tokens) if isinstance(out_tokens, Mapping) else out_tokens,
+                        "max_tokens": max_tokens, "out_tokens_measured": measured, "judge_calls": "not included",
                         "batch": f"not applied: {BATCH_UNSUPPORTED}" if batch else False,
                         "pricing": "custom" if pricing is not None else "built-in OpenRouter list prices"},
     }

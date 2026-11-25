@@ -11,7 +11,7 @@
     cutoffmix bench build-wikipedia --out FILE --start DATE --end DATE [--probe-model KEY]
     cutoffmix bench build-papers --out FILE [--dense-from 2025-10 --dense-to 2026-11 --per-month 12
                         --anchor-from 2024-01 --anchor-to 2025-09 --anchor-every 3 --anchor-per-month 6
-                        --interp-share 0.5 --controls-share 0.1 --seed 0 --meta FILE --cache DIR --candidates N]
+                        --interp-share 0.5 --controls-share 0.1 --seed 0 --meta FILE --cache DIR --candidates 300]
     cutoffmix bench run --events FILE --out FILE --models KEY... --probes P... [--dry-run] [--batch] [--limit N]
     cutoffmix bench grade --events FILE --results FILE
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
@@ -609,6 +609,26 @@ async def _close(backend: Any) -> None:
         await close()
 
 
+def _token_spec(values: Sequence[str], what: str) -> int | dict[str, int]:
+    """``["600"]`` -> ``600``; ``["claude-fable-5.2=350", "default=60"]`` -> ``{"claude-fable-5.2": 350, "default":
+    60}`` (a bare number among KEY=N entries is the default)."""
+    out: dict[str, int] = {}
+    for item in values:
+        key, _, number = item.partition("=")
+        if not number:
+            key, number = "default", key
+        try:
+            n = int(number)
+        except ValueError:
+            raise CLIError(f"--{what.replace('_', '-')}: expected N or KEY=N, got {item!r}") from None
+        if n < 0:
+            raise CLIError(f"--{what.replace('_', '-')}: token counts must be >= 0, got {item!r}")
+        out[key.strip()] = n
+    if list(out) == ["default"]:
+        return out["default"]
+    return out
+
+
 def _cmd_bench_run(args: argparse.Namespace) -> int:
     from cutoffmix.backends import make_backend
     from cutoffmix.bench.io import load_events
@@ -622,8 +642,16 @@ def _cmd_bench_run(args: argparse.Namespace) -> int:
         events = events[: args.limit]
     models = [_model_spec(cfg, k) for k in (args.models or cfg.model_keys())]
     judges = [_model_spec(cfg, k) for k in args.judges] or None
+    extra: dict[str, Any] = {}  # only what was given, so the estimator's defaults stay its own
+    if args.max_tokens is not None:
+        extra["max_tokens"] = args.max_tokens
     if args.dry_run:
-        print(json.dumps(estimate_cost(models, events, args.probes, batch=args.batch), indent=2))
+        for name, spec in (("in_tokens", args.in_tokens), ("out_tokens", args.out_tokens)):
+            if spec:
+                extra[name] = _token_spec(spec, name)
+        if args.out_tokens_measured:
+            extra["measured"] = True
+        print(json.dumps(estimate_cost(models, events, args.probes, batch=args.batch, **extra), indent=2))
         return 0
     if not args.mock:
         _require_key(cfg, "'cutoffmix bench run'")
@@ -633,7 +661,7 @@ def _cmd_bench_run(args: argparse.Namespace) -> int:
         try:
             return await run_probes(backend, models, events, args.probes, args.out, today=cfg.today,
                                     concurrency=args.concurrency, use_batch_variant=args.batch, judges=judges,
-                                    progress=_progress(sys.stderr))
+                                    progress=_progress(sys.stderr), **extra)
         finally:
             await _close(backend)
 
@@ -843,7 +871,9 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--meta", metavar="FILE", help="side table (default: papers_meta.jsonl next to --out)")
     pp.add_argument("--cache", metavar="DIR", help="raw-response cache (default: $CUTOFFMIX_PAPERS_CACHE or "
                                                   "~/.cache/cutoffmix/papers)")
-    pp.add_argument("--candidates", type=int, default=60, help="Hugging Face top-N per month before filtering")
+    pp.add_argument("--candidates", type=int, default=300,
+                    help="Hugging Face top-N per month before filtering (deep, so that the interp pool is not empty; "
+                         "the non-interp picks are the top-upvoted anyway)")
     pp.set_defaults(func=_cmd_build_papers)
 
     br = bench_sub.add_parser("run", help="probe the models on benchmark events")
@@ -858,6 +888,16 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--limit", type=int, metavar="N", help="only the first N events")
     br.add_argument("--judges", nargs="*", default=[], metavar="KEY", help="judge models for open answers")
     br.add_argument("--concurrency", type=int, default=8)
+    br.add_argument("--max-tokens", type=int, metavar="N",
+                    help="completion budget per call, hidden reasoning included (default 4096; ~1500 suffices for "
+                         "first-author probes and caps the worst-case cost shown by --dry-run)")
+    br.add_argument("--in-tokens", nargs="+", metavar="N|KEY=N", default=[],
+                    help="--dry-run: prompt tokens per call, one number or per model key (default 200)")
+    br.add_argument("--out-tokens", nargs="+", metavar="N|KEY=N", default=[],
+                    help="--dry-run: completion tokens per call incl. hidden reasoning, one number or per model key "
+                         "(e.g. claude-fable-5.2=350 gemini-4-neon=900 default=60; default 600)")
+    br.add_argument("--out-tokens-measured", action="store_true",
+                    help="--dry-run: mark the --out-tokens values as measured on a pilot")
     br.add_argument("--mock", action="store_true", help="probe the simulated models")
     _add_config(br)
     br.set_defaults(func=_cmd_bench_run)
