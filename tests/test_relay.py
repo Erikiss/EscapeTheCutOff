@@ -781,11 +781,13 @@ async def test_real_backend_calls_closed_before_their_usage_chunk_are_reported()
     # the think calls were closed before their usage chunk (twice at the sentinel, once at the final marker)
     assert done["usage_total"]["calls"] == 4 and done["usage_total"]["cost"] == pytest.approx(0.004)
     assert done["usage_complete"] is False
+    # the relay closed the concluding call itself at the final marker: its id still arrived (on the first event)
     assert [(m["index"], m["model"], m["finish_reason"], m["generation_id"]) for m in done["usage_missing"]] == [
-        (0, SOL_KEY, "sentinel", "gen-1"), (1, SOL_KEY, "sentinel", "gen-2"), (2, SOL_KEY, None, None)]
+        (0, SOL_KEY, "sentinel", "gen-1"), (1, SOL_KEY, "sentinel", "gen-2"), (2, SOL_KEY, "marker", "gen-3")]
     segs = done["segments"]
     assert [s["aborted"] for s in segs] == [True, True, True, False]  # the backend's runaway close counts too
-    assert segs[0]["usage"] == {"generation_id": "gen-1"}
+    assert segs[0]["usage"] == {"generation_id": "gen-1"} and segs[2]["usage"] == {"generation_id": "gen-3"}
+    assert segs[2]["note"] == "marker"
     assert segs[3]["usage"] == OR_USAGE | {"generation_id": "gen-4"}
 
 

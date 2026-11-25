@@ -109,7 +109,9 @@ def events_for_printer() -> list[RelayEvent]:
 @pytest.mark.parametrize("argv", [
     ["run", "Wer ist aktuell Kanzler?", "--mock", "--policy", "argmax", "--strategy", "speculative", "--segments",
      "5", "--json", "out.json", "--config", "c.yaml"],
+    ["run", "q?", "--mock", "--preset", "explore", "--seed", "3"],
     ["serve", "--host", "0.0.0.0", "--port", "9000", "--mock"],
+    ["serve", "--mock", "--preset", "explore", "--config", "c.yaml"],
     ["serve", "--allow-origin", "https://a.example", "--allow-origin", "https://b.example"],
     ["index", "show", "--path", "i.json", "--probe", "mcq"],
     ["bench", "import-kc", "--out", "data/kc"],
@@ -177,20 +179,74 @@ def test_serve_passes_the_allowed_origins_to_the_app(monkeypatch):
 
     seen: dict[str, Any] = {}
 
-    def fake_create_app(cfg, *, mock=False, allowed_origins=()):
-        seen.update(mock=mock, allowed_origins=list(allowed_origins))
+    def fake_create_app(cfg, *, mock=False, allowed_origins=(), allowed_hosts=(), config_path=None):
+        seen.update(mock=mock, allowed_origins=list(allowed_origins), allowed_hosts=list(allowed_hosts),
+                    config_path=config_path, explore=cfg.explore.enabled)
         return "app"
 
     monkeypatch.setattr(server, "create_app", fake_create_app)
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(app=app, **kw))
     assert main(["serve", "--mock", "--port", "8123", "--allow-origin", "https://notes.example"]) == 0
     assert seen["allowed_origins"] == ["https://notes.example"] and seen["app"] == "app" and seen["port"] == 8123
+    assert seen["config_path"] is None and seen["explore"] is False
+
+
+def test_serve_preset_loads_the_explore_config_and_passes_the_config_path(monkeypatch, tmp_path, capsys):
+    uvicorn = pytest.importorskip("uvicorn")
+    pytest.importorskip("fastapi")
+    from cutoffmix import server
+
+    seen: dict[str, Any] = {}
+    cfg_file = tmp_path / "my.yaml"
+    cfg_file.write_text("app_title: demo\n", encoding="utf-8")
+
+    def fake_create_app(cfg, *, mock=False, allowed_origins=(), allowed_hosts=(), config_path=None):
+        seen.update(config_path=config_path, explore=cfg.explore.enabled, tokens=cfg.relay.segment_tokens,
+                    title=cfg.app_title)
+        return "app"
+
+    monkeypatch.setattr(server, "create_app", fake_create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
+    assert main(["serve", "--mock", "--preset", "explore", "--config", str(cfg_file)]) == 0
+    assert seen == {"config_path": str(cfg_file), "explore": True, "tokens": 192, "title": "demo"}
+    assert "preset explore" in capsys.readouterr().err
 
 
 def test_run_reports_invalid_configuration(monkeypatch, capsys):
     monkeypatch.setattr(cli, "RelayRuntime", fake_runtime)
     code = main(["run", "--mock", "--policy", "fixed:nobody", "q?"])
     assert code == 2 and "invalid configuration" in capsys.readouterr().err
+
+
+def test_run_preset_is_merged_before_the_config_file(monkeypatch, tmp_path):
+    import cutoffmix.config as config_mod
+
+    seen: dict[str, Any] = {}
+    cfg_file = tmp_path / "c.yaml"
+    cfg_file.write_text("relay: {segment_tokens: 150}\n", encoding="utf-8")
+    real = config_mod.load_config
+
+    def spy(path=None, overrides=None, *, preset=None):
+        seen.update(path=path, overrides=overrides, preset=preset)
+        cfg = real(path, overrides, preset=preset)
+        seen["cfg"] = cfg
+        return cfg
+
+    monkeypatch.setattr(config_mod, "load_config", spy)
+    monkeypatch.setattr(cli, "RelayRuntime", fake_runtime)
+    assert main(["run", "--mock", "--preset", "explore", "--seed", "5", "--config", str(cfg_file), "q?"]) == 0
+    assert seen["path"] == str(cfg_file) and seen["preset"] == "explore" and seen["overrides"] == {"router": {"seed": 5}}
+    cfg = seen["cfg"]
+    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1500 and cfg.router.seed == 5
+    assert cfg.relay.segment_tokens == 150  # the user's file wins over the preset
+    assert cfg.router.policy == "softmax"  # the preset does not change the routing policy
+
+
+def test_run_rejects_an_unknown_preset(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "RelayRuntime", fake_runtime)
+    code = main(["run", "--mock", "--preset", "wild", "q?"])
+    err = capsys.readouterr().err
+    assert code == 2 and "unknown preset 'wild'" in err and "explore" in err and "Traceback" not in err
 
 
 def test_run_mock_end_to_end_with_the_real_mock_backend(monkeypatch, tmp_path, capsys):
@@ -247,6 +303,98 @@ def test_printer_colours_each_model_and_redraws_corrected_segments():
     assert "Trailing par" in text  # streamed live ...
     assert "\033[J" in text  # ... then erased and redrawn with the committed text
     assert text.count("First result.") == 2
+
+
+def explore_events() -> list[RelayEvent]:
+    """A run under the explore preset (DESIGN.md §7.6 shapes): a lens note, its check, a forced continuation and
+    the explore metrics; the last segment carries the badge keys flat, which the printer tolerates too."""
+    start = dict(phase="think", decision="sample", topic_posterior={"science_research": 0.7})
+    return [
+        RelayEvent(type="segment_start", segment=2, model="a", data={"explore": {"kind": "lens", "field": "music theory",
+                                                                                 "tier": "far", "cue": None}}, **start),
+        RelayEvent(type="segment_end", segment=2, model="a", phase="think", text="Lens (music theory): a mapping.",
+                   decision="sample", data={"explore": {"kind": "lens", "lens_prefix_ok": True}}),
+        RelayEvent(type="segment_start", segment=3, model="b", data={"explore": {"kind": "check", "field": "music theory",
+                                                                                 "tier": None, "cue": None}}, **start),
+        RelayEvent(type="segment_end", segment=3, model="b", phase="think", text="Lens kept: it holds.",
+                   decision="sample", data={"explore": {"kind": "check", "lens_verdict": "kept"}}),
+        RelayEvent(type="segment_start", segment=4, model="a", data={"explore": {"kind": "continue", "field": None,
+                                                                                 "tier": None, "cue": "Alternatively, "}},
+                   **start),
+        RelayEvent(type="segment_end", segment=4, model="a", phase="think", text="Alternatively, no.",
+                   decision="sample", data={}),
+        RelayEvent(type="segment_start", segment=5, model="b", data={"kind": "main", "field": None}, **start),
+        RelayEvent(type="segment_end", segment=5, model="b", phase="think", text="Claim: yes.", decision="sample",
+                   data={}),
+        RelayEvent(type="done", data={"segments": [{"phase": "think"}] * 4, "switches": 3, "share_by_model": {},
+                                      "latency": {}, "usage_total": {},
+                                      "explore": {"topics_visited": {"all": 3, "main_line": 2}, "topic_switches": 2,
+                                                  "lens": {"offered": 2, "written": 2, "kept": 1, "dropped": 1,
+                                                           "ignored": 0, "unverified": 0,
+                                                           "fields": ["music theory", "ecology"], "keep_rate": 0.5},
+                                                  "labels": {"counts": {"Claim": 4},
+                                                             "coverage": {"two_or_more_items": 0.83,
+                                                                          "where_we_stand": 1.0}},
+                                                  "forced_continuations": 1, "premature_finals": [{"index": 4}],
+                                                  "seed": 5, "seed_source": "run"}}),
+    ]
+
+
+def test_printer_tags_lens_check_and_continuation_segments():
+    out = io.StringIO()
+    printer = TerminalPrinter(MODELS, out=out)
+    for ev in explore_events():
+        printer.handle(ev)
+    text = out.getvalue()
+    assert "[Model A] sample · science_research 70% [lens: music theory (far)]" in text
+    assert "[Model B] sample · science_research 70% [check: music theory]" in text
+    assert "[Model A] sample · science_research 70% [continue: 'Alternatively,']" in text
+    plain = next(line for line in text.splitlines() if line.startswith("[Model B] sample") and "Claim" not in line
+                 and "check" not in line)
+    assert "[" not in plain[len("[Model B]"):]  # a main-line note has no tag
+    assert "segments 4 · switches 3 · lenses 2 (1 kept, 1 dropped) · labels 83% · topics 3 · forced 1" in text
+
+
+def test_printer_colours_the_explore_tag():
+    out = Tty()
+    printer = TerminalPrinter(MODELS, out=out, color=True, live=True, width=120)
+    for ev in explore_events()[:2]:
+        printer.handle(ev)
+    assert "\033[1m[lens: music theory (far)]\033[0m" in out.getvalue()
+
+
+@pytest.mark.parametrize("data, tag", [
+    ({"explore": {"kind": "lens", "field": "ecology", "tier": "near", "cue": None}}, "lens: ecology (near)"),
+    ({"explore": {"kind": "lens", "field": None, "tier": None}}, "lens: ?"),
+    ({"explore": {"kind": "check", "field": None}}, "check: the previous lens"),
+    ({"explore": {"kind": "continue", "cue": "  Perhaps the missing piece is  "}}, "continue: 'Perhaps the missing piece is'"),
+    ({"explore": {"kind": "continue"}}, "continue"),
+    ({"explore": {"kind": "main"}}, ""),
+    ({"kind": "check", "field": "ecology"}, "check: ecology"),  # flat keys are accepted too
+    ({"explore": "odd", "kind": "lens", "field": "x"}, "lens: x"),
+    ({}, ""),
+])
+def test_explore_tag_shapes(data, tag):
+    assert TerminalPrinter.explore_tag(data) == tag
+
+
+@pytest.mark.parametrize("explore, expected", [
+    ({}, []),
+    ({"lens": {"kept": 2, "dropped": 0}}, ["lenses 2 (2 kept, 0 dropped)"]),
+    ({"lens": {"written": 1}, "labels": {"coverage": {"two_or_more_items": 0.9, "where_we_stand": 1.0}}},
+     ["lenses 1", "labels 90%"]),
+    ({"topics_visited": ["a", "b"], "forced_continuations": 0}, ["topics 2", "forced 0"]),
+    ({"topics_visited": {"all": 3, "main_line": 1}, "premature_finals": [{}, {}]}, ["topics 3"]),
+    ({"topics_visited": 4.0, "labels": "n/a", "lens": "none"}, ["topics 4"]),
+    ({"lens": {"kept": True}}, []),
+    ({"forced_continuations": 1, "wws": {"missing": 0, "cut": 2, "waived": 1, "waived_at": [8]}},
+     ["forced 1", "wws 2 cut, 1 waived"]),
+    ({"wws": {"missing": 3, "cut": 0, "waived": 0}}, ["wws 3 missing"]),
+    ({"wws": {"missing": 0, "cut": 0, "waived": 0, "waived_at": []}}, []),  # nothing to report
+    ({"wws": "n/a"}, []),
+])
+def test_explore_summary_is_defensive_about_shapes(explore, expected):
+    assert cli.explore_summary(explore) == expected
 
 
 def test_format_tau():

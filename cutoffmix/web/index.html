@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>cutoffmix relay</title>
+<link rel="icon" href="data:,">
 <style>
 :root {
   color-scheme: light;
@@ -20,6 +21,8 @@
   --accent-soft: #cde2fb;
   --danger: #d03b3b;
   --danger-soft: #fbe9e8;
+  --ok-soft: #d7efdc;
+  --warn-soft: #fbeccc;
   --shadow: 0 1px 2px rgba(20, 20, 15, .05), 0 4px 16px rgba(20, 20, 15, .04);
   --ring: 0 0 0 2px var(--text);
   --radius: 12px;
@@ -41,6 +44,8 @@
     --accent-soft: #1c3a5e;
     --danger: #e66767;
     --danger-soft: #3a1f1e;
+    --ok-soft: #1f3a27;
+    --warn-soft: #3d3118;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4);
   }
 }
@@ -102,6 +107,11 @@ input[type=number] { width: 96px; }
 .stat .k { font-size: 11px; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .stat .v { font: 600 20px/1.3 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat .v small { font-size: 12px; color: var(--text-3); font-weight: 500; }
+/* exploration strip: only shown when the done event carries explore metrics (DESIGN.md §7) */
+.xstats-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 8px 2px; }
+.xstats-head .hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.stats.xstats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 699px) { .stats.xstats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .banner { border-radius: 10px; padding: 10px 14px; background: var(--danger-soft); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); font-size: 14px; }
 
@@ -123,6 +133,13 @@ input[type=number] { width: 96px; }
 .chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--m, #888); flex: none; }
 .badge { font: 600 11px/1.6 var(--mono); padding: 0 7px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
 .badge.speculative { background: var(--accent-soft); color: var(--text); }
+/* explore preset: the kind of note a segment was written under */
+.badge.x { color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge.x.lens { background: var(--accent-soft); }
+.badge.x.check { background: var(--surface-3); }
+.badge.x.check.kept { background: var(--ok-soft); }
+.badge.x.check.dropped { background: var(--danger-soft); }
+.badge.x.continue { background: var(--warn-soft); }
 
 /* answer */
 .answer { border-color: color-mix(in srgb, var(--text) 25%, var(--border)); }
@@ -209,6 +226,7 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
         <div class="controls">
           <label class="field">Strategy <select id="strategy"></select></label>
           <label class="field">Policy <select id="policy"></select></label>
+          <label class="field">Preset <select id="preset" title="default: plain shared notes; explore: labelled notes, cross-field lenses checked by another model, and a record gate before the answer"></select></label>
           <label class="field">Segment tokens <input id="segtok" type="number" min="1" max="4096" step="1" value="128"></label>
           <div class="btns">
             <button type="button" class="btn ghost" id="stop" hidden>Stop</button>
@@ -224,6 +242,16 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
         <div class="stat"><div class="k">Total time</div><div class="v" id="s-total">–</div></div>
         <div class="stat"><div class="k" id="s-cost-k">Cost</div><div class="v" id="s-cost">–</div></div>
       </div>
+
+      <section id="xstats" hidden aria-live="polite">
+        <div class="xstats-head"><h2>Exploration</h2><span class="hint" id="x-hint"></span></div>
+        <div class="stats xstats">
+          <div class="stat" title="distinct top topics of the routing window over the think segments"><div class="k">Topics visited</div><div class="v" id="x-topics">–</div></div>
+          <div class="stat" title="cross-field lens notes written, and how the check by the next model judged them"><div class="k">Lenses</div><div class="v" id="x-lens">–</div></div>
+          <div class="stat" title="share of notes with at least two labelled items and a 'Where we stand:' line"><div class="k">Labels</div><div class="v" id="x-labels">–</div></div>
+          <div class="stat" title="continuations forced after a conclusion the moderator set aside (and such early conclusions)"><div class="k">Forced</div><div class="v" id="x-forced">–</div></div>
+        </div>
+      </section>
 
       <div class="banner" id="error" role="alert" hidden></div>
 
@@ -284,12 +312,56 @@ const DECISIONS = {
   forced: "only option, fixed policy or inline answer",
   drift: "re-routed mid-stream",
 };
+/* explore preset (DESIGN.md §7): what a segment_start's data.kind means */
+const NOTE_KINDS = {
+  lens: "cross-field lens: the field was drawn client-side; the note maps one of its concepts onto the problem",
+  check: "test of the previous lens by another model: 'Lens kept:' or 'Lens dropped:'",
+  continue: "forced continuation: the moderator set aside an early conclusion; the note opens with the cue",
+};
+/* the explore badge of a segment record (null for a plain main-line note) */
+function exploreBadge(rec) {
+  const kind = rec.kind;
+  if (!kind || !NOTE_KINDS[kind]) return null;
+  let text = kind;
+  if (kind === "lens") text = "lens · " + (rec.field || "?") + (rec.tier ? " (" + rec.tier + ")" : "");
+  else if (kind === "check") text = "check · " + (rec.verdict || rec.field || "?");
+  else if (kind === "continue" && rec.cue) text = "continue · “" + String(rec.cue).trim() + "”";
+  const title = NOTE_KINDS[kind] + (kind === "check" && rec.field ? " · lens from " + rec.field : "");
+  return h("span", { class: "badge x " + kind + (rec.verdict ? " " + rec.verdict : ""), title }, text);
+}
+/* 'Lens kept:' / 'Lens dropped:' in a committed check note (the relay's own flags win when present) */
+function lensVerdict(text) {
+  const m = /(?:^|\n)\s*(?:[-*•]\s*)?(?:\*\*)?\s*lens\s+(kept|dropped)\s*(?:\*\*)?\s*:/i.exec(text || "");
+  return m ? m[1].toLowerCase() : null;
+}
+/* display values of the exploration strip from done.data.explore; every key is optional (null = unknown) */
+function exploreStats(x) {
+  x = x && typeof x === "object" ? x : {};
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : Array.isArray(v) ? v.length
+    : v && typeof v === "object" ? num("all" in v ? v.all : Object.values(v)[0]) : null);
+  const share = (v) => (typeof v === "number" && isFinite(v) ? v : v && typeof v === "object" ? share(Object.values(v)[0]) : null);
+  const lens = x.lens && typeof x.lens === "object" ? x.lens : {};
+  const kept = num(lens.kept), dropped = num(lens.dropped);
+  let written = num(lens.written != null ? lens.written : lens.offered);
+  if (written == null && (kept != null || dropped != null)) written = (kept || 0) + (dropped || 0);
+  const verdicts = [kept != null ? kept + " kept" : null, dropped != null ? dropped + " dropped" : null].filter(Boolean).join(" · ");
+  const cov = x.labels && typeof x.labels === "object" ? share(x.labels.coverage) : null;
+  const forced = num(x.forced_continuations), premature = num(x.premature_finals);
+  return {
+    topics: num(x.topics_visited),
+    lenses: written == null ? null : String(written),
+    lensDetail: verdicts || null,
+    labels: cov == null ? null : Math.round(cov * 100) + "%",
+    forced: forced == null ? null : String(forced),
+    forcedDetail: premature != null ? premature + " early" : null,
+  };
+}
 const RAMP = {
   light: ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281"],
   dark: ["#172a42", "#1b3555", "#1d4069", "#204c7e", "#245a95", "#2a69ae", "#3478c6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef", "#9ec5f4"],
 };
 const S = {
-  cfg: null, models: {}, topics: {}, running: false, ctrl: null, t0: 0, ttft: null, timer: null,
+  cfg: null, models: {}, topics: {}, presets: {}, running: false, ctrl: null, t0: 0, ttft: null, timer: null,
   cur: {}, committed: [], answer: null, selected: null, windowTopic: null, index: null,
 };
 const dark = matchMedia("(prefers-color-scheme: dark)");
@@ -342,6 +414,15 @@ const topicName = (id) => S.topics[id] || String(id).replace(/_/g, " ");
 const chip = (k) => h("span", { class: "chip", style: `--m:${modelColor(k)}` }, h("i"), modelName(k));
 const badge = (d) => h("span", { class: "badge " + (d || ""), title: DECISIONS[d] || "" }, d || "?");
 const topN = (obj, n) => Object.entries(obj || {}).filter(([, v]) => isFinite(v)).sort((a, b) => b[1] - a[1]).slice(0, n);
+/* the topic a posterior clearly favours, or null when it is flat (all equal, or the top probability below 1.5x the
+   smallest one): the same rule as taxonomy.argmax_topic, so a flat posterior never shows up as the first topic */
+function clearTopic(post) {
+  const entries = topN(post, Infinity);
+  if (!entries.length) return null;
+  const hi = entries[0][1], lo = entries[entries.length - 1][1];
+  if (entries.length > 1 && (hi - lo < 1e-9 || hi < 1.5 * lo)) return null;
+  return entries[0][0];
+}
 
 function bars(entries, opts = {}) {
   return h("div", { class: "bars" }, entries.map(([label, value, extra]) =>
@@ -372,6 +453,20 @@ async function boot() {
     $("strategy").value = cfg.defaults.strategy;
     $("policy").value = cfg.defaults.policy;
     $("segtok").value = cfg.defaults.segment_tokens;
+    /* presets: "default" is the server's own config; a packaged preset implies its own segment settings */
+    const active = cfg.defaults.preset || "default";
+    $("preset").append(h("option", { value: "default", disabled: active !== "default" || null,
+      title: active !== "default" ? "the server was started with --preset " + active : null }, "default"));
+    for (const p of cfg.presets || []) {
+      S.presets[p.name] = p;
+      $("preset").append(h("option", { value: p.name }, p.name));
+    }
+    if (active !== "default" && !S.presets[active]) $("preset").append(h("option", { value: active }, active));
+    $("preset").value = active;
+    $("preset").addEventListener("change", () => {
+      const p = S.presets[$("preset").value];
+      $("segtok").value = p && p.segment_tokens ? p.segment_tokens : cfg.defaults.segment_tokens;
+    });
   } catch (e) {
     showError("Could not load /api/config: " + e.message);
   }
@@ -409,6 +504,7 @@ function resetRun() {
   $("win-r").textContent = "";
   renderInspector(null);
   setStat("s-seg", "0"); setStat("s-sw", "0"); setStat("s-ttft", "–"); setStat("s-total", "–"); setStat("s-cost", "–");
+  $("xstats").hidden = true;
   renderLegend(); markActiveRow();
 }
 function setRunning(on) {
@@ -433,6 +529,8 @@ async function run(ev) {
   setRunning(true);
   S.ctrl = new AbortController();
   const body = { question, strategy: $("strategy").value, policy: $("policy").value };
+  const preset = $("preset").value;
+  if (preset && preset !== "default" && S.presets[preset]) body.preset = preset;
   const tok = parseInt($("segtok").value, 10);
   if (Number.isFinite(tok)) body.segment_tokens = tok;
   try {
@@ -477,13 +575,16 @@ function onEvent(ev) {
     ev.phase === "answer" ? appendAnswer(ev) : appendSegment(ev);
   } else if (ev.type === "segment_end") ev.phase === "answer" ? endAnswer(ev) : endSegment(ev);
   else if (ev.type === "error") showError(ev.text);
-  else if (ev.type === "done") finish(ev.data || {});
+  else if (ev.type === "done") { finish(ev.data || {}); renderExplore((ev.data || {}).explore); }
 }
 function recordFrom(ev) {
   const d = ev.data || {};
+  const x = d.explore && typeof d.explore === "object" ? d.explore : d; /* explore badge: data.explore (or flat) */
   return { index: ev.segment, attempt: d.attempt || 0, model: ev.model, phase: ev.phase, decision: ev.decision,
     posterior: ev.topic_posterior || {}, scores: ev.scores || {}, probs: d.probs || {}, r: d.r,
-    strategy: d.strategy, available: d.available || [], text: "" };
+    strategy: d.strategy, available: d.available || [], text: "",
+    kind: typeof x.kind === "string" ? x.kind : null, field: x.field || null, tier: x.tier || null, cue: x.cue || null,
+    verdict: null };
 }
 function nearBottom() { return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120; }
 function follow(stick) { if (stick && S.running) window.scrollTo({ top: document.documentElement.scrollHeight }); }
@@ -491,13 +592,14 @@ function follow(stick) { if (stick && S.running) window.scrollTo({ top: document
 function startSegment(ev) {
   const stick = nearBottom();
   const rec = recordFrom(ev);
-  const top = topN(rec.posterior, 1)[0];
+  const top = clearTopic(rec.posterior); /* null: flat posterior, shown as "—" (no clear topic) */
   rec.textEl = h("div", { class: "seg-text" });
+  rec.xbadge = exploreBadge(rec);
   rec.el = h("article", { class: "seg streaming", tabindex: "0", style: `--m:${modelColor(rec.model)}`,
       "aria-label": `Segment ${rec.index + 1} by ${modelName(rec.model)}` },
-    h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision),
-      h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on" },
-        `#${rec.index + 1}` + (top ? ` · ${topicName(top[0])}` : ""))),
+    h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision), rec.xbadge,
+      h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on (— = no clear topic: the posterior is flat)" },
+        `#${rec.index + 1}` + (top ? ` · ${topicName(top)}` : topN(rec.posterior, 1).length ? " · —" : ""))),
     rec.textEl);
   rec.el.addEventListener("mouseenter", () => { if (canHover.matches && !narrow.matches) select(rec); });
   rec.el.addEventListener("click", () => select(rec, true));
@@ -529,6 +631,15 @@ function endSegment(ev) {
   Object.assign(rec, { text: ev.text || "", finish: d.finish_reason, drafts: d.drafts, failedDrafts: d.failed_drafts,
     ttft: d.ttft_s, duration: d.duration_s, final: d.final });
   if (d.probs) rec.probs = d.probs;
+  const flags = d.explore && typeof d.explore === "object" ? d.explore : {};
+  if (flags.kind && NOTE_KINDS[flags.kind] && !rec.kind) Object.assign(rec, { kind: flags.kind, field: flags.field || rec.field, tier: flags.tier || rec.tier, cue: flags.cue || rec.cue });
+  if (rec.kind === "check") rec.verdict = flags.lens_verdict || lensVerdict(rec.text);
+  if (rec.kind) {
+    const fresh = exploreBadge(rec);
+    if (rec.xbadge && fresh) rec.xbadge.replaceWith(fresh);
+    else if (fresh) badge_slot(rec.el).after(fresh);
+    rec.xbadge = fresh;
+  }
   rec.textEl.textContent = rec.text || "(concludes the notes)";
   S.committed.push(rec);
   setStat("s-seg", String(S.committed.length));
@@ -574,12 +685,27 @@ function finish(data) {
   if (S.ttft == null && lat.first_delta_s != null) setStat("s-ttft", secs(lat.first_delta_s));
   setStat("s-sw", String(data.switches != null ? data.switches : switches()));
   const total = data.usage_total || {};
-  if (total.cost) { $("s-cost-k").textContent = data.usage_complete === false ? "Cost (partial)" : "Cost"; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
-  else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens"; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
+  const partial = data.usage_complete === false ? " (partial)" : "";
+  if (total.cost) { $("s-cost-k").textContent = "Cost" + partial; setStat("s-cost", "$" + Number(total.cost).toFixed(4)); }
+  else if (total.total_tokens) { $("s-cost-k").textContent = "Tokens" + partial; setStat("s-cost", Number(total.total_tokens).toLocaleString()); }
   renderLegend(data.share_by_model);
   $("notes-hint").textContent = data.status === "ok"
     ? `${S.committed.length} segments by ${Object.keys(data.share_by_model || {}).length} model(s) · hover or tap for routing`
     : "The run ended with an error.";
+}
+function badge_slot(el) { return el.querySelector(".seg-head .badge:not(.x)") || el.querySelector(".seg-head .chip"); }
+function renderExplore(x) {
+  if (!x || typeof x !== "object") { $("xstats").hidden = true; return; }
+  const s = exploreStats(x);
+  const cell = (id, value, detail) => $(id).replaceChildren(value == null ? "–" : value, ...(detail ? [h("small", {}, " " + detail)] : []));
+  cell("x-topics", s.topics == null ? null : String(s.topics));
+  cell("x-lens", s.lenses, s.lensDetail);
+  cell("x-labels", s.labels);
+  cell("x-forced", s.forced, s.forcedDetail);
+  const bits = [x.preset ? "preset " + x.preset : null, x.seed != null ? "seed " + x.seed : null,
+    x.main_line_segments != null ? x.main_line_segments + " main-line notes" : null].filter(Boolean);
+  $("x-hint").textContent = bits.join(" · ");
+  $("xstats").hidden = false;
 }
 
 /* ---------------- side panels ---------------- */
@@ -621,6 +747,12 @@ function renderInspector(rec) {
   ];
   const dl = h("dl", { class: "kv" });
   if (rec.r != null) dl.append(h("dt", {}, "r(W)"), h("dd", {}, rec.r.toFixed(2), h("span", { class: "meter", title: "time sensitivity of the window" }, h("b", { style: `width:${rec.r * 100}%` }))));
+  if (rec.kind && rec.kind !== "main") {
+    dl.append(h("dt", {}, "note"), h("dd", { title: NOTE_KINDS[rec.kind] || "" }, rec.kind));
+    if (rec.field) dl.append(h("dt", {}, "field"), h("dd", {}, rec.field + (rec.tier ? ` (${rec.tier})` : "")));
+    if (rec.verdict) dl.append(h("dt", {}, "lens"), h("dd", {}, rec.verdict));
+    if (rec.cue) dl.append(h("dt", {}, "cue"), h("dd", {}, String(rec.cue).trim()));
+  }
   if (rec.strategy) dl.append(h("dt", {}, "strategy"), h("dd", {}, rec.strategy));
   if (rec.answerMode) dl.append(h("dt", {}, "answer"), h("dd", {}, rec.answerMode));
   if (rec.finish) dl.append(h("dt", {}, "finish"), h("dd", {}, rec.finish));
@@ -657,8 +789,10 @@ function chipInline(m) { return h("span", {}, h("i", { style: `display:inline-bl
 function updateWindow(rec) {
   const post = topN(rec.posterior, 5);
   if (!post.length) return;
-  S.windowTopic = post[0][0];
-  const kids = [bars(post.map(([t, p]) => [topicName(t), p]))];
+  S.windowTopic = clearTopic(rec.posterior); /* null: no index row is highlighted */
+  const kids = [];
+  if (!S.windowTopic) kids.push(h("p", { class: "insp-note" }, "No clear topic: the posterior of the window is flat, so no row of the index is highlighted and the lens tiers fall back to mid."));
+  kids.push(bars(post.map(([t, p]) => [topicName(t), p])));
   kids.push(h("div", { class: "window-model" }, rec.phase === "answer" ? "answer by" : "next segment:", chip(rec.model), badge(rec.decision)));
   $("window").replaceChildren(...kids);
   $("win-r").textContent = rec.r != null ? `r(W) ${rec.r.toFixed(2)}` : "";

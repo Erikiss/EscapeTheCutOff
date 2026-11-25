@@ -14,8 +14,16 @@ import pytest
 from cutoffmix.backends import openrouter as orb
 from cutoffmix.backends.base import BackendError
 from cutoffmix.backends.openrouter import OpenRouterBackend, parse_sse
-from cutoffmix.config import default_config
-from cutoffmix.prompts import ANSWER_TAIL, RELAY_TAIL, answer_system_prompt, relay_system_prompt
+from cutoffmix.config import default_config, load_config
+from cutoffmix.prompts import (
+    ANSWER_TAIL,
+    RELAY_TAIL,
+    answer_system_prompt,
+    record_status_text,
+    relay_system_prompt,
+    relay_system_prompt_explore,
+    relay_tail,
+)
 from cutoffmix.types import ChatRequest, ContinuationRequest, ModelSpec, StreamEvent
 
 CFG = default_config()
@@ -199,7 +207,13 @@ def test_neon_body():
     assert body["provider"] == {"only": ["google-vertex"]}
     assert body["max_tokens"] == 128 + 1536
     assert "temperature" not in body and "prompt_cache_key" not in body and not has_cache_control(body)
-    assert b.build_continuation_body(NEON, req(["s1"], metadata={"temperature": 0.2}))["temperature"] == 0.2
+    # Google ignores in-range temperature on Neon, so the default never sends it (supports_temperature false) ...
+    assert "temperature" not in b.build_continuation_body(NEON, req(["s1"], metadata={"temperature": 0.2}))
+    # ... while a model that does honour it still gets the per-request value
+    hot = ModelSpec(key="hot", provider_id="x/hot", supports_temperature=True)
+    assert b.build_continuation_body(hot, req(["s1"], metadata={"temperature": 0.2}))["temperature"] == 0.2
+    assert "temperature" not in b.build_continuation_body(hot, req(["s1"]))
+    assert "seed" not in body and "seed" not in b.build_continuation_body(SOL, req(["s1"]))  # supports_seed off
 
 
 def test_continuation_bodies_are_append_only():
@@ -231,12 +245,148 @@ def test_chat_bodies():
     b = OpenRouterBackend(api_key="k")
     msgs = [{"role": "user", "content": "Q?"}]
     neon = b.build_chat_body(NEON, ChatRequest(messages=msgs, max_tokens=4096, response_format={"type": "json_object"}))
-    assert neon["stream"] is False and neon["temperature"] == 0.0 and neon["max_tokens"] == 4096
+    assert neon["stream"] is False and "temperature" not in neon and neon["max_tokens"] == 4096
     assert neon["response_format"] == {"type": "json_object"} and neon["messages"] == msgs
-    assert "stop" not in neon
+    assert "stop" not in neon and "seed" not in neon
+    # ChatRequest.temperature defaults to None; an explicit value is still dropped for a model that ignores it
+    assert ChatRequest(messages=msgs).temperature is None
+    assert "temperature" not in b.build_chat_body(NEON, ChatRequest(messages=msgs, temperature=0.0))
+    hot = ModelSpec(key="hot", provider_id="x/hot", supports_temperature=True)
+    assert b.build_chat_body(hot, ChatRequest(messages=msgs, temperature=0.0))["temperature"] == 0.0
+    assert "temperature" not in b.build_chat_body(hot, ChatRequest(messages=msgs))
     fable = b.build_chat_body(FABLE, ChatRequest(messages=msgs, reasoning={"effort": "medium"}))
     assert "temperature" not in fable and fable["reasoning"] == {"effort": "medium"}
     assert b.build_chat_body(SOL, ChatRequest(messages=msgs))["verbosity"] == "low"
+
+
+# --------------------------------------------------------------------------------------
+# explore preset bodies (DESIGN.md §7): tail / system override, phase-specific extra body, seed
+# --------------------------------------------------------------------------------------
+
+EXPLORE = load_config(preset="explore")
+X_FABLE, X_SOL, X_NEON = (EXPLORE.model(k) for k in ("claude-fable-5.2", "gpt-6.2-sol", "gemini-4-neon"))
+X_SYSTEM = relay_system_prompt_explore(192, "2026-11-24", S, "FINAL ANSWER:")
+
+
+def xreq(segments: list[str], k: int, directive: str = "", metadata: dict | None = None) -> ContinuationRequest:
+    tail = relay_tail(k, record_status_text(["two more main-line notes"], False), directive)
+    return ContinuationRequest(question="Who leads the lab?", segments=list(segments), today="2026-11-24",
+                               run_id="run42", target_tokens=192, hard_cut_chars=1000, system_override=X_SYSTEM,
+                               tail=tail,
+                               metadata={"segment_index": k - 1, "segment": k - 1, "phase": "think", **(metadata or {})})
+
+
+def test_explore_body_uses_system_override_and_tail():
+    b = OpenRouterBackend(api_key="k")
+    body = b.build_continuation_body(X_FABLE, xreq(["s1", "s2"], 3, "Cross-field lens for this note: ..."))
+    system, user = body["messages"]
+    assert system["content"] == [{"type": "text", "text": X_SYSTEM, "cache_control": {"type": "ephemeral"}}]
+    blocks = user["content"]
+    assert blocks[0]["text"].startswith("PROBLEM:\n") and [blk["text"] for blk in blocks[1:3]] == ["s1\n\n", "s2\n\n"]
+    assert blocks[-1] == {"type": "text", "text": "END OF THE SHARED NOTES. Write note 3. Items still missing from "
+                                                  "the record: two more main-line notes. The moderator does not "
+                                                  "accept a conclusion yet; do not write 'FINAL ANSWER:'. "
+                                                  "Cross-field lens for this note: ..."}
+    assert [blk.get("cache_control") for blk in blocks] == [None, None, {"type": "ephemeral"}, None]  # never the tail
+    assert body["stop"] == [S] and body["max_tokens"] == 192 + 2048
+    for absent in ("temperature", "verbosity", "seed"):
+        assert absent not in body
+    # an answer request may override the system text too; the answer tail stays unless a tail is given
+    answer = b.build_continuation_body(X_FABLE, ContinuationRequest(question="Q", segments=["s1"], phase="answer",
+                                                                     system_override="ANSWER SYSTEM"))
+    assert answer["messages"][0]["content"][0]["text"] == "ANSWER SYSTEM"
+    assert answer["messages"][1]["content"][-1]["text"] == ANSWER_TAIL and not has_cache_control(answer)
+
+
+def test_explore_bodies_stay_append_only_across_segments():
+    # the tail carries a different directive and record status each segment; everything before it is a prefix
+    b = OpenRouterBackend(api_key="k")
+
+    def strip(body):
+        msgs = json.loads(json.dumps(body["messages"]))
+        for m in msgs:
+            for blk in m["content"]:
+                blk.pop("cache_control", None)
+        return msgs
+
+    for model in (X_FABLE, X_SOL, X_NEON):
+        m2 = strip(b.build_continuation_body(model, xreq(["s1", "s2"], 3, "Cross-field lens for this note: A")))
+        m3 = strip(b.build_continuation_body(model, xreq(["s1", "s2", "s3"], 4, "The previous note applied a lens")))
+        m4 = strip(b.build_continuation_body(model, xreq(["s1", "s2", "s3", "s4"], 5)))
+        assert m3[0] == m2[0] == m4[0]  # the static system prompt
+        assert m3[1]["content"][: len(m2[1]["content"]) - 1] == m2[1]["content"][:-1]
+        assert m4[1]["content"][: len(m3[1]["content"]) - 1] == m3[1]["content"][:-1]
+        assert m3[1]["content"][-1] != m2[1]["content"][-1]  # only the tail changes
+    fable2 = b.build_continuation_body(X_FABLE, xreq(["s1", "s2"], 3))
+    fable3 = b.build_continuation_body(X_FABLE, xreq(["s1", "s2", "s3"], 4))
+    assert "cache_control" in fable2["messages"][1]["content"][2] and "cache_control" in fable3["messages"][1]["content"][3]
+
+
+def test_sol_explore_body_has_seed_and_phase_specific_verbosity():
+    b = OpenRouterBackend(api_key="k")
+    think = b.build_continuation_body(X_SOL, xreq(["s1", "s2"], 3))
+    assert think["verbosity"] == "medium" and think["seed"] == orb.segment_seed("run42", 2)
+    assert think["prompt_cache_key"] == "run42:gpt-6.2-sol" and "stop" not in think and "temperature" not in think
+    answer = b.build_continuation_body(X_SOL, ContinuationRequest(question="Q", segments=["s1"], phase="answer",
+                                                                   run_id="run42", metadata={"segment_index": 7}))
+    assert answer["verbosity"] == "low" and answer["seed"] == orb.segment_seed("run42", 7)
+    # the same request gives the same seed; another segment or run another one
+    assert b.build_continuation_body(X_SOL, xreq(["s1", "s2"], 3))["seed"] == think["seed"]
+    assert b.build_continuation_body(X_SOL, xreq(["s1", "s2", "s3"], 4))["seed"] != think["seed"]
+    other_run = xreq(["s1", "s2"], 3)
+    other_run.run_id = "run43"
+    assert b.build_continuation_body(X_SOL, other_run)["seed"] != think["seed"]
+    # the relay's run seed in metadata["seed"] keys the hash instead of the run id (reproducible A/B runs)
+    seeded = xreq(["s1", "s2"], 3)
+    seeded.metadata["seed"] = 7
+    assert b.build_continuation_body(X_SOL, seeded)["seed"] == orb.segment_seed(7, 2)
+    # without an index the seed falls back to segment 0; "segment" (the relay's current key) is honoured too
+    assert b.build_continuation_body(X_SOL, ContinuationRequest(question="Q", run_id="r"))["seed"] == orb.segment_seed("r", 0)
+    assert b.build_continuation_body(X_SOL, ContinuationRequest(question="Q", run_id="r", metadata={"segment": 5}))[
+        "seed"] == orb.segment_seed("r", 5)
+
+
+def test_explore_neon_and_fable_bodies_have_no_sampling_or_verbosity():
+    b = OpenRouterBackend(api_key="k")
+    for model in (X_FABLE, X_NEON):
+        for r in (xreq(["s1"], 2, metadata={"temperature": 1.2}),
+                  ContinuationRequest(question="Q", segments=["s1"], phase="answer", run_id="run42")):
+            body = b.build_continuation_body(model, r)
+            for absent in ("temperature", "top_p", "verbosity", "seed"):
+                assert absent not in body, (model.key, absent)
+    # Fable never gets verbosity, not even through answer_extra_body
+    claude = ModelSpec(key="c", provider_id="anthropic/x", extra_body={"verbosity": "low"},
+                       answer_extra_body={"verbosity": "high", "provider": {"sort": "price"}})
+    answer = b.build_continuation_body(claude, ContinuationRequest(question="Q", segments=["s1"], phase="answer"))
+    assert "verbosity" not in answer and answer["provider"] == {"sort": "price"}
+
+
+def test_answer_extra_body_overrides_extra_body_only_in_answer_phase():
+    m = ModelSpec(key="m", provider_id="x/m", extra_body={"verbosity": "medium", "a": {"x": 1, "y": 2}},
+                  answer_extra_body={"verbosity": "low", "a": {"y": 3}})
+    b = OpenRouterBackend(api_key="k")
+    think = b.build_continuation_body(m, ContinuationRequest(question="Q"))
+    answer = b.build_continuation_body(m, ContinuationRequest(question="Q", phase="answer"))
+    assert think["verbosity"] == "medium" and think["a"] == {"x": 1, "y": 2}
+    assert answer["verbosity"] == "low" and answer["a"] == {"x": 1, "y": 3}
+    assert m.answer_extra_body == {"verbosity": "low", "a": {"y": 3}}  # not mutated by the merge
+
+
+def test_segment_seed_is_stable_and_31_bit():
+    assert orb.segment_seed("run42", 2) == orb.segment_seed("run42", 2)
+    assert orb.segment_seed("run42", 2) != orb.segment_seed("run42", 3) != orb.segment_seed("run43", 3)
+    assert orb.segment_seed(7, 2) == orb.segment_seed("7", 2)
+    assert all(0 <= orb.segment_seed("k", i) < 2 ** 31 for i in range(200))
+    assert orb.segment_seed("run42", 2) == 388364132  # pinned: a change here breaks reproducibility of logged runs
+
+
+def test_chat_body_seed_only_with_metadata_seed_on_a_seed_model():
+    b = OpenRouterBackend(api_key="k")
+    msgs = [{"role": "user", "content": "menu"}]
+    assert "seed" not in b.build_chat_body(X_SOL, ChatRequest(messages=msgs))
+    body = b.build_chat_body(X_SOL, ChatRequest(messages=msgs, metadata={"seed": 7, "segment_index": 4}))
+    assert body["seed"] == orb.segment_seed(7, 4) and body["verbosity"] == "medium"  # a chat call is not an answer
+    assert "seed" not in b.build_chat_body(X_NEON, ChatRequest(messages=msgs, metadata={"seed": 7}))
 
 
 # --------------------------------------------------------------------------------------
@@ -549,7 +699,7 @@ async def test_chat_success():
     res = await backend(rec).chat(NEON, ChatRequest(messages=[{"role": "user", "content": "Capital of France?"}]))
     assert (res.text, res.reasoning, res.finish_reason, res.usage) == ("Paris.", "r", "stop", USAGE)
     assert res.raw["id"] == "gen-3" and res.latency_s >= 0
-    assert rec.body()["stream"] is False and rec.body()["temperature"] == 0.0
+    assert rec.body()["stream"] is False and "temperature" not in rec.body()  # Neon ignores it; never sent
 
 
 async def test_chat_retries_with_retry_after_then_succeeds(sleeps):

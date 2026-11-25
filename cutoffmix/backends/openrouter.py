@@ -28,6 +28,7 @@ import contextlib
 import copy
 import datetime as _dt
 import email.utils
+import hashlib
 import json
 import os
 import random
@@ -38,18 +39,35 @@ from typing import Any
 import httpx
 
 from cutoffmix.backends.base import BackendError, continuation_max_tokens, is_retryable_status
-from cutoffmix.prompts import answer_system_prompt, answer_user_blocks, relay_system_prompt, relay_user_blocks
+from cutoffmix.prompts import (
+    answer_system_prompt,
+    answer_user_blocks,
+    notes_echo_window,
+    relay_system_prompt,
+    relay_user_blocks,
+)
 from cutoffmix.types import ChatRequest, ChatResult, ContinuationRequest, ModelSpec, StreamEvent
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 USER_AGENT = "cutoffmix/0.1"
-CUT_FACTOR = 1.5  # the stream is closed once visible text exceeds hard_cut_chars * CUT_FACTOR
+# The stream is closed once visible text exceeds hard_cut_chars * CUT_FACTOR plus the length of the notes it was sent
+# (a model may repeat them before its new paragraph; the relay strips such an echo and bounds the rest itself).
+CUT_FACTOR = 1.5
 # After the sentinel the stream is read on for its finish and usage chunks, but closed at once when more than
 # SENTINEL_GRACE_CHARS of further content arrive (the model ignored the sentinel) or after SENTINEL_GRACE_S seconds.
 SENTINEL_GRACE_CHARS = 32
 SENTINEL_GRACE_S = 2.0
 MAX_RETRY_AFTER_S = 60.0
 _CONNECT_TIMEOUT_S = 10.0
+SEED_MODULUS = 2 ** 31  # request seeds are 31-bit, which every endpoint that takes `seed` accepts
+
+
+def segment_seed(key: str | int, index: int) -> int:
+    """A stable request seed for segment ``index`` of a run keyed by ``key`` (the run seed or run id): the first
+    eight bytes of SHA-256 of ``"{key}:{index}"`` modulo :data:`SEED_MODULUS`. Same inputs, same seed, on every
+    platform (unlike ``hash()``)."""
+    digest = hashlib.sha256(f"{key}:{index}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % SEED_MODULUS
 
 
 # --------------------------------------------------------------------------------------
@@ -188,7 +206,17 @@ def _message_text(content: Any) -> str:
     """Message content as text; some providers return a list of content parts."""
     if isinstance(content, list):
         return "".join(str(p.get("text", "")) for p in content if isinstance(p, Mapping))
-    return content or ""
+    return content if isinstance(content, str) else ""
+
+
+def _first_choice(chunk: Mapping[str, Any]) -> tuple[Mapping[str, Any], Any]:
+    """``(delta, finish_reason)`` of a chunk's first choice; an empty delta for any unexpected shape."""
+    choices = chunk.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, Mapping):
+        return {}, None
+    delta = choice.get("delta")
+    return (delta if isinstance(delta, Mapping) else {}), choice.get("finish_reason")
 
 
 # --------------------------------------------------------------------------------------
@@ -219,28 +247,26 @@ class _StreamState:
         """Process one decoded chunk; returns the events to emit and whether to stop reading."""
         if self.generation_id is None and isinstance(chunk.get("id"), str) and chunk["id"]:
             self.generation_id = chunk["id"]
-        if chunk.get("usage"):
+        if isinstance(chunk.get("usage"), Mapping) and chunk["usage"]:
             self.usage = dict(chunk["usage"])
         if self.sentinel_seen:
             return [], self._after_sentinel(chunk)
         if chunk.get("error"):
             self.finish = "error"
             return [StreamEvent(kind="error", error=_error_message(chunk["error"]), finish_reason="error")], True
-        choices = chunk.get("choices") or []
-        if not choices:
-            return [], False
-        choice = choices[0]
-        delta = choice.get("delta") or {}
+        delta, reason = _first_choice(chunk)
         events: list[StreamEvent] = []
         stop = False
-        if delta.get("reasoning"):
-            events.append(StreamEvent(kind="reasoning", text=delta["reasoning"]))
-        if delta.get("refusal"):
-            self.refusal += delta["refusal"]
-        if delta.get("content"):
-            event, stop = self._on_text(delta["content"])
+        reasoning = _message_text(delta.get("reasoning"))
+        if reasoning:
+            events.append(StreamEvent(kind="reasoning", text=reasoning))
+        self.refusal += _message_text(delta.get("refusal"))
+        content = _message_text(delta.get("content"))
+        if content:
+            event, stop = self._on_text(content)
             events.append(event)
-        reason = choice.get("finish_reason")
+        if not isinstance(reason, str):
+            reason = None
         if reason and self.finish is None:
             self.finish = reason
             if reason == "error":
@@ -255,8 +281,7 @@ class _StreamState:
         """A chunk inside the grace window after the sentinel; returns whether to stop reading."""
         if chunk.get("error"):
             return True  # the segment is already complete; a late error only costs the usage chunk
-        for choice in (chunk.get("choices") or [])[:1]:
-            self.after_sentinel += len((choice.get("delta") or {}).get("content") or "")
+        self.after_sentinel += len(_message_text(_first_choice(chunk)[0].get("content")))
         return self.usage is not None or self.after_sentinel > SENTINEL_GRACE_CHARS
 
     def _on_text(self, piece: str) -> tuple[StreamEvent, bool]:
@@ -374,7 +399,7 @@ class OpenRouterBackend:
 
     @staticmethod
     def _apply_model_params(body: dict[str, Any], model: ModelSpec, *, reasoning: Mapping[str, Any] | None,
-                            temperature: float | None, run_id: str) -> None:
+                            temperature: float | None, run_id: str, answer: bool = False) -> None:
         if reasoning is not None:
             body["reasoning"] = copy.deepcopy(dict(reasoning))
         if model.provider_routing:
@@ -386,6 +411,8 @@ class OpenRouterBackend:
             body["prompt_cache_key"] = key
             body["session_id"] = key
         extra = copy.deepcopy(dict(model.extra_body))
+        if answer:
+            _deep_update(extra, model.answer_extra_body)  # phase-specific values win (Sol: verbosity low)
         if model.provider_id.startswith("anthropic/"):
             extra.pop("verbosity", None)  # OpenRouter would map it to Claude's effort setting
         _deep_update(body, extra)
@@ -398,6 +425,12 @@ class OpenRouterBackend:
         ``stop`` is sent only for think segments on models that support it; temperature (``req.metadata
         ["temperature"]``) only if the model accepts it. Anthropic cache markers go on the system block and the last
         segment block of think requests (an answer request is a one-off prefix, so a cache write would be wasted).
+
+        Explore preset: ``req.system_override`` replaces the static system text and ``req.tail`` the tail block
+        (the last user block, which is never cache-marked), so the header and segment blocks stay append-only. In
+        phase ``answer`` ``model.answer_extra_body`` is merged over ``extra_body``. A model with ``supports_seed``
+        gets ``seed = segment_seed(key, index)`` with ``key = req.metadata["seed"]`` if present else ``req.run_id``
+        and ``index = req.metadata["segment_index"]`` (else ``metadata["segment"]``, else 0).
         """
         think = req.phase == "think"
         if think:
@@ -406,6 +439,10 @@ class OpenRouterBackend:
         else:
             system = answer_system_prompt(req.today)
             blocks = answer_user_blocks(req.question, req.segments)
+        if req.system_override is not None:
+            system = req.system_override
+        if req.tail is not None:
+            blocks[-1] = {"type": "text", "text": req.tail}
         system_block: dict[str, Any] = {"type": "text", "text": system}
         if think and model.cache_style == "anthropic":
             system_block["cache_control"] = {"type": "ephemeral"}
@@ -420,7 +457,11 @@ class OpenRouterBackend:
         if think and model.supports_stop:
             body["stop"] = [req.sentinel]
         self._apply_model_params(body, model, reasoning=model.reasoning, temperature=req.metadata.get("temperature"),
-                                 run_id=req.run_id)
+                                 run_id=req.run_id, answer=not think)
+        if model.supports_seed:
+            key = req.metadata.get("seed")
+            index = req.metadata.get("segment_index", req.metadata.get("segment", 0))
+            body["seed"] = segment_seed(req.run_id if key is None else key, int(index))
         return body
 
     def build_chat_body(self, model: ModelSpec, req: ChatRequest) -> dict:
@@ -435,6 +476,8 @@ class OpenRouterBackend:
             body["response_format"] = copy.deepcopy(req.response_format)
         reasoning = req.reasoning if req.reasoning is not None else model.reasoning
         self._apply_model_params(body, model, reasoning=reasoning, temperature=req.temperature, run_id="")
+        if model.supports_seed and req.metadata.get("seed") is not None:  # e.g. the explore next-move menu call
+            body["seed"] = segment_seed(req.metadata["seed"], int(req.metadata.get("segment_index", 0)))
         return body
 
     # ---- streaming ----------------------------------------------------------------------
@@ -448,10 +491,12 @@ class OpenRouterBackend:
         response is closed as soon as the usage chunk arrives, more than :data:`SENTINEL_GRACE_CHARS` of further
         content arrive, or :data:`SENTINEL_GRACE_S` seconds have passed. Failures inside the grace window do not
         fail the segment. For think segments of a ``model.cancellable`` model the response is also closed once the
-        text exceeds ``req.hard_cut_chars * 1.5`` characters (``"cut"``). A non-cancellable model's overflow is
-        read on (closing would not stop its billing, and the usage chunk comes last); the caller bounds it. Leaving
-        the ``async for`` early also closes the response. ``done.usage`` carries ``generation_id`` (the
-        ``X-Generation-Id`` header, else the chunks' ``id``) when known.
+        text exceeds ``req.hard_cut_chars * 1.5`` characters plus the length of the notes (an echo of them comes
+        first; ``"cut"``). A non-cancellable model's overflow is read on (closing would not stop its billing, and
+        the usage chunk comes last); the caller bounds it. Leaving the ``async for`` early also closes the response.
+        ``done.usage`` carries ``generation_id`` (the ``X-Generation-Id`` header, else the chunks' ``id``) when
+        known; so does ``usage`` of the first ``text`` or ``reasoning`` event, so a caller that closes the stream
+        itself (before ``done``) still has the id.
         HTTP and connection errors raise :class:`BackendError` before the first event; afterwards failures are
         reported as an ``error`` event followed by ``done`` with finish_reason ``"error"``.
         """
@@ -469,11 +514,17 @@ class OpenRouterBackend:
                 except httpx.HTTPError as e:
                     raise _transport_error(e, model) from e
                 raise _http_error(response, model)
-            cut = req.hard_cut_chars * CUT_FACTOR if req.phase == "think" and model.cancellable else None
+            cut = None
+            if req.phase == "think" and model.cancellable:
+                cut = req.hard_cut_chars * CUT_FACTOR + len(notes_echo_window(req.segments))
             state = _StreamState(req.sentinel, cut, response.headers.get("x-generation-id"))
+            tagged = False  # the generation id rides on the first text/reasoning event (StreamEvent has no field for it)
             try:
                 async with contextlib.aclosing(self._read_events(response, state)) as events:
                     async for event in events:
+                        if not tagged and event.kind in ("text", "reasoning") and state.generation_id is not None:
+                            event.usage = {"generation_id": state.generation_id}
+                            tagged = True
                         yield event
             except (httpx.HTTPError, ValueError) as e:
                 if not state.sentinel_seen:  # after the sentinel the segment is complete; only the usage is lost

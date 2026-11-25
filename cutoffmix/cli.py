@@ -3,8 +3,9 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...]
-    cutoffmix index show [--path FILE] [--probe P]
+                             [--preset NAME]
+    cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...] [--preset NAME]
+    cutoffmix index show [--path FILE] [--probe P] [--config FILE]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
     cutoffmix bench build-wikipedia --out FILE --start DATE --end DATE [--probe-model KEY]
@@ -17,7 +18,9 @@
 
 ``--mock`` uses the simulated models of :mod:`cutoffmix.backends.mock` everywhere. Commands that call the real
 models stop with a clear message when the API key variable (``OPENROUTER_API_KEY``) is not set. Benchmark modules
-are imported only by the subcommands that need them.
+are imported only by the subcommands that need them. ``--preset explore`` (``run`` and ``serve``) merges the packaged
+explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
+and the summary line adds the exploration metrics of the ``done`` event.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from typing import TYPE_CHECKING, Any, TextIO
 
 from cutoffmix import __version__
 from cutoffmix.relay import RelayRuntime, to_jsonable
+from cutoffmix.taxonomy import argmax_topic
 from cutoffmix.timeutil import month_label
 from cutoffmix.types import ModelSpec, RelayEvent
 
@@ -44,9 +48,10 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["CLIError", "TerminalPrinter", "build_parser", "format_tau", "main", "use_color"]
+__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "use_color"]
 
 PROBE_CHOICES = ("current", "current_d", "recall", "mcq")
+_ANY_ADDRESS = ("0.0.0.0", "::", "")  # --host values that bind every interface (no host name to allow)
 
 
 class CLIError(Exception):
@@ -127,6 +132,24 @@ class TerminalPrinter:
         r, g, b = _rgb(self.models[model].color)
         return self._sgr(label, f"48;2;{r};{g};{b}", "38;2;255;255;255", "1")
 
+    @staticmethod
+    def explore_tag(data: Mapping[str, Any]) -> str:
+        """The explore tag of a ``segment_start`` (DESIGN.md §7.6: ``data["explore"]`` with ``kind`` lens, check or
+        continue, ``field``, ``tier`` and ``cue``; the same keys flat in ``data`` are accepted too), else ``""``."""
+        nested = data.get("explore")
+        if isinstance(nested, Mapping):
+            data = nested
+        kind = data.get("kind")
+        if kind == "lens":
+            tier = data.get("tier")
+            return f"lens: {data.get('field') or '?'}" + (f" ({tier})" if tier else "")
+        if kind == "check":
+            return f"check: {data.get('field') or 'the previous lens'}"
+        if kind == "continue":
+            cue = str(data.get("cue") or "").strip()
+            return f"continue: '{cue}'" if cue else "continue"
+        return ""
+
     def _header(self, ev: RelayEvent) -> tuple[str, str]:
         """``(styled header, visible header)`` for a segment or answer start."""
         data = ev.data or {}
@@ -134,14 +157,16 @@ class TerminalPrinter:
         if "r" in data:
             bits.append(f"r={data['r']:.2f}")
         if ev.topic_posterior:
-            topic, p = max(ev.topic_posterior.items(), key=lambda kv: kv[1])
-            bits.append(f"{topic} {p:.0%}")
+            topic = argmax_topic(ev.topic_posterior)  # None: flat posterior, no topic to name
+            bits.append(f"{topic} {ev.topic_posterior[topic]:.0%}" if topic else "topic ?")
         if ev.phase == "answer":
             bits.insert(0, "answer")
         meta = " · ".join(b for b in bits if b)
+        tag = self.explore_tag(data)
         chip = self._chip(ev.model)
         plain_chip = f" {self.models[ev.model].label()} " if self.color and ev.model in self.models else chip
-        return f"{chip} {self._sgr(meta, '2')}", f"{plain_chip} {meta}"
+        styled = f"{chip} {self._sgr(meta, '2')}" + (f" {self._sgr(f'[{tag}]', '1')}" if tag else "")
+        return styled, f"{plain_chip} {meta}" + (f" [{tag}]" if tag else "")
 
     # ---- output ----
 
@@ -218,11 +243,69 @@ class TerminalPrinter:
             parts.append(f"first token {latency['first_delta_s']:.2f}s")
         if latency.get("total_s") is not None:
             parts.append(f"total {latency['total_s']:.2f}s")
+        partial = "" if data.get("usage_complete", True) else " (partial)"  # totals are a lower bound
         if usage.get("total_tokens"):
-            parts.append(f"tokens {usage['total_tokens']}")
+            parts.append(f"tokens {usage['total_tokens']}{partial}")
         if usage.get("cost"):
-            parts.append(f"cost ${usage['cost']:.4f}" + ("" if data.get("usage_complete", True) else " (partial)"))
+            parts.append(f"cost ${usage['cost']:.4f}{partial}")
+        explore = data.get("explore")
+        if isinstance(explore, Mapping):
+            parts.extend(explore_summary(explore))
         return " · ".join(parts)
+
+
+def _count(value: Any) -> int | None:
+    """A count from a metric that may be a number, a list (its length) or a mapping (its ``all`` or first value)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, Mapping) and value:
+        return _count(value.get("all", next(iter(value.values()))))
+    return None
+
+
+def _share(value: Any) -> float | None:
+    """A share in [0, 1] from a coverage metric that may be a number or a mapping of shares (the first one)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    if isinstance(value, Mapping) and value:
+        return _share(next(iter(value.values())))
+    return None
+
+
+def explore_summary(explore: Mapping[str, Any]) -> list[str]:
+    """Summary parts for the explore metrics of a ``done`` event (DESIGN.md §7): lenses kept/dropped, labels
+    coverage, topics visited, forced continuations. Every key is optional."""
+    parts: list[str] = []
+    lens = explore.get("lens")
+    if isinstance(lens, Mapping):
+        written = _count(lens.get("written", lens.get("offered")))
+        kept, dropped = _count(lens.get("kept")), _count(lens.get("dropped"))
+        if written is not None or kept is not None or dropped is not None:
+            verdicts = ", ".join(f"{n} {word}" for n, word in ((kept, "kept"), (dropped, "dropped")) if n is not None)
+            parts.append(f"lenses {written if written is not None else (kept or 0) + (dropped or 0)}"
+                         + (f" ({verdicts})" if verdicts else ""))
+    labels = explore.get("labels")
+    coverage = _share(labels.get("coverage")) if isinstance(labels, Mapping) else None
+    if coverage is not None:
+        parts.append(f"labels {coverage:.0%}")
+    topics = _count(explore.get("topics_visited"))
+    if topics is not None:
+        parts.append(f"topics {topics}")
+    forced = _count(explore.get("forced_continuations"))
+    if forced is not None:
+        parts.append(f"forced {forced}")
+    wws = explore.get("wws")  # notes without 'Where we stand:' (skipped / cut) and gate waivers; only when non-zero
+    if isinstance(wws, Mapping):
+        bits = [f"{n} {word}" for word in ("missing", "cut", "waived") if (n := _count(wws.get(word)))]
+        if bits:
+            parts.append("wws " + ", ".join(bits))
+    return parts
 
 
 # --------------------------------------------------------------------------------------
@@ -234,7 +317,7 @@ def _load_cfg(args: argparse.Namespace, overrides: dict[str, Any] | None = None)
     from cutoffmix.config import load_config
 
     try:
-        return load_config(getattr(args, "config", None), overrides or None)
+        return load_config(getattr(args, "config", None), overrides or None, preset=getattr(args, "preset", None))
     except (ValueError, OSError) as e:
         raise CLIError(f"invalid configuration: {e}") from e
 
@@ -355,13 +438,24 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         import uvicorn
     except ImportError as e:
         raise CLIError("serving needs uvicorn and FastAPI: pip install 'cutoffmix[server]'") from e
-    from cutoffmix.server import create_app
+    from cutoffmix import server
 
     cfg = _load_cfg(args)
     if not args.mock:
         _require_key(cfg, "'cutoffmix serve'")
-    app = create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin)
-    print(f"cutoffmix {'(simulated models) ' if args.mock else ''}on http://{args.host}:{args.port}/", file=sys.stderr)
+    hosts = list(args.allow_host)
+    if args.host in _ANY_ADDRESS:
+        if not hosts:
+            print(f"cutoffmix: listening on all interfaces, but only {', '.join(server.LOOPBACK_HOSTS)} and the "
+                  "hosts of --allow-origin are served; add --allow-host NAME for the name or address other "
+                  "machines use", file=sys.stderr)
+    else:
+        hosts.append(args.host)
+    app = server.create_app(cfg, mock=args.mock, allowed_origins=args.allow_origin, allowed_hosts=hosts,
+                            config_path=args.config)
+    modes = [*(["simulated models"] if args.mock else []), *([f"preset {args.preset}"] if args.preset else [])]
+    print(f"cutoffmix{' (' + ', '.join(modes) + ')' if modes else ''} on http://{args.host}:{args.port}/",
+          file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 
@@ -404,14 +498,15 @@ def render_index(index: CutoffIndex, probe: str, *, color: bool = False) -> str:
 def _cmd_index_show(args: argparse.Namespace) -> int:
     from cutoffmix.router.index import load_index
 
+    cfg = _load_cfg(args)  # router.index_path and router.probe_preference, as routing and /api/index use them
     try:
-        index = load_index(args.path)
+        index = load_index(args.path or cfg.router.index_path)
     except (OSError, ValueError) as e:
         raise CLIError(f"cannot load the index: {e}") from e
     if index is None:
         raise CLIError("no cutoff index: pass --path FILE (written by 'cutoffmix bench fit'), or ship "
                        "cutoffmix/data/index_prior.json", code=1)
-    probe = args.probe or index.primary().probe
+    probe = args.probe or index.primary(cfg.router.probe_preference).probe
     if probe not in index.probes:
         raise CLIError(f"probe {probe!r} not in the index; available: {', '.join(index.probes)}")
     print(render_index(index, probe, color=use_color(sys.stdout)))
@@ -485,8 +580,10 @@ async def _close(backend: Any) -> None:
 def _cmd_bench_run(args: argparse.Namespace) -> int:
     from cutoffmix.backends import make_backend
     from cutoffmix.bench.io import load_events
-    from cutoffmix.bench.runner import estimate_cost, run_probes
+    from cutoffmix.bench.runner import BATCH_UNSUPPORTED, estimate_cost, run_probes
 
+    if args.batch and not args.dry_run:
+        raise CLIError(BATCH_UNSUPPORTED)
     cfg = _load_cfg(args)
     events = load_events(args.events)
     if args.limit is not None:
@@ -615,6 +712,12 @@ def _add_config(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", metavar="FILE", help="YAML config merged over the packaged defaults")
 
 
+def _add_preset(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--preset", metavar="NAME",
+                   help="packaged preset merged before --config: 'explore' (structured notes, cross-field lenses, a "
+                        "record gate before the answer; DESIGN.md section 7)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The ``cutoffmix`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -632,9 +735,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--segments", type=int, metavar="N", help="maximum number of note segments")
     run.add_argument("--segment-tokens", type=int, metavar="K", help="visible tokens asked per segment")
     run.add_argument("--answer-mode", choices=("routed", "inline"))
-    run.add_argument("--seed", type=int, help="seed for routing (and the simulated models)")
+    run.add_argument("--seed", type=int,
+                     help="seed for routing, the simulated models and the explore preset's client-side draws")
     run.add_argument("--today", metavar="YYYY-MM-DD", help="date given to the models (default: today)")
     run.add_argument("--json", metavar="OUT", help="write the trace (with usage and latency) as JSON")
+    _add_preset(run)
     _add_config(run)
     run.set_defaults(func=_cmd_run)
 
@@ -644,15 +749,21 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--mock", action="store_true", help="use the simulated models")
     serve.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
                        help="a browser origin (scheme://host[:port]) besides the server's own that may POST to the "
-                            "API, e.g. the public URL of a reverse proxy; repeatable")
+                            "API, e.g. the public URL of a reverse proxy (its host is also served); repeatable")
+    serve.add_argument("--allow-host", action="append", default=[], metavar="HOST",
+                       help="a host name or address clients may use in Host besides localhost and --host, e.g. a "
+                            "LAN address or a proxy's public name ('*' for any: no DNS-rebinding protection); "
+                            "repeatable")
+    _add_preset(serve)
     _add_config(serve)
     serve.set_defaults(func=_cmd_serve)
 
     index = sub.add_parser("index", help="inspect the cutoff index")
     index_sub = index.add_subparsers(dest="index_command", required=True, metavar="ACTION")
     show = index_sub.add_parser("show", help="print the topic x model cutoff table")
-    show.add_argument("--path", help="index JSON (default: the packaged prior)")
-    show.add_argument("--probe", choices=PROBE_CHOICES)
+    show.add_argument("--path", help="index JSON (default: router.index_path of the config, else the packaged prior)")
+    show.add_argument("--probe", choices=PROBE_CHOICES, help="default: the first of router.probe_preference")
+    _add_config(show)
     show.set_defaults(func=_cmd_index_show)
 
     bench = sub.add_parser("bench", help="build and run the topic-stratified cutoff benchmark")
@@ -689,7 +800,9 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--models", nargs="*", metavar="KEY", help="default: every configured model")
     br.add_argument("--probes", nargs="+", choices=PROBE_CHOICES, default=list(PROBE_CHOICES))
     br.add_argument("--dry-run", action="store_true", help="only print the call and cost estimate")
-    br.add_argument("--batch", action="store_true", help="use OpenRouter's discounted :batch variants")
+    br.add_argument("--batch", action="store_true",
+                    help="not supported (OpenRouter serves :batch ids only through its Batch API); with --dry-run "
+                         "it only notes that no batch discount applies")
     br.add_argument("--limit", type=int, metavar="N", help="only the first N events")
     br.add_argument("--judges", nargs="*", default=[], metavar="KEY", help="judge models for open answers")
     br.add_argument("--concurrency", type=int, default=8)

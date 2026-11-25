@@ -1,0 +1,1973 @@
+{
+ "finishing_round_robin": {
+  "decide_calls": [
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": null,
+    "update": true,
+    "window": "Who is the chancellor right now?"
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "a",
+    "update": true,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far."
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": true,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far.\n\nStep 1: the evidence for item 1 is consistent with every record known so far."
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "c",
+    "update": false,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far.\n\nStep 1: the evidence for item 1 is consistent with every record known so far.\n\nWrapping up the shared notes here."
+   }
+  ],
+  "events": [
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "think",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 0,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "Step 0: the evidenc",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "e for it",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "em 0 is ",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "consiste",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "nt with ",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "every re",
+    "type": "delta"
+   },
+   {
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "cord known so far.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "final": false,
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": {
+      "completion_tokens": 20,
+      "completion_tokens_details": {
+       "reasoning_tokens": 7
+      },
+      "cost": 0.002,
+      "prompt_tokens": 10
+     }
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "text": "Step 0: the evidence for item 0 is consistent with every record known so far.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 1,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "Step 1: the evidenc",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "e for it",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "em 1 is ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "consiste",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "nt with ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "every re",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "cord known so far.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "final": false,
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": {
+      "completion_tokens": 20,
+      "completion_tokens_details": {
+       "reasoning_tokens": 7
+      },
+      "cost": 0.002,
+      "prompt_tokens": 10
+     }
+    },
+    "decision": "sample",
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "Step 1: the evidence for item 1 is consistent with every record known so far.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "c",
+    "phase": "think",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 2,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "c",
+    "phase": "think",
+    "segment": 2,
+    "text": "Wrapping up the sha",
+    "type": "delta"
+   },
+   {
+    "model": "c",
+    "phase": "think",
+    "segment": 2,
+    "text": "red notes here.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "final": true,
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": {
+      "completion_tokens": 20,
+      "completion_tokens_details": {
+       "reasoning_tokens": 7
+      },
+      "cost": 0.002,
+      "prompt_tokens": 10
+     }
+    },
+    "decision": "sample",
+    "model": "c",
+    "phase": "think",
+    "segment": 2,
+    "text": "Wrapping up the shared notes here.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "answer",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 3,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "phase"
+   },
+   {
+    "model": "a",
+    "phase": "answer",
+    "segment": 3,
+    "text": "The answer is 42.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "saw_sentinel": false,
+     "ttft_s": "<time>",
+     "usage": {
+      "completion_tokens": 3,
+      "cost": 0.001,
+      "prompt_tokens": 5
+     }
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "answer",
+    "segment": 3,
+    "text": "The answer is 42.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "answer": "The answer is 42.",
+     "disabled": [],
+     "dropped": [],
+     "ended_at": "<time>",
+     "latency": "<time>",
+     "question": "Who is the chancellor right now?",
+     "refusals": {},
+     "run_id": "run-1",
+     "segments": [
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 0,
+       "model": "a",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "a": 27.0,
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Step 0: the evidence for item 0 is consistent with every record known so far.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": {
+        "completion_tokens": 20,
+        "completion_tokens_details": {
+         "reasoning_tokens": 7
+        },
+        "cost": 0.002,
+        "prompt_tokens": 10
+       }
+      },
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 1,
+       "model": "b",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "a": 27.0,
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Step 1: the evidence for item 1 is consistent with every record known so far.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": {
+        "completion_tokens": 20,
+        "completion_tokens_details": {
+         "reasoning_tokens": 7
+        },
+        "cost": 0.002,
+        "prompt_tokens": 10
+       }
+      },
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 2,
+       "model": "c",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "a": 27.0,
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Wrapping up the shared notes here.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": {
+        "completion_tokens": 20,
+        "completion_tokens_details": {
+         "reasoning_tokens": 7
+        },
+        "cost": 0.002,
+        "prompt_tokens": 10
+       }
+      },
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 3,
+       "model": "a",
+       "note": "stop",
+       "phase": "answer",
+       "scores": {
+        "a": 27.0,
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "The answer is 42.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": {
+        "completion_tokens": 3,
+        "cost": 0.001,
+        "prompt_tokens": 5
+       }
+      }
+     ],
+     "share_by_model": {
+      "a": 0.4095744680851064,
+      "b": 0.4095744680851064,
+      "c": 0.18085106382978725
+     },
+     "started_at": "<time>",
+     "status": "ok",
+     "switches": 2,
+     "usage": {
+      "a": {
+       "calls": 2,
+       "completion_tokens": 23,
+       "completion_tokens_details": {
+        "reasoning_tokens": 7
+       },
+       "cost": 0.003,
+       "prompt_tokens": 15
+      },
+      "b": {
+       "calls": 1,
+       "completion_tokens": 20,
+       "completion_tokens_details": {
+        "reasoning_tokens": 7
+       },
+       "cost": 0.002,
+       "prompt_tokens": 10
+      },
+      "c": {
+       "calls": 1,
+       "completion_tokens": 20,
+       "completion_tokens_details": {
+        "reasoning_tokens": 7
+       },
+       "cost": 0.002,
+       "prompt_tokens": 10
+      }
+     },
+     "usage_complete": true,
+     "usage_missing": [],
+     "usage_total": {
+      "calls": 4,
+      "completion_tokens": 63,
+      "completion_tokens_details": {
+       "reasoning_tokens": 21
+      },
+      "cost": 0.007,
+      "prompt_tokens": 35
+     }
+    },
+    "type": "done"
+   }
+  ],
+  "requests": [
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "a",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 2
+    },
+    "model": "c",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far.",
+     "Step 1: the evidence for item 1 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "answer",
+     "segment": 3
+    },
+    "model": "a",
+    "phase": "answer",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far.",
+     "Step 1: the evidence for item 1 is consistent with every record known so far.",
+     "Wrapping up the shared notes here."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 1024,
+    "today": "2026-11-24"
+   }
+  ]
+ },
+ "refusal_reroute": {
+  "decide_calls": [
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": null,
+    "update": true,
+    "window": "Who is the chancellor right now?"
+   },
+   {
+    "available": [
+     "b",
+     "c"
+    ],
+    "current": null,
+    "update": false,
+    "window": "Who is the chancellor right now?"
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": true,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far."
+   },
+   {
+    "available": [
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": false,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far."
+   },
+   {
+    "available": [
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": true,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far.\n\nStep 1: the evidence for item 1 is consistent with every record known so far."
+   },
+   {
+    "available": [
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": false,
+    "window": "Who is the chancellor right now?\n\nStep 0: the evidence for item 0 is consistent with every record known so far.\n\nStep 1: the evidence for item 1 is consistent with every record known so far."
+   }
+  ],
+  "events": [
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "think",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 0,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "dropped": true,
+     "error": "refused: policy",
+     "finish_reason": "content_filter",
+     "phase": "think",
+     "reason": "refused"
+    },
+    "model": "a",
+    "phase": "think",
+    "segment": 0,
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 1,
+     "available": [
+      "b",
+      "c"
+     ],
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 0,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "Step 0: the evidenc",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "e for it",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "em 0 is ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "consiste",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "nt with ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "every re",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "cord known so far.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 1,
+     "duration_s": "<time>",
+     "final": false,
+     "finish_reason": "stop",
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "sample",
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "Step 0: the evidence for item 0 is consistent with every record known so far.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "think",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 1,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "dropped": true,
+     "error": "refused: policy",
+     "finish_reason": "content_filter",
+     "phase": "think",
+     "reason": "refused"
+    },
+    "model": "a",
+    "phase": "think",
+    "segment": 1,
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 1,
+     "available": [
+      "b",
+      "c"
+     ],
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 1,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "Step 1: the evidenc",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "e for it",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "em 1 is ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "consiste",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "nt with ",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "every re",
+    "type": "delta"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "cord known so far.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 1,
+     "duration_s": "<time>",
+     "final": false,
+     "finish_reason": "stop",
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "text": "Step 1: the evidence for item 1 is consistent with every record known so far.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "b",
+      "c"
+     ],
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 2,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "segment_start"
+   },
+   {
+    "data": {
+     "aborted": true,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "final": true,
+     "finish_reason": "marker",
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "saw_sentinel": false,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "think",
+    "segment": 2,
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "b",
+      "c"
+     ],
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "answer",
+    "scores": {
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 3,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "phase"
+   },
+   {
+    "model": "b",
+    "phase": "answer",
+    "segment": 3,
+    "text": "Answer by someone else.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "finish_reason": "stop",
+     "probs": {
+      "b": 0.5,
+      "c": 0.5
+     },
+     "r": 0.9,
+     "saw_sentinel": false,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "hold",
+    "model": "b",
+    "phase": "answer",
+    "segment": 3,
+    "text": "Answer by someone else.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "answer": "Answer by someone else.",
+     "disabled": [
+      "a"
+     ],
+     "dropped": [
+      {
+       "attempt": 0,
+       "error": "refused: policy",
+       "finish_reason": "content_filter",
+       "index": 0,
+       "model": "a",
+       "phase": "think",
+       "reason": "refused"
+      },
+      {
+       "attempt": 0,
+       "error": "refused: policy",
+       "finish_reason": "content_filter",
+       "index": 1,
+       "model": "a",
+       "phase": "think",
+       "reason": "refused"
+      }
+     ],
+     "ended_at": "<time>",
+     "latency": "<time>",
+     "question": "Who is the chancellor right now?",
+     "refusals": {
+      "a": 2
+     },
+     "run_id": "run-1",
+     "segments": [
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 0,
+       "model": "b",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Step 0: the evidence for item 0 is consistent with every record known so far.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": null
+      },
+      {
+       "aborted": false,
+       "decision": "hold",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 1,
+       "model": "b",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Step 1: the evidence for item 1 is consistent with every record known so far.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": null
+      },
+      {
+       "aborted": true,
+       "decision": "hold",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 2,
+       "model": "b",
+       "note": "marker",
+       "phase": "think",
+       "scores": {
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": null
+      },
+      {
+       "aborted": false,
+       "decision": "hold",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 3,
+       "model": "b",
+       "note": "stop",
+       "phase": "answer",
+       "scores": {
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Answer by someone else.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": null
+      }
+     ],
+     "share_by_model": {
+      "b": 1.0
+     },
+     "started_at": "<time>",
+     "status": "ok",
+     "switches": 0,
+     "usage": {
+      "a": {
+       "calls": 2
+      },
+      "b": {
+       "calls": 4
+      }
+     },
+     "usage_complete": false,
+     "usage_missing": [
+      {
+       "attempt": 0,
+       "finish_reason": "content_filter",
+       "generation_id": null,
+       "index": 0,
+       "model": "a",
+       "phase": "think"
+      },
+      {
+       "attempt": 1,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 0,
+       "model": "b",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "content_filter",
+       "generation_id": null,
+       "index": 1,
+       "model": "a",
+       "phase": "think"
+      },
+      {
+       "attempt": 1,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 1,
+       "model": "b",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "marker",
+       "generation_id": null,
+       "index": 2,
+       "model": "b",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 3,
+       "model": "b",
+       "phase": "answer"
+      }
+     ],
+     "usage_total": {
+      "calls": 6
+     }
+    },
+    "type": "done"
+   }
+  ],
+  "requests": [
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "a",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "a",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 2
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far.",
+     "Step 1: the evidence for item 1 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "answer",
+     "segment": 3
+    },
+    "model": "b",
+    "phase": "answer",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Step 0: the evidence for item 0 is consistent with every record known so far.",
+     "Step 1: the evidence for item 1 is consistent with every record known so far."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 1024,
+    "today": "2026-11-24"
+   }
+  ]
+ },
+ "speculative": {
+  "decide_calls": [
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": null,
+    "update": true,
+    "window": "Who is the chancellor right now?"
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": true,
+    "window": "Who is the chancellor right now?\n\nDraft by b: the evidence points one way, as recorded."
+   },
+   {
+    "available": [
+     "a",
+     "b",
+     "c"
+    ],
+    "current": "b",
+    "update": false,
+    "window": "Who is the chancellor right now?\n\nDraft by b: the evidence points one way, as recorded."
+   }
+  ],
+  "events": [
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.0,
+      "b": 1.0,
+      "c": 0.0
+     },
+     "r": 0.9,
+     "strategy": "speculative"
+    },
+    "decision": "speculative",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "a": 1.0,
+     "b": 5.0,
+     "c": 2.0
+    },
+    "segment": 0,
+    "topic_posterior": {
+     "government": 1.0
+    },
+    "type": "segment_start"
+   },
+   {
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "Draft by b: the evidence points one way, as recorded.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "drafts": {
+      "a": "Draft by a: the evidence points one way, as recorded.",
+      "b": "Draft by b: the evidence points one way, as recorded.",
+      "c": "Draft by c: the evidence points one way, as recorded."
+     },
+     "duration_s": "<time>",
+     "failed_drafts": {},
+     "final": false,
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.0,
+      "b": 1.0,
+      "c": 0.0
+     },
+     "r": 0.9,
+     "saw_sentinel": true,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "speculative",
+    "model": "b",
+    "phase": "think",
+    "segment": 0,
+    "text": "Draft by b: the evidence points one way, as recorded.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.0,
+      "b": 1.0,
+      "c": 0.0
+     },
+     "r": 0.9,
+     "strategy": "speculative"
+    },
+    "decision": "speculative",
+    "model": "b",
+    "phase": "think",
+    "scores": {
+     "a": 1.0,
+     "b": 5.0,
+     "c": 2.0
+    },
+    "segment": 1,
+    "topic_posterior": {
+     "government": 1.0
+    },
+    "type": "segment_start"
+   },
+   {
+    "data": {
+     "aborted": true,
+     "attempt": 0,
+     "drafts": {
+      "a": "",
+      "b": "",
+      "c": ""
+     },
+     "duration_s": "<time>",
+     "failed_drafts": {},
+     "final": true,
+     "finish_reason": "marker",
+     "probs": {
+      "a": 0.0,
+      "b": 1.0,
+      "c": 0.0
+     },
+     "r": 0.9,
+     "saw_sentinel": false,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "speculative",
+    "model": "b",
+    "phase": "think",
+    "segment": 1,
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "attempt": 0,
+     "available": [
+      "a",
+      "b",
+      "c"
+     ],
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "strategy": "sequential"
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "answer",
+    "scores": {
+     "a": 27.0,
+     "b": 27.0,
+     "c": 27.0
+    },
+    "segment": 2,
+    "topic_posterior": {
+     "government": 0.7,
+     "sports": 0.3
+    },
+    "type": "phase"
+   },
+   {
+    "model": "a",
+    "phase": "answer",
+    "segment": 2,
+    "text": "Speculative answer.",
+    "type": "delta"
+   },
+   {
+    "data": {
+     "aborted": false,
+     "attempt": 0,
+     "duration_s": "<time>",
+     "finish_reason": "stop",
+     "probs": {
+      "a": 0.3333,
+      "b": 0.3333,
+      "c": 0.3333
+     },
+     "r": 0.9,
+     "saw_sentinel": false,
+     "ttft_s": "<time>",
+     "usage": null
+    },
+    "decision": "sample",
+    "model": "a",
+    "phase": "answer",
+    "segment": 2,
+    "text": "Speculative answer.",
+    "type": "segment_end"
+   },
+   {
+    "data": {
+     "answer": "Speculative answer.",
+     "disabled": [],
+     "dropped": [],
+     "ended_at": "<time>",
+     "latency": "<time>",
+     "question": "Who is the chancellor right now?",
+     "refusals": {},
+     "run_id": "run-1",
+     "segments": [
+      {
+       "aborted": false,
+       "decision": "speculative",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 0,
+       "model": "b",
+       "note": "stop",
+       "phase": "think",
+       "scores": {
+        "a": 1.0,
+        "b": 5.0,
+        "c": 2.0
+       },
+       "started_at": "<time>",
+       "text": "Draft by b: the evidence points one way, as recorded.",
+       "topic_posterior": {
+        "government": 1.0
+       },
+       "usage": null
+      },
+      {
+       "aborted": true,
+       "decision": "speculative",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 1,
+       "model": "b",
+       "note": "marker",
+       "phase": "think",
+       "scores": {
+        "a": 1.0,
+        "b": 5.0,
+        "c": 2.0
+       },
+       "started_at": "<time>",
+       "text": "",
+       "topic_posterior": {
+        "government": 1.0
+       },
+       "usage": null
+      },
+      {
+       "aborted": false,
+       "decision": "sample",
+       "ended_at": "<time>",
+       "explore": null,
+       "index": 2,
+       "model": "a",
+       "note": "stop",
+       "phase": "answer",
+       "scores": {
+        "a": 27.0,
+        "b": 27.0,
+        "c": 27.0
+       },
+       "started_at": "<time>",
+       "text": "Speculative answer.",
+       "topic_posterior": {
+        "government": 0.7,
+        "sports": 0.3
+       },
+       "usage": null
+      }
+     ],
+     "share_by_model": {
+      "b": 1.0
+     },
+     "started_at": "<time>",
+     "status": "ok",
+     "switches": 0,
+     "usage": {
+      "a": {
+       "calls": 3
+      },
+      "b": {
+       "calls": 2
+      },
+      "c": {
+       "calls": 2
+      }
+     },
+     "usage_complete": false,
+     "usage_missing": [
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 0,
+       "model": "a",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 0,
+       "model": "b",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 0,
+       "model": "c",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "marker",
+       "generation_id": null,
+       "index": 1,
+       "model": "a",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "marker",
+       "generation_id": null,
+       "index": 1,
+       "model": "b",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 1,
+       "model": "c",
+       "phase": "think"
+      },
+      {
+       "attempt": 0,
+       "finish_reason": "stop",
+       "generation_id": null,
+       "index": 2,
+       "model": "a",
+       "phase": "answer"
+      }
+     ],
+     "usage_total": {
+      "calls": 7
+     }
+    },
+    "type": "done"
+   }
+  ],
+  "requests": [
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "answer",
+     "segment": 2
+    },
+    "model": "a",
+    "phase": "answer",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Draft by b: the evidence points one way, as recorded."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 1024,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "a",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "a",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Draft by b: the evidence points one way, as recorded."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "b",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Draft by b: the evidence points one way, as recorded."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 0
+    },
+    "model": "c",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   },
+   {
+    "final_marker": "FINAL ANSWER:",
+    "hard_cut_chars": 600,
+    "max_tokens": null,
+    "metadata": {
+     "phase": "think",
+     "segment": 1
+    },
+    "model": "c",
+    "phase": "think",
+    "question": "Who is the chancellor right now?",
+    "run_id": "run-1",
+    "segments": [
+     "Draft by b: the evidence points one way, as recorded."
+    ],
+    "sentinel": "<<END_STEP>>",
+    "system_override": null,
+    "tail": null,
+    "target_tokens": 64,
+    "today": "2026-11-24"
+   }
+  ]
+ }
+}

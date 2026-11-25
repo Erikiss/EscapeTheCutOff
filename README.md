@@ -27,6 +27,17 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
     Modelle greifen die Notizen der anderen auf und korrigieren sie. Bei Artemis II (April 2026) brachte Fable Details
     ein, die Sol und Neon zunächst als unbelegt markiert hatten.
   - Die echten SSE-Mitschnitte liegen als Test-Fixtures in `tests/fixtures/live_sse/`.
+  - Ein Lauf mit dem **Explore-Preset** (`--policy round_robin`, Frage zu Lithium-Ionen-Akkus bei Kälte): 11 Abschnitte,
+    139 s, 0,29 $. Fable brachte einen weiten Blickwinkel ein (Erzähltheorie: der „unzuverlässige Erzähler“ als Bild
+    für die Reichweitenanzeige bei Kälte), Sol prüfte ihn und behielt ihn mit einer konkreten Testidee, Sol korrigierte
+    später eine zu starre 0-°C-Grenze für Lithium-Plating, Neon schrieb die Antwort mit `Basis:` und `Not resolved:`.
+  - **Beobachtung zu Fable im Explore-Modus:** Anthropics Eingangsfilter sperrte 2 von 4 Fable-Aufrufen mit der
+    Kategorie „reverse engineering or duplicating model outputs“. Das Relay hat jeweils umgeroutet und Fable nach der
+    zweiten Verweigerung für den Lauf deaktiviert. 17 Cent-Aufrufe zur Eingrenzung zeigen: Der Standard-Prompt geht
+    immer durch, auch mit derselben Frage; die Explore-Vorgabe (beschriftete Punkte, Liste der noch fehlenden Punkte)
+    löst die Sperre fast immer aus, mit vorhandenen Notizen seltener. Welches Wort genau, ließ sich nicht isolieren;
+    es wirkt wie ein Schwellenwert-Klassifikator, den die Schema-Anweisung überschreitet. Deshalb bekommt Fable im
+    Explore-Modus eine abgeschwächte Vorgabe (siehe unten).
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -42,7 +53,7 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
   vorn**. Mit echten Modellen und diesem Index schreibt deshalb meist Sol, und die anderen kommen nur durch das
   Sampling zum Zug. „Immer Sol“ ist damit die Baseline, die das Routing schlagen muss.
 - **Themen-Umkehrungen** (z. B. Fable bei KI-Themen, Neon bei Raumfahrt) lassen sich erst mit einem neuen,
-  themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 961 Wikidata-Ereignisse dafür liegen in
+  themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 953 Wikidata-Ereignisse dafür liegen in
   `data/events/`. Der Lauf kostet Geld (siehe unten) und wird nur mit Freigabe gestartet.
 - **Wechsel pro Abschnitt, nicht pro Token.** Die Modelle teilen über diese APIs keine nativen Thinking-Tokens: Jeder
   Aufruf denkt verborgen, und dieses Denken wird verworfen. Geteilt wird ein **sichtbarer Notizstrom**. Jeder Abschnitt
@@ -147,10 +158,11 @@ cutoffmix serve
 
 - `cutoffmix`: das Relay;
 - `cutoffmix-speculative`: das Relay mit parallelen Entwürfen;
-- `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich.
+- `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich;
+- `cutoffmix-explore`: das Relay mit dem Explore-Preset (siehe unten).
 
 Die Notizen kommen als `delta.reasoning` (dort, wo OpenAI-kompatible Clients Thinking anzeigen), die Antwort als
-`delta.content`. Pro Anfrage lassen sich `policy`, `strategy` und `segment_tokens` im Request-Body setzen.
+`delta.content`. Pro Anfrage lassen sich `policy`, `strategy`, `segment_tokens` und `preset` im Request-Body setzen.
 
 Konfiguration: `--config datei.yaml` wird über `cutoffmix/data/default.yaml` gemischt. Beispiel für einen neu
 gemessenen Index:
@@ -163,11 +175,54 @@ relay:
   segment_tokens: 128
 ```
 
+## Explore-Preset: Querverbindungen und ausführlichere Notizen
+
+```bash
+cutoffmix run --preset explore "Warum verlieren Lithium-Ionen-Akkus bei Kälte an Kapazität?"
+cutoffmix run --preset explore --policy round_robin "…"      # alle drei Modelle sichtbar, nicht nur das freshste
+cutoffmix serve --preset explore                              # UI-Auswahl „Preset“; API-Modell-ID cutoffmix-explore
+```
+
+Hintergrund: Der Wunsch war, die Modelle mit hoher Temperatur laufen zu lassen, damit die Kette über andere
+Fachgebiete wandert, und sie mehr Zwischenschritte ausschreiben zu lassen. Drei Literaturrecherchen mit über 140
+direkt geprüften Quellen (`docs/research/explore-*.md`, Synthese in `docs/DESIGN_explore.md`) haben ergeben:
+
+- **Temperatur ist bei keinem der drei Modelle wirksam.** Fable 5.2 und GPT-6.2 Sol haben den Parameter nicht.
+  Bei Gemini 4 Neon nimmt OpenRouter ihn an, aber laut Googles Doku ignoriert der Server Werte im erlaubten Bereich
+  und lehnt andere mit 400 ab. Das Preset schickt deshalb keine Temperatur. Die Studien sprechen auch inhaltlich
+  dagegen: Höhere Temperatur bringt wenig Neuheit und messbar mehr Inkohärenz, lange Ketten brechen ab T ≈ 1,5
+  zusammen, und selbst bei T = 2 bleiben über 60 % der Antworten fast gleich.
+- **„Mehr schreiben“ verbessert bei Frontier-Modellen die Antwort nicht,** eher im Gegenteil (umgekehrte U-Kurve
+  über die Länge; erzwungenes Weiterdenken erzeugt Varianz). Es verbessert aber Nachvollziehbarkeit und Breite.
+- **Was nachweislich hilft, ist „anderes schreiben“:** explizit verworfene Alternativen, Prinzipien aus anderen
+  Feldern, Zwischenstände, Impulse von außen.
+
+Das Preset setzt deshalb auf Protokoll statt Sampling:
+
+| Mechanismus | Was passiert |
+|---|---|
+| **Fachfremder Blickwinkel** (`lens`) | Vor einzelnen mittleren Abschnitten zieht das Relay per Seed ein Fachgebiet aus 23 Feldern (Thermodynamik, Immunologie, Spieltheorie, Musiktheorie, …), meist mittelweit oder weit vom Thema entfernt. Das schreibende Modell muss zwei bis drei funktionale Entsprechungen nennen, eine prüfbare Folgerung ableiten und zur Frage zurückkehren. |
+| **Prüfabschnitt** (`check`) | Direkt danach prüft ein **anderes** Modell: Welche Entsprechung hält, wo bricht die Analogie, `Lens kept:` oder `Lens dropped:`. Blickwinkel-Abschnitte zählen nicht zum Routing-Fenster, damit der Router nicht dem Analogiefeld hinterherwechselt. |
+| **Strukturierte Notizen** | Jeder Abschnitt besteht aus 2–4 beschrifteten Punkten (`Claim:`, `Evidence:` mit Quelle, `Inference:`, `Principle:`, `Alternative set aside:`, `Open question:`, `Next:`) und endet mit `Where we stand:` (beste Antwort, Konfidenz, schwächste Annahme). Abschnitte sind 192 statt 128 Token lang. |
+| **Abschluss-Sperre** | `FINAL ANSWER` wird erst akzeptiert, wenn mindestens 6 Hauptabschnitte vorliegen und das Protokoll `Evidence:`, `Alternative set aside:` und `Open question:` enthält. |
+| **Fortsetzung statt „Wait“** (`continue`) | Schließt ein Modell zu früh ab, bleibt sein Notizteil erhalten, die Antwort wird verworfen, und ein anderes Modell setzt mit einem inhaltlichen Einstieg fort („Alternatively, …“, „The strongest objection to the current conclusion is …“). Höchstens dreimal; bei Wiederholung wird die Antwort akzeptiert. |
+| **Sol** | `verbosity: medium` für Notizen, `low` für die Antwort, fester `seed` pro Abschnitt. |
+| **Fable: abgeschwächte Vorgabe** (`light_schema_models`) | Fable bekommt den Standard-Systemprompt und einen Schlussblock ohne die Liste beschrifteter Punkte; Nummer der Notiz, Blickwinkel-/Prüf-/Fortsetzungsanweisung und die Freigabe zum Abschluss bleiben. Beides ist live nachgewiesen durchgelassen (erster Abschnitt und Blickwinkel-Abschnitt mit Notizen). Fables Notizen tragen deshalb meist keine Labels; die Checkliste wird von Sol und Neon erfüllt. |
+| **Optional** `vs_menu: stagnation` | Bei festgefahrener Kette fragt ein Nebenaufruf an Sol fünf Richtungen mit Wahrscheinlichkeiten ab (Verbalized Sampling) und der Client wählt eine unwahrscheinliche. Standardmäßig aus. |
+
+**Messwerte** stehen in `done.explore` bzw. im Trace: besuchte Themen und ihre Entropie, Blickwinkel
+(angeboten/behalten/verworfen, Felder, Quote), Label-Abdeckung, erzwungene Fortsetzungen, Antwortwechsel in den
+`Where we stand:`-Zeilen, Überlappung der letzten Abschnitte. CLI-Zusammenfassung und UI zeigen sie an.
+
+**Grenzen:** Mit dem Prior-Index schreibt auch hier meist Sol, Querverbindungen wechseln also das Modell nicht
+(`--policy round_robin` zeigt alle drei). Das Preset verbessert Antworten nicht, es macht sie nachvollziehbarer und
+breiter. Kosten: etwa das 1,5- bis 2,5-Fache eines Standardlaufs, ca. 100–140 s mit `round_robin`.
+
 ## Den Index neu messen (themenstratifiziert)
 
 ```bash
 cutoffmix bench import-kc --out runs/kc                                   # öffentliche Bench-Daten
-cutoffmix bench build-wikidata --out runs/wikidata_events.jsonl           # optional; 961 Ereignisse liegen bereits in data/events/
+cutoffmix bench build-wikidata --out runs/wikidata_events.jsonl           # optional; 953 Ereignisse liegen bereits in data/events/
 cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl \
     --probes current_d mcq --dry-run                                      # zuerst nur Kosten schätzen
 cutoffmix bench run --events data/events/wikidata_events.jsonl --out runs/results.jsonl --probes current_d mcq

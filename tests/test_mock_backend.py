@@ -6,10 +6,25 @@ import re
 
 import pytest
 
+import hashlib
+
 from cutoffmix.backends import MockBackend, MockModelTruth, OpenRouterBackend, default_mock_truths, make_backend
 from cutoffmix.backends.base import BackendError
 from cutoffmix.config import default_config, load_config
-from cutoffmix.prompts import clean_segment, split_final
+from cutoffmix.prompts import (
+    answer_system_prompt_explore,
+    check_text,
+    clean_segment,
+    continue_text,
+    lens_text,
+    missing_record_items,
+    parse_labels,
+    record_status_text,
+    relay_system_prompt_explore,
+    relay_tail,
+    split_final,
+    vs_direction_text,
+)
 from cutoffmix.taxonomy import TOPIC_IDS
 from cutoffmix.timeutil import month_index, month_label
 from cutoffmix.types import Backend, ChatRequest, ContinuationRequest, Event, ModelSpec, StreamEvent
@@ -17,6 +32,7 @@ from cutoffmix.types import Backend, ChatRequest, ContinuationRequest, Event, Mo
 CFG = default_config()
 FABLE, SOL, NEON = (CFG.model(k) for k in ("claude-fable-5.2", "gpt-6.2-sol", "gemini-4-neon"))
 S = "<<END_STEP>>"
+FINAL = "FINAL ANSWER:"
 
 
 class FakeClassifier:
@@ -208,6 +224,180 @@ async def test_default_keyword_classifier_is_loaded_lazily():
     b = MockBackend(default_mock_truths(latency_s=0), today="2026-11-24")
     text = text_of(await stream(b, SOL, "Which large language model did OpenAI release last?"))
     assert "known as of" in text
+
+
+async def test_default_output_is_pinned():
+    """The explore preset added a second note style; without ``system_override`` the output stays byte-identical
+    (hashes recorded before the explore preset existed)."""
+    b = mock(seed=3, segments_to_answer=3)
+    q = "Who is the minister of finance?"
+    notes: list[str] = []
+    hashes = []
+    for model in (FABLE, SOL, NEON, SOL):
+        text = text_of(await stream(b, model, q, notes, target_tokens=128))
+        hashes.append(hashlib.sha256(text.encode()).hexdigest()[:16])
+        notes.append(text.replace(S, ""))
+    answer = text_of(await stream(b, FABLE, q, notes, phase="answer"))
+    hashes.append(hashlib.sha256(answer.encode()).hexdigest()[:16])
+    assert hashes == ["09d5634921a64a7c", "fb87dfae67b20bf3", "5a96790d347095e2", "06eade36f5ed5e22",
+                      "11258190941d000a"]
+    short = text_of(await stream(b, FABLE, "Who is the minister?", target_tokens=20))
+    assert short == ('First, the question ("Who is the minister?") is about who holds the office, so the answer '
+                     "depends on recent cabinet changes, resignations and appointments rather than on stable "
+                     "background knowledge.")
+
+
+# --------------------------------------------------------------------------------------
+# explore preset (DESIGN.md §7): structured notes under the per-segment directive
+# --------------------------------------------------------------------------------------
+
+EXPLORE_CFG = load_config(preset="explore")
+EXPLORE_SYSTEM = relay_system_prompt_explore(192, "2026-11-24", S, FINAL)
+Q = "Who is the minister of finance?"
+
+
+def closed_tail(k: int, directive: str = "", missing: list[str] | None = None) -> str:
+    items = missing if missing is not None else [f"{6 - k + 1} more main-line notes"]
+    return relay_tail(k, record_status_text(items, False), directive)
+
+
+def open_tail(k: int, directive: str = "") -> str:
+    return relay_tail(k, record_status_text([], True), directive)
+
+
+async def explore_note(b: MockBackend, model: ModelSpec, notes: list[str], tail: str, **kw) -> str:
+    raw = text_of(await stream(b, model, Q, notes, target_tokens=192, hard_cut_chars=1000,
+                               system_override=EXPLORE_SYSTEM, tail=tail, sentinel=S, **kw))
+    return clean_segment(raw, "", sentinel=S, hard_cut_chars=1000)[0]
+
+
+async def test_explore_notes_are_labelled_items_ending_with_where_we_stand():
+    b = mock()
+    for n, model in enumerate((FABLE, SOL)):  # n >= 2 would be the one early conclusion (tested below)
+        notes = ["a note." * 3] * n
+        text = await explore_note(b, model, notes, closed_tail(n + 1))
+        parsed = parse_labels(text)
+        assert 2 <= parsed["items"] <= 4 and parsed["has_wws"], text
+        assert parsed["counts"].get("Principle", 0) <= 1
+        assert text.rstrip().startswith(tuple(f"{label}:" for label in parsed["counts"]))
+        assert text.rstrip().endswith(".") and "Where we stand:" in text.splitlines()[-1]
+        assert "known as of" in text or "as of 2026" in text  # still topic- and cutoff-specific
+        assert FINAL not in text  # n < 2: no early conclusion, and the gate is closed
+
+
+async def test_explore_notes_cover_the_labels_the_tail_says_are_missing():
+    b = mock()
+    missing = missing_record_items(main_line_count=1, min_segments=6, label_counts={},
+                                   require_labels=EXPLORE_CFG.explore.require_labels, wws_recent=True,
+                                   pending_check=False)
+    assert len(missing) == 4  # five more notes + three labels
+    text = await explore_note(b, SOL, ["a first note."], closed_tail(2, missing=missing))
+    counts = parse_labels(text)["counts"]
+    assert counts.get("Evidence") == 1 and counts.get("Alternative set aside") == 1 and counts.get("Open question") == 1
+    assert "(source:" in text  # the Evidence item names its source
+    custom = closed_tail(2, missing=["an 'Observation:' item"])
+    assert "Observation:" in await explore_note(b, SOL, ["a first note."], custom)  # unknown labels get a generic item
+
+
+async def test_explore_lens_note_opens_with_the_field_and_carries_an_inference():
+    b = mock()
+    directive = lens_text("music theory", ("counterpoint", "polyrhythm", "harmonic series"))
+    text = await explore_note(b, NEON, ["one.", "two."], closed_tail(3, directive))
+    parsed = parse_labels(text)
+    assert text.startswith("Lens (music theory):") and parsed["lens_prefix"] == "music theory"
+    assert "counterpoint" in text and "polyrhythm" in text and "harmonic series" not in text.split("\n")[0][-30:]
+    assert parsed["counts"].get("Inference") == 1 and "working analogy" in text
+    assert parsed["has_wws"] and "Back to the problem" in text and len(text) < 1000
+    assert text.index("Back to the problem") < text.index("Where we stand:")
+
+
+async def test_explore_check_verdict_is_deterministic_and_mostly_kept():
+    directive = check_text("music theory")
+    a = await explore_note(mock(seed=1), FABLE, ["one.", "two.", "Lens (music theory): x."], closed_tail(4, directive))
+    b = await explore_note(mock(seed=1), FABLE, ["one.", "two.", "Lens (music theory): x."], closed_tail(4, directive))
+    assert a == b and parse_labels(a)["lens_verdict"] in ("kept", "dropped")
+    assert a.startswith(("Lens kept:", "Lens dropped:")) and parse_labels(a)["has_wws"]
+    verdicts = []
+    backend = mock(seed=7)
+    for i in range(120):
+        notes = ["one."] * (i % 5 + 1)
+        text = await explore_note(backend, (FABLE, SOL, NEON)[i % 3], notes, closed_tail(len(notes) + 1,
+                                                                                       check_text(f"field {i}")))
+        verdicts.append(parse_labels(text)["lens_verdict"])
+    assert None not in verdicts
+    assert 0.45 < verdicts.count("kept") / len(verdicts) < 0.75  # about 60 % kept
+
+
+async def test_explore_continuation_starts_with_the_cue():
+    b = mock()
+    directive = continue_text("the record has no 'Open question:' item yet", "Alternatively, ")
+    text = await explore_note(b, SOL, ["one.", "two.", "three."], closed_tail(4, directive))
+    assert text.startswith("Alternatively, ") and FINAL not in text
+    assert parse_labels(text)["counts"].get("Open question") == 1 and parse_labels(text)["has_wws"]
+    colon = continue_text("why", "One thing not yet checked: ")
+    text2 = await explore_note(b, SOL, ["one.", "two.", "three."], closed_tail(4, colon))
+    assert text2.startswith("One thing not yet checked: ")
+
+
+async def test_explore_direction_from_the_next_move_menu_shapes_the_first_claim():
+    text = await explore_note(mock(), FABLE, ["one."], closed_tail(2, vs_direction_text("compare two sources")))
+    assert text.startswith("Claim: following the direction (compare two sources)")
+
+
+async def test_explore_final_answer_only_when_the_moderator_accepts_plus_one_early_attempt():
+    b = mock()
+    for n in (0, 1):
+        assert FINAL not in await explore_note(b, FABLE, ["x."] * n, closed_tail(n + 1))
+    early_raw = text_of(await stream(b, FABLE, Q, ["one.", "two."], system_override=EXPLORE_SYSTEM,
+                                     tail=closed_tail(3), sentinel=S, hard_cut_chars=1000, target_tokens=192))
+    note, answer = split_final(early_raw, FINAL)
+    assert answer and "known as of" in answer
+    assert note.startswith("Claim: the record already settles the problem") and "Where we stand:" in note
+    # the relay commits the note part; from then on the mock concludes only when the gate is open
+    later = await explore_note(b, SOL, ["one.", "two.", note], closed_tail(4))
+    assert FINAL not in later and FINAL not in await explore_note(b, NEON, ["one.", "two.", note, later],
+                                                                  closed_tail(5))
+    accepted = text_of(await stream(b, SOL, Q, ["one.", "two.", note, later], system_override=EXPLORE_SYSTEM,
+                                    tail=open_tail(5), sentinel=S))
+    assert accepted.startswith(FINAL) and accepted.endswith(S)  # the answer instead of a note
+    assert "should be checked against a current source" in accepted
+
+
+async def test_explore_notes_fit_the_hard_cut_for_every_topic():
+    b = mock(classifier=None)  # the keyword classifier: whichever topic phrases a question hits
+    questions = ["What happened on the front line near the city?", "Which bank changed its policy rate?",
+                 "What is the mission status of the Moon lander?", "Who won the championship?"]
+    directive = lens_text("narrative and visual arts", ("narrative arc", "negative space", "foreshadowing"))
+    for q in questions:
+        for tail in (closed_tail(3, directive), closed_tail(3, check_text("narrative and visual arts")),
+                     closed_tail(3)):
+            raw = text_of(await stream(b, SOL, q, ["one.", "two."], target_tokens=192, hard_cut_chars=1000,
+                                       system_override=EXPLORE_SYSTEM, tail=tail, sentinel=S))
+            text = raw.replace(S, "")
+            assert len(text) < 1000 and text.rstrip().endswith("."), text
+            assert "Where we stand:" in text.splitlines()[-1]
+
+
+async def test_explore_answer_names_its_basis_when_asked():
+    b = mock()
+    with_basis = text_of(await stream(b, FABLE, Q, ["a."], phase="answer",
+                                      system_override=answer_system_prompt_explore("2026-11-24")))
+    assert with_basis.startswith("Based on the shared notes") and "\n\nBasis: " in with_basis
+    assert with_basis.rstrip().split("\n")[-1].startswith("Not resolved: ")
+    without = text_of(await stream(b, FABLE, Q, ["a."], phase="answer",
+                                   system_override=answer_system_prompt_explore("2026-11-24", answer_basis=False)))
+    assert "Basis:" not in without and without == with_basis.split("\n\nBasis:")[0]
+    plain = text_of(await stream(b, FABLE, Q, ["a."], phase="answer"))
+    assert plain == without  # the default answer is unchanged
+
+
+async def test_explore_usage_counts_the_tail_and_stream_shape_is_unchanged():
+    b = mock()
+    events = await stream(b, SOL, Q, [], system_override=EXPLORE_SYSTEM, tail=closed_tail(1), sentinel=S)
+    assert events[-1].kind == "done" and events[-1].finish_reason == "sentinel"
+    assert text_of(events).endswith(S) and all(0 < len(e.text) <= 8 for e in events if e.kind == "text")
+    plain = await stream(b, SOL, Q, [], sentinel=S)
+    assert events[-1].usage["prompt_tokens"] > plain[-1].usage["prompt_tokens"]
 
 
 # --------------------------------------------------------------------------------------

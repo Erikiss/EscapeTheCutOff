@@ -1,16 +1,22 @@
-"""Relay prompt templates and segment post-processing (DESIGN.md §3.2).
+"""Relay prompt templates and segment post-processing (DESIGN.md §3.2 and §7).
 
 One neutral template ("template B") is used for every model: several analysts append the next intermediate result
 plus its evidence to shared notes. The wording deliberately avoids the words thinking/reasoning/scratchpad and any
-XML-like tags, which Anthropic lists as ``reasoning_extraction`` refusal triggers.
+XML-like tags, which Anthropic lists as ``reasoning_extraction`` refusal triggers. The explore preset's texts
+(labelled-items template, lens/check/continuation directives, record status, next-move menu) follow the same rule
+and also avoid the stem "reason" altogether; their labels are plain words ending with a colon.
 
 Request bodies must stay append-only so provider prompt caches keep hitting: the system prompt is static for a run,
-the user message is a constant header block, one block per committed segment, and a constant tail block.
+the user message is a constant header block, one block per committed segment, and a tail block. In the default relay
+the tail is constant; in the explore preset it is the *only* block that varies per segment (:func:`relay_tail`).
 """
 
 from __future__ import annotations
 
+import random
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 RELAY_SYSTEM_TEMPLATE = (
     "Several analysts are jointly working through the problem in the user message; their shared notes so far are "
@@ -46,6 +52,301 @@ def answer_system_prompt(today: str | None) -> str:
     return ANSWER_SYSTEM_TEMPLATE + (DATE_SENTENCE.format(today=today) if today else "")
 
 
+# --------------------------------------------------------------------------------------
+# Explore preset (DESIGN.md §7): structured notes, lens, check, continuation, record status, next-move menu
+# --------------------------------------------------------------------------------------
+
+RELAY_SYSTEM_TEMPLATE_EXPLORE = (
+    "Several analysts are jointly working through the problem in the user message and keep one shared set of "
+    "working notes; the notes so far are included and are the only record that is kept. Contribute the next note in "
+    "about {K} tokens, written so it can be appended as the next paragraph. A note is two to four short labelled "
+    "items, each one or two sentences, chosen from: 'Claim:' (a definite statement); 'Evidence:' (a fact, number, "
+    "observation or source that supports or weakens a claim; name where it comes from); 'Inference:' (what follows "
+    "from which claims, as 'because A and B, therefore C'); 'Principle:' (a general rule from any field that applies "
+    "here; name the field and apply it to the problem); 'Alternative set aside:' (a route or answer a careful analyst "
+    "would propose, and the concrete grounds on which it is set aside); 'Open question:' (what is unsettled and what "
+    "would settle it); 'Next:' (the single most useful thing the next analyst should do). Every note ends with "
+    "'Where we stand:' followed by one sentence giving the current best answer, a confidence from low to high, and "
+    "the weakest assumption. Keep the labels exactly as given, in English, even when the notes are in another "
+    "language; write everything else in the language of the notes (or of the problem if there are no notes yet). Do "
+    "not restate earlier items; extend, correct or contradict them and say which. If an earlier note is wrong, start "
+    "with 'Correction:' and fix it. Prefer the most recent facts you know and say when a fact may have changed. The "
+    "last paragraph of the user message says whether the moderator accepts a conclusion; only then may you write "
+    "'{final_marker}' followed by the answer instead of a note. Output only the note, then {sentinel}."
+)
+ANSWER_LENS_SENTENCE = (
+    " Where the notes mark a cross-field lens as kept, use only its concrete consequence; never present a lens, kept "
+    "or dropped, as evidence."
+)
+ANSWER_BASIS_SENTENCE = (
+    " After the answer add 'Basis:' naming the claims and evidence it rests on, and 'Not resolved:' listing the open "
+    "questions that remain."
+)
+ANSWER_SYSTEM_EXPLORE_SUFFIX = ANSWER_LENS_SENTENCE + ANSWER_BASIS_SENTENCE
+
+RELAY_TAIL_EXPLORE = "END OF THE SHARED NOTES. Write note {k}. {record_status} {directive}"
+RECORD_CLOSED_TEXT = (
+    "Items still missing from the record: {missing}. The moderator does not accept a conclusion yet; do not write "
+    "'{final_marker}'."
+)
+RECORD_CLOSED_NO_ITEMS_TEXT = "The moderator does not accept a conclusion yet; do not write '{final_marker}'."
+RECORD_OPEN_TEXT = (
+    "The record is complete. If the notes settle the problem, the moderator accepts a conclusion: write "
+    "'{final_marker}' followed by the answer instead of a note."
+)
+# The checklist phrase for the 'Where we stand:' line; also the reminder appended to the record status whenever the
+# previous note has no such line (skipped by the model, or removed by the client-side hard cut).
+WWS_ITEM = "a 'Where we stand:' line at the end of this note"
+RECORD_OPEN_WWS_TEXT = " If you write a note, end it with a 'Where we stand:' line."
+
+LENS_TEXT = (
+    "Cross-field lens for this note: the field is {field}. Choose one specific, well-established concept from this "
+    "field (for example {c1}, {c2} or {c3}) whose structure resembles the current intermediate result. Give two or "
+    "three short mappings stating what in our problem plays the role of what in that concept; match by function and "
+    "relations, not by surface features. Then give one 'Inference:' item with a concrete consequence or testable "
+    "question this suggests for the problem, marked as a working analogy rather than evidence. Begin the note with "
+    "'Lens ({field}):' and, before 'Where we stand:', write one sentence that returns to the problem. Use "
+    "textbook-level knowledge of the field, not recent news."
+)
+CHECK_TEXT = (
+    "The previous note applied a cross-field lens from {field}. Begin this note by testing it in one to three "
+    "sentences: which mapping holds, where the comparison breaks (name at least one real difference), and whether its "
+    "suggested consequence survives. Write 'Lens kept:' or 'Lens dropped:' followed by why. If kept, use the "
+    "consequence concretely in the rest of the note; if dropped, continue the main line without it."
+)
+CONTINUE_TEXT = (
+    "The moderator set aside the conclusion in the previous note because {why}. Begin this note with the words "
+    "'{cue}' and add what is missing. If the previous note's 'Where we stand:' is wrong, say so and why; you may "
+    "contradict it."
+)
+VS_MENU_SYSTEM = "You advise a group of analysts who keep shared working notes on a problem."
+VS_MENU_USER = (
+    "PROBLEM: {question}\n\nSHARED NOTES SO FAR: {notes}\n\n"
+    "List five candidate directions for the next note. Write each on its own line in the form "
+    "'n. direction | p=0.xx', where p is your estimate of the share of analysts who would take that direction next; "
+    "the five values need not sum to one. At least three directions must have p below 0.10 and draw on fields of "
+    "knowledge not yet used in the notes. One line each, at most 25 words per direction, no other text."
+)
+VS_DIRECTION_TEXT = (
+    "Direction for this note: {direction}. Develop it with the usual labelled items and return to the problem before "
+    "'Where we stand:'."
+)
+VS_MENU_P_MAX = 0.10  # a menu line counts as a tail direction when its p is below this
+VS_MENU_MIN_LINES = 3  # fewer parsed lines than this: the menu is discarded
+
+# Canonical labels (without the colon) in the order of the template; "Lens" stands for the 'Lens (field):' prefix.
+LABELS: tuple[str, ...] = ("Claim", "Evidence", "Inference", "Principle", "Alternative set aside", "Open question",
+                           "Next", "Where we stand", "Lens kept", "Lens dropped", "Correction", "Lens")
+_LABEL_CORE = (
+    r"(?P<label>Claim|Evidence|Inference|Principle|Alternative[ \t]+set[ \t]+aside|Open[ \t]+question|Next"
+    r"|Where[ \t]+we[ \t]+stand|Lens[ \t]+kept|Lens[ \t]+dropped|Correction|Lens[ \t]*\((?P<field>[^()\n]+)\))"
+)
+_MARK = r"(?:\*\*|__)?"  # markdown bold around the label or the whole 'Label:'
+_BULLET = r"(?:[-*•][ \t]+|\d{1,2}[.)][ \t]+)?"
+_LABEL_TAIL = r"[ \t]*" + _MARK + r"[ \t]*:"
+# Spec form: a label at the start of a line, tolerating markdown bold and a bullet.
+LABEL_RE = re.compile(r"^[ \t]*" + _BULLET + _MARK + r"[ \t]*" + _LABEL_CORE + _LABEL_TAIL, re.IGNORECASE | re.MULTILINE)
+# What the parser uses: also a label that follows a sentence end inside a paragraph ("... result. Evidence: ...").
+_LABEL_ANYWHERE = re.compile(
+    r"(?:^[ \t]*" + _BULLET + r"|(?<=[.!?…)\]\"”’])[ \t]+)" + _MARK + r"[ \t]*" + _LABEL_CORE
+    + _LABEL_TAIL,
+    re.IGNORECASE | re.MULTILINE,
+)
+# 'Lens (field):' as the first thing in a note (markdown bold and a bullet tolerated); group "field".
+LENS_PREFIX_RE = re.compile(r"\A\s*" + _BULLET + _MARK + r"[ \t]*Lens[ \t]*\((?P<field>[^()\n]+)\)" + _LABEL_TAIL,
+                            re.IGNORECASE)
+VS_LINE_RE = re.compile(r"^\s*(\d)[.)]\s*(.+?)\s*\|\s*p\s*=\s*(0?\.\d+|1(?:\.0+)?)\s*$", re.MULTILINE)
+_WORD = re.compile(r"\w+", re.UNICODE)
+_NUMBER_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+
+def relay_system_prompt_explore(target_tokens: int, today: str | None, sentinel: str, final_marker: str) -> str:
+    """The static explore system prompt (structured notes); the date sentence is omitted when ``today`` is None."""
+    text = RELAY_SYSTEM_TEMPLATE_EXPLORE.format(K=target_tokens, sentinel=sentinel, final_marker=final_marker)
+    return text + (DATE_SENTENCE.format(today=today) if today else "")
+
+
+def answer_system_prompt_explore(today: str | None, *, answer_basis: bool = True) -> str:
+    """The explore answer prompt: the default one plus the lens sentence and, with ``answer_basis``, the
+    'Basis:' / 'Not resolved:' sentence; the date sentence is omitted when ``today`` is None."""
+    text = ANSWER_SYSTEM_TEMPLATE + ANSWER_LENS_SENTENCE + (ANSWER_BASIS_SENTENCE if answer_basis else "")
+    return text + (DATE_SENTENCE.format(today=today) if today else "")
+
+
+def _join_items(items: Sequence[str]) -> str:
+    items = [s.strip() for s in items if s and s.strip()]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def record_status_text(missing: Sequence[str], gate_open: bool, final_marker: str = "FINAL ANSWER:", *,
+                       remind_wws: bool = False) -> str:
+    """The record-status sentence(s) of the explore tail: what is still missing while the gate is closed, or the
+    permission to conclude once it is open. ``missing`` is ignored when ``gate_open`` is true.
+
+    ``remind_wws`` (the previous note has no 'Where we stand:' line, or the hard cut removed it) adds
+    :data:`WWS_ITEM` to the missing items while the gate is closed and :data:`RECORD_OPEN_WWS_TEXT` once it is open,
+    so the reminder is in the tail even when the gate does not (or no longer) require the line.
+    """
+    if gate_open:
+        return RECORD_OPEN_TEXT.format(final_marker=final_marker) + (RECORD_OPEN_WWS_TEXT if remind_wws else "")
+    items = [s for s in missing if s and s.strip()]
+    if remind_wws and WWS_ITEM not in items:
+        items.append(WWS_ITEM)
+    joined = _join_items(items)
+    if not joined:
+        return RECORD_CLOSED_NO_ITEMS_TEXT.format(final_marker=final_marker)
+    return RECORD_CLOSED_TEXT.format(missing=joined, final_marker=final_marker)
+
+
+def relay_tail(k: int, record_status: str, directive: str = "") -> str:
+    """The explore tail block for note ``k`` (1-based): the only block that varies between segments. ``directive`` is
+    empty, :data:`LENS_TEXT`, :data:`CHECK_TEXT`, :data:`CONTINUE_TEXT` or :data:`VS_DIRECTION_TEXT` (formatted)."""
+    return RELAY_TAIL_EXPLORE.format(k=k, record_status=record_status.strip(), directive=directive.strip()).rstrip()
+
+
+def lens_text(field: str, concepts: Sequence[str]) -> str:
+    """:data:`LENS_TEXT` for a field (display name) and its three example concepts."""
+    c = list(concepts) + [""] * 3
+    return LENS_TEXT.format(field=field, c1=c[0], c2=c[1], c3=c[2])
+
+
+def check_text(field: str) -> str:
+    """:data:`CHECK_TEXT` for the field of the previous lens note."""
+    return CHECK_TEXT.format(field=field)
+
+
+def continue_text(why: str, cue: str) -> str:
+    """:data:`CONTINUE_TEXT` with the moderator's grounds and the opening cue (surrounding whitespace dropped)."""
+    return CONTINUE_TEXT.format(why=why.strip().rstrip("."), cue=cue.strip())
+
+
+def vs_menu_messages(question: str, notes: Sequence[str]) -> list[dict[str, Any]]:
+    """Chat messages of the next-move menu side call (verbalized sampling; the client picks from the tail)."""
+    body = "\n\n".join(s.strip() for s in notes if s.strip()) or "(no notes yet)"
+    return [{"role": "system", "content": VS_MENU_SYSTEM},
+            {"role": "user", "content": VS_MENU_USER.format(question=question.strip(), notes=body)}]
+
+
+def vs_direction_text(direction: str) -> str:
+    """:data:`VS_DIRECTION_TEXT` for the chosen menu line."""
+    return VS_DIRECTION_TEXT.format(direction=direction.strip().rstrip("."))
+
+
+def _article(label: str) -> str:
+    return "an" if label[:1].lower() in "aeiou" else "a"
+
+
+def missing_record_items(*, main_line_count: int, min_segments: int, label_counts: Mapping[str, int],
+                         require_labels: Iterable[str], wws_recent: bool, pending_check: bool) -> list[str]:
+    """The phrases of the record checklist that still fail (DESIGN.md §7.4), for :func:`record_status_text`.
+
+    ``label_counts`` is ``parse_labels(all notes)["counts"]`` (canonical labels without the colon);
+    ``require_labels`` the configured labels with their colon; ``wws_recent`` whether a 'Where we stand:' line appears
+    in one of the last ``where_we_stand_window`` notes (its phrase is :data:`WWS_ITEM`); ``pending_check`` whether a
+    lens still awaits its check. An empty list means the record is complete.
+    """
+    out: list[str] = []
+    short = min_segments - main_line_count
+    if short > 0:
+        n = _NUMBER_WORDS[short] if short < len(_NUMBER_WORDS) else str(short)
+        out.append(f"{n} more main-line note{'s' if short != 1 else ''}")
+    for label in require_labels:
+        name = label.strip().rstrip(":").strip()
+        if label_counts.get(name, 0) <= 0:
+            detail = " that names its source" if name.lower() == "evidence" else ""
+            out.append(f"{_article(name)} '{name}:' item{detail}")
+    if not wws_recent:
+        out.append(WWS_ITEM)
+    if pending_check:
+        out.append("the test of the previous cross-field lens ('Lens kept:' or 'Lens dropped:')")
+    return out
+
+
+def _canonical_label(raw: str) -> str:
+    text = re.sub(r"\s+", " ", raw.strip()).lower()
+    if text.startswith("lens ("):
+        return "Lens"
+    for label in LABELS:
+        if label.lower() == text:
+            return label
+    return raw.strip()  # unreachable for the fixed alternatives; keeps the parser total
+
+
+def parse_labels(text: str) -> dict[str, Any]:
+    """Find the labelled items of a note (or of all notes joined).
+
+    Returns ``{"counts": {label: n}, "items": n, "has_wws": bool, "lens_prefix": field | None,
+    "lens_verdict": "kept" | "dropped" | None, "wws_sentence": str}``: ``counts`` uses the canonical labels of
+    :data:`LABELS` (``"Lens"`` for a ``'Lens (field):'`` prefix, which also fills ``lens_prefix`` when it opens the
+    text); ``items`` counts every labelled item except 'Where we stand:'; ``wws_sentence`` is the text after the
+    last 'Where we stand:' up to the next label or the end (whitespace collapsed, ``""`` if absent). Labels are
+    matched at line starts and after a sentence end inside a paragraph, case-insensitively, tolerating markdown
+    bold and bullets.
+    """
+    counts: dict[str, int] = {}
+    verdict: str | None = None
+    wws_end: int | None = None
+    matches = list(_LABEL_ANYWHERE.finditer(text))
+    for m in matches:
+        label = _canonical_label(m.group("label"))
+        counts[label] = counts.get(label, 0) + 1
+        if label in ("Lens kept", "Lens dropped") and verdict is None:
+            verdict = "kept" if label == "Lens kept" else "dropped"
+        if label == "Where we stand":
+            wws_end = m.end()
+    wws_sentence = ""
+    if wws_end is not None:
+        after = [m.start() for m in matches if m.start() >= wws_end]
+        wws_sentence = re.sub(r"\s+", " ", text[wws_end: after[0] if after else len(text)]).strip()
+    prefix = LENS_PREFIX_RE.match(text)
+    return {
+        "counts": counts,
+        "items": sum(n for label, n in counts.items() if label != "Where we stand"),
+        "has_wws": "Where we stand" in counts,
+        "lens_prefix": prefix.group("field").strip() if prefix else None,
+        "lens_verdict": verdict,
+        "wws_sentence": wws_sentence,
+    }
+
+
+def parse_vs_menu(text: str) -> list[tuple[str, float]]:
+    """The ``(direction, p)`` lines of a next-move menu, in order; lines not in the form ``n. direction | p=0.xx``
+    are skipped (markdown bold around a direction is removed)."""
+    out: list[tuple[str, float]] = []
+    for m in VS_LINE_RE.finditer(text):
+        direction = m.group(2).strip().strip("*_").strip()
+        if direction:
+            out.append((direction, float(m.group(3))))
+    return out
+
+
+def pick_vs_direction(menu: Sequence[tuple[str, float]], rng: random.Random) -> tuple[str, float] | None:
+    """The client-side pick from a parsed menu: one of the lines with ``p`` below :data:`VS_MENU_P_MAX` (if fewer than
+    two, the two lowest-``p`` lines); ``None`` when fewer than :data:`VS_MENU_MIN_LINES` lines parsed (the relay then
+    writes a plain note)."""
+    if len(menu) < VS_MENU_MIN_LINES:
+        return None
+    low = [line for line in menu if line[1] < VS_MENU_P_MAX]
+    if len(low) < 2:
+        low = sorted(menu, key=lambda line: line[1])[:2]
+    return rng.choice(low)
+
+
+def word3gram_jaccard(a: str, b: str) -> float:
+    """Jaccard overlap of the word-3-gram sets of two texts (lower-cased word tokens); 0.0 when either text has fewer
+    than three words. Used for loop detection between the last two notes."""
+    def grams(text: str) -> set[tuple[str, ...]]:
+        words = [w.lower() for w in _WORD.findall(text)]
+        return {tuple(words[i: i + 3]) for i in range(len(words) - 2)}
+
+    ga, gb = grams(a), grams(b)
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
+
 def _note_blocks(question: str, segments: list[str]) -> list[dict]:
     blocks = [{"type": "text", "text": HEADER_TEMPLATE.format(question=question.strip())}]
     if segments:
@@ -73,6 +374,15 @@ def answer_user_blocks(question: str, segments: list[str]) -> list[dict]:
 # --------------------------------------------------------------------------------------
 
 _OVERLAP_WINDOW = 2000  # longest echoed overlap we look for, in characters
+# How much of the notes (their end) a model may repeat before its new paragraph. Real segments are 400-600 chars,
+# and models sometimes echo the last two or three notes, or all of them, before continuing.
+ECHO_WINDOW_CHARS = 8000
+
+
+def notes_echo_window(segments: list[str]) -> str:
+    """The end of the notes (at most :data:`ECHO_WINDOW_CHARS`) that a model may repeat before its new paragraph:
+    the segments joined as the request shows them (blank line between), whitespace at both ends stripped."""
+    return "\n\n".join(s.strip() for s in segments)[-ECHO_WINDOW_CHARS:]
 
 
 def trim_overlap(notes_tail: str, new: str, min_len: int = 12) -> str:
@@ -149,6 +459,19 @@ def trim_to_sentence(text: str, max_chars: int) -> str:
     return text[:best].rstrip()
 
 
+def complete_sentences(text: str) -> str:
+    """``text`` up to its last sentence end (same rules as :func:`trim_to_sentence`), or ``""`` if it has none.
+
+    For a paragraph that was cut off (``finish_reason`` ``length``): the dangling half sentence is dropped.
+    """
+    text = text.strip()
+    best = 0
+    for m in _SENTENCE_END.finditer(text):
+        if _is_sentence_end(text, m):
+            best = m.end()
+    return text[:best].rstrip()
+
+
 _FENCE_OPEN = re.compile(r"^```[\w+.-]*[ \t]*(?:\n|$)")
 _FENCE_CLOSE = re.compile(r"(?:^|\n)[ \t]*```[ \t]*$")
 _LABEL = re.compile(
@@ -203,7 +526,9 @@ def _sentinel_pattern(sentinel: str) -> re.Pattern[str] | None:
     return re.compile(r"[<\[]{1,2}[ \t]*" + core_re + r"[ \t]*[>\]]{0,2}", re.IGNORECASE)
 
 
-def _cut_at_sentinel(raw: str, sentinel: str) -> tuple[str, bool]:
+def cut_at_sentinel(raw: str, sentinel: str) -> tuple[str, bool]:
+    """``(text before the first exact or mangled sentinel, whether one was found)``; a truncated sentinel at the very
+    end (a stream cut inside it) is removed too, but does not count as found."""
     idx = raw.find(sentinel)
     if idx >= 0:
         return raw[:idx], True
@@ -224,7 +549,7 @@ def clean_segment(raw: str, notes_tail: str, *, sentinel: str, hard_cut_chars: i
     Steps: cut at the sentinel (also tolerating mangled forms and a truncated sentinel at the end), strip preambles,
     remove an echoed overlap with ``notes_tail``, hard-cut to ``hard_cut_chars`` and trim to a sentence end.
     """
-    text, saw = _cut_at_sentinel(raw, sentinel)
+    text, saw = cut_at_sentinel(raw, sentinel)
     text = strip_preamble(text)
     text = trim_overlap(notes_tail, text)
     return trim_to_sentence(text, hard_cut_chars), saw

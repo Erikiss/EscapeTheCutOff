@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from cutoffmix.router.gate import TimeSensitivityGate
+from cutoffmix.router.gate import TimeSensitivityGate, load_gate
 from cutoffmix.router.index import CutoffIndex, load_index
 from cutoffmix.router.policy import RoutingPolicy, make_policy
 from cutoffmix.router.topics import KeywordTopicClassifier, load_classifier
@@ -74,12 +74,13 @@ class Router:
 
     @classmethod
     def from_config(cls, cfg: AppConfig) -> Router:
-        """Router for ``cfg.model_keys()`` with the configured index, classifier, policy and seed."""
+        """Router for ``cfg.model_keys()`` with the configured index, classifier, gate, policy and seed."""
         rc = cfg.router
         return cls(
             cfg.model_keys(),
             index=load_index(rc.index_path),
             classifier=load_classifier(rc.classifier, rc.classifier_path),
+            gate=load_gate(rc.gate_path, today=cfg.today_str()),
             cfg=rc,
             seed=rc.seed,
         )

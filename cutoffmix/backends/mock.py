@@ -9,6 +9,12 @@ so tests, ``cutoffmix simulate`` and the ``--mock`` UI demo are reproducible:
   between topics; otherwise the topic is the dominant one of the question and recent notes.
 - ``chat`` answers benchmark probes for known events according to a 4PL curve around the model's true cutoff,
   so an index fitted from mock probe results should recover ``MockModelTruth.tau``.
+- Under the explore preset (DESIGN.md §7; the request carries ``system_override``) the notes follow the
+  structured-notes template instead: labelled items ending with ``Where we stand:``, a ``Lens (field):`` note when
+  the tail asks for a cross-field lens, ``Lens kept:`` / ``Lens dropped:`` for the check that follows, the requested
+  opening cue after a conclusion the moderator set aside, and ``FINAL ANSWER:`` only when the tail says the
+  moderator accepts a conclusion (plus one deliberate early attempt per run, so the continuation path is exercised).
+  Without ``system_override`` the output is exactly the default one.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import datetime as _dt
 import hashlib
 import math
 import random
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, cast
@@ -139,6 +146,100 @@ _NOTE_TEMPLATES: tuple[tuple[str, ...], ...] = (
 )
 
 
+# ---- explore preset (DESIGN.md §7) ----------------------------------------------------------------------------
+# The per-segment directive is read from the tail block the way a model would read it (prompts.py: RELAY_TAIL_EXPLORE,
+# RECORD_*_TEXT, LENS_TEXT, CHECK_TEXT, CONTINUE_TEXT, VS_DIRECTION_TEXT).
+_GATE_OPEN_PHRASE = "the moderator accepts a conclusion"  # only in RECORD_OPEN_TEXT ("does not accept ... yet" otherwise)
+_LENS_FIELD_RE = re.compile(r"Begin the note with 'Lens \((?P<field>[^()\n]+)\):'")
+_LENS_CONCEPTS_RE = re.compile(r"for example (?P<c1>[^,]+?), (?P<c2>[^,]+?) or (?P<c3>[^)]+?)\)")
+_CHECK_FIELD_RE = re.compile(r"applied a cross-field lens from (?P<field>.+?)\. Begin this note")
+_CUE_RE = re.compile(r"Begin this note with the words '(?P<cue>[^'\n]+)'")
+_DIRECTION_RE = re.compile(r"Direction for this note: (?P<direction>.+?)\. Develop it")
+_MISSING_LABEL_RE = re.compile(r"'(?P<label>[A-Z][a-z]+(?: [a-z]+)*):' item")  # "an 'Evidence:' item that ..."
+_PREMATURE_MARK = "the record already settles the problem"  # Claim of the one deliberate early conclusion per run
+_KEPT_RATE = 0.6  # share of checks that keep the lens (deterministic per seed, model, question, field and note)
+_MAX_ITEMS = 4  # labelled items per note (the template asks for two to four)
+_EXPLORE_ITEMS: dict[str, tuple[str, ...]] = {
+    "Claim": (
+        "Claim: the answer turns on the latest state of {subject}, so it depends on recent {facts} rather than on "
+        "stable background knowledge.",
+        "Claim: nothing in the notes so far contradicts the state of {subject} known as of {asof}.",
+        "Claim: the question ({q}) is settled by the record up to {asof} unless {facts} changed afterwards.",
+    ),
+    "Evidence": (
+        "Evidence: the most recent {facts} accounted for here are known as of {asof} (source: the record available to "
+        "this analyst, {gap} before today, {today}).",
+        "Evidence: the timeline of {subject} known as of {asof} has no entry that conflicts with the notes (source: "
+        "the same dated record).",
+    ),
+    "Inference": (
+        "Inference: because the record ends at {asof} and {facts} move quickly, therefore any statement about "
+        "{subject} must carry that date.",
+        "Inference: because no later entry is known and the notes agree, therefore the latest known state stands as "
+        "the working answer.",
+    ),
+    "Principle": (
+        "Principle: in archival research a claim is only as current as its latest dated source; applied here, the "
+        "answer about {subject} carries the date {asof}.",
+    ),
+    "Alternative set aside": (
+        "Alternative set aside: treating {subject} as settled for good; set aside because {facts} may have changed "
+        "after {asof} ({gap} ago).",
+        "Alternative set aside: answering from stable background knowledge alone; set aside because the question "
+        "depends on recent {facts}.",
+    ),
+    "Open question": (
+        "Open question: whether {facts} changed after {asof}; a current source for the period since then would "
+        "settle it.",
+        "Open question: which analyst's record of {subject} is the most recent; comparing their dates would settle "
+        "it.",
+    ),
+    "Next": (
+        "Next: check the period after {asof} ({gap}) against a current source before concluding.",
+        "Next: state the answer as the latest known state of {subject}, dated {asof}.",
+    ),
+}
+_GENERIC_ITEM = "{label}: for {subject}, the record known as of {asof} is the only {lower} available here."
+_EXPLORE_PLAN: tuple[tuple[str, ...], ...] = (  # labels of consecutive notes (cycled; required ones are added)
+    ("Claim", "Evidence", "Open question"),
+    ("Evidence", "Alternative set aside", "Next"),
+    ("Inference", "Principle", "Open question"),
+    ("Claim", "Alternative set aside", "Next"),
+    ("Evidence", "Inference"),
+    ("Principle", "Open question", "Next"),
+)
+_LENS_HEAD = (
+    "Lens ({field}): {c1} resembles the current intermediate result: the dated record of {subject} plays the role of "
+    "the initial state, {facts} play the role of the driving change, and the cutoff {asof} is the boundary at which "
+    "{c2} applies."
+)
+_LENS_INFERENCE = (
+    "Inference: because in {c1} what lies past the boundary is not visible from inside it, therefore the testable "
+    "question is whether {facts} after {asof} changed {subject} (a working analogy, not evidence)."
+)
+_LENS_RETURN = "Back to the problem: the analogy only says what to check; the dated answer stands."
+_CHECK_KEPT = (
+    "Lens kept: the mapping of the dated record onto {field} holds for the boundary at {asof}; one real difference is "
+    "that {facts} are discrete events rather than quantities, but the suggested consequence survives as a question "
+    "about the period after {asof}."
+)
+_CHECK_DROPPED = (
+    "Lens dropped: the comparison with {field} breaks because {facts} are discrete events rather than quantities, so "
+    "its suggested consequence does not survive; the main line continues without it."
+)
+_CUE_SENTENCE = "{cue} the latest state of {subject} may have changed after {asof}, which the notes did not yet weigh."
+_DIRECTION_CLAIM = "Claim: following the direction ({direction}), the dated answer about {subject} still rests on the record as of {asof}."
+_PREMATURE_CLAIM = "Claim: {mark}, since the notes agree on the state of {subject} known as of {asof}."
+_WHERE_WE_STAND = (
+    "Where we stand: best answer, the latest known state of {subject} as of {asof}; confidence {confidence}; weakest "
+    "assumption, that {facts} did not change after {asof}."
+)
+_ANSWER_BASIS = (
+    "\n\nBasis: the dated record of {subject} known as of {asof} (the Evidence items) and the claim that no later "
+    "entry conflicts with it.\n\nNot resolved: whether {facts} changed after {asof}."
+)
+
+
 def _month_gap(tau: float, today: str) -> str:
     months = round(today_month(_dt.date.fromisoformat(today)) - tau)
     if months <= 0:
@@ -251,6 +352,8 @@ class MockBackend:
         states = ", and of ".join(f"{subject} known as of {asof}" for subject, asof in known)
         dates = known[0][1] if len(known) == 1 else "those dates"
         answer = f"The latest state of {states}; anything after {dates} should be checked against a current source."
+        if req.system_override is not None:  # explore preset: structured notes under the per-segment directive
+            return self._explore_text(model, req, fields, answer)
         if req.phase == "answer":
             return (f"Based on the shared notes: {answer[0].lower()}{answer[1:]} This is {fields['gap']} before "
                     f"today ({fields['today']}).")
@@ -259,6 +362,72 @@ class MockBackend:
             return (f"The notes now cover {covered} up to what is known as of {fields['asof']}, and no open "
                     f"point remains. {req.final_marker} {answer}")
         return self._note_text(model, req, fields)
+
+    # ---- explore preset -----------------------------------------------------------------
+
+    def _explore_items(self, model: ModelSpec, n: int, fields: dict[str, str], required: list[str],
+                       room: int) -> list[str]:
+        """Up to ``room`` labelled items for note ``n``: the ``required`` labels (named in the tail) first, then the
+        plan's labels; every label at most once (so at most one 'Principle:'); consecutive notes differ."""
+        offset = self._rng("explore_offset", model.key).randrange(len(_EXPLORE_PLAN))
+        labels: list[str] = []
+        for label in [*required, *_EXPLORE_PLAN[(n + offset) % len(_EXPLORE_PLAN)]]:
+            if label not in labels and len(labels) < room:
+                labels.append(label)
+        items: list[str] = []
+        for label in labels:
+            variants = _EXPLORE_ITEMS.get(label)
+            template = variants[(n + offset) % len(variants)] if variants else _GENERIC_ITEM
+            items.append(template.format(label=label, lower=label.lower(), **fields))
+        return items
+
+    def _explore_text(self, model: ModelSpec, req: ContinuationRequest, fields: dict[str, str], answer: str) -> str:
+        """A note (or answer) under the explore template; the directive is read from ``req.tail`` (DESIGN.md §7)."""
+        if req.phase == "answer":
+            text = (f"Based on the shared notes: {answer[0].lower()}{answer[1:]} This is {fields['gap']} before "
+                    f"today ({fields['today']}).")
+            if "'Basis:'" in (req.system_override or ""):  # answer_basis: the answer names its basis
+                text += _ANSWER_BASIS.format(**fields)
+            return text
+        tail, n = req.tail or "", len(req.segments)
+        if _GATE_OPEN_PHRASE in tail:  # the moderator accepts a conclusion: the answer instead of a note
+            return f"{req.final_marker} {answer}"
+        required = list(dict.fromkeys(m.group("label") for m in _MISSING_LABEL_RE.finditer(tail)))
+        head: list[str] = []  # the opening the directive asks for; ``labelled`` of its lines count as items
+        labelled = 0
+        lens, check, cue, direction = (p.search(tail) for p in (_LENS_FIELD_RE, _CHECK_FIELD_RE, _CUE_RE,
+                                                                _DIRECTION_RE))
+        premature = False
+        if lens:
+            concepts = _LENS_CONCEPTS_RE.search(tail)
+            c1, c2 = (concepts.group("c1"), concepts.group("c2")) if concepts else ("its central concept",
+                                                                                   "its boundary condition")
+            head += [_LENS_HEAD.format(field=lens.group("field"), c1=c1, c2=c2, **fields),
+                     _LENS_INFERENCE.format(c1=c1, **fields)]
+            labelled = 2
+            required = [label for label in required if label != "Inference"]
+        elif check:
+            field = check.group("field")
+            kept = self._rng("verdict", model.key, req.question, field, n).random() < _KEPT_RATE
+            head.append((_CHECK_KEPT if kept else _CHECK_DROPPED).format(field=field, **fields))
+            labelled = 1
+        elif cue:
+            head.append(_CUE_SENTENCE.format(cue=cue.group("cue"), **fields))
+        elif direction:
+            head.append(_DIRECTION_CLAIM.format(direction=direction.group("direction"), **fields))
+            labelled = 1
+        elif n >= 2 and not any(_PREMATURE_MARK in s for s in req.segments):
+            premature = True  # once per run: conclude while the record is incomplete (the moderator sets it aside)
+            head.append(_PREMATURE_CLAIM.format(mark=_PREMATURE_MARK, **fields))
+            labelled = 1
+        items = self._explore_items(model, n, fields, required, max(_MAX_ITEMS - labelled, 2))
+        confidence = "low" if n < 2 else "medium" if n < 5 else "high"
+        close = ([_LENS_RETURN] if lens else []) + [_WHERE_WE_STAND.format(confidence=confidence, **fields)]
+        budget = min(max(req.target_tokens * 4, 1), req.hard_cut_chars - 40)  # ~4 chars/token; the cut must not reach WWS
+        while len(items) > max(2 - labelled, 0) and sum(len(s) + 1 for s in [*head, *items, *close]) > budget:
+            items.pop()
+        text = "\n".join([*head, *items, *close])
+        return f"{text} {req.final_marker} {answer}" if premature else text
 
     async def stream_continuation(self, model: ModelSpec, req: ContinuationRequest) -> AsyncIterator[StreamEvent]:
         """Stream a simulated segment (or answer): ``text`` chunks, then exactly one ``done`` event.
@@ -294,6 +463,7 @@ class MockBackend:
     @staticmethod
     def _usage(req: ContinuationRequest, text: str, rng: random.Random) -> dict[str, Any]:
         prompt_chars = 900 + len(req.question) + sum(len(s) for s in req.segments)  # ~900: system prompt + framing
+        prompt_chars += len(req.tail or "")
         reasoning = 64 + rng.randrange(192)
         completion = len(text) // 4 + reasoning
         prompt = prompt_chars // 4

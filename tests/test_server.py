@@ -115,13 +115,16 @@ class FakeIndex:
                 for t in self.topics for m in self.models]
 
 
+TEST_HOSTS = ("test",)  # the host name of client() below
+
+
 def make_cfg() -> AppConfig:
     return AppConfig(models=list(MODELS), relay=RelayConfig(), router=RouterConfig(), today="2026-11-24")
 
 
 def make_app(backend: FakeBackend | None = None, *, index: Any = None):
     backend = backend or FakeBackend()
-    app = create_app(make_cfg(), backend=backend)
+    app = create_app(make_cfg(), backend=backend, allowed_hosts=TEST_HOSTS)
     runtime = app.state.runtime
     runtime.seen_cfgs = []
 
@@ -204,7 +207,9 @@ async def test_ui_is_a_single_self_contained_page():
     html = r.text
     assert "<title>" in html and "/api/relay" in html and "/api/index" in html and "prefers-color-scheme" in html
     assert not re.search(r"https?://", html), "the UI must not load anything from the network"
-    assert "<link" not in html and "@import" not in html
+    assert "@import" not in html
+    links = re.findall(r"<link\b[^>]*>", html)
+    assert all(re.search(r'href="data:', tag) for tag in links), links  # only inline resources (the icon)
 
 
 async def test_ui_link_with_a_question_never_starts_a_run_by_itself():
@@ -319,6 +324,48 @@ async def test_ui_index_labels_p_freshest_and_explains_the_routing_penalties():
     assert "uncertain estimate" in about and "stale-answer rate" in about and "κ·sd" in about and "λ·H" in about
 
 
+async def test_ui_preset_select_explore_badges_and_exploration_strip():
+    """The explore preset's UI (DESIGN.md §7.7): a preset select, lens/check/continue badges, the exploration strip
+    and the pure helpers that read the relay's (optional) explore data."""
+    app, _ = make_app()
+    async with client(app) as c:
+        html = (await c.get("/")).text
+    assert '<select id="preset"' in html and 'id="xstats" hidden' in html
+    assert "body.preset = preset" in js_function(html, "run")
+    boot = js_function(html, "boot")
+    assert "cfg.presets" in boot and "cfg.defaults.preset" in boot and "segment_tokens" in boot
+    assert "exploreBadge(rec)" in js_function(html, "startSegment")
+    end = js_function(html, "endSegment")
+    assert "flags.lens_verdict" in end and "lensVerdict(rec.text)" in end
+    assert "renderExplore((ev.data || {}).explore)" in js_function(html, "onEvent")
+    assert "renderExplore" not in js_function(html, "finish")  # finish() keeps its stubbable contract
+    assert 'd.explore && typeof d.explore === "object" ? d.explore : d' in js_function(html, "recordFrom")
+    for kind in ("lens", "check", "continue"):
+        assert f".badge.x.{kind}" in html
+    assert "--ok-soft" in html and "--warn-soft" in html and html.count("--ok-soft:") == 2  # light and dark values
+
+    stats = run_js_function(js_function(html, "exploreStats"), "exploreStats", [
+        {"topics_visited": {"all": 2, "main_line": 1}, "lens": {"offered": 1, "written": 1, "kept": 1, "dropped": 0},
+         "labels": {"coverage": {"two_or_more_items": 0.83, "where_we_stand": 1.0}}, "forced_continuations": 1,
+         "premature_finals": [{}]},
+        {},
+        {"lens": "x", "topics_visited": ["a", "b"], "labels": {"coverage": 0.5}, "forced_continuations": "3"},
+        None,
+    ])
+    empty = {"topics": None, "lenses": None, "lensDetail": None, "labels": None, "forced": None, "forcedDetail": None}
+    assert stats == [
+        {"topics": 2, "lenses": "1", "lensDetail": "1 kept · 0 dropped", "labels": "83%", "forced": "1",
+         "forcedDetail": "1 early"},
+        empty,
+        empty | {"topics": 2, "labels": "50%"},
+        empty,
+    ]
+    verdicts = run_js_function(js_function(html, "lensVerdict"), "lensVerdict", [
+        "Lens kept: the mapping holds.", "- **Lens dropped:** it breaks.", "Claim: x.\nlens Kept : y", "Lens (ecology): a.",
+        "", None])
+    assert verdicts == ["kept", "dropped", "kept", None, None, None]
+
+
 async def test_api_config_lists_models_defaults_and_policies():
     app, _ = make_app()
     async with client(app) as c:
@@ -329,6 +376,21 @@ async def test_api_config_lists_models_defaults_and_policies():
     assert "fixed:b" in cfg["policies"] and "softmax" in cfg["policies"]
     assert cfg["today"] == "2026-11-24" and cfg["mock"] is False
     assert len(cfg["topics"]) == 15
+
+
+async def test_api_config_lists_the_presets_and_the_active_one():
+    app, _ = make_app()
+    async with client(app) as c:
+        cfg = (await c.get("/api/config")).json()
+    assert cfg["presets"] == [{"name": "explore", "segment_tokens": 192, "max_segments": 16}]
+    assert cfg["defaults"]["preset"] is None
+    assert "cutoffmix-explore" in cfg["model_ids"]
+    from cutoffmix.config import load_config
+
+    explore_app = create_app(load_config(preset="explore"), backend=FakeBackend(), allowed_hosts=TEST_HOSTS)
+    async with client(explore_app) as c:
+        cfg = (await c.get("/api/config")).json()
+    assert cfg["defaults"]["preset"] == "explore" and cfg["defaults"]["segment_tokens"] == 192
 
 
 async def test_api_index_returns_json_safe_rows():
@@ -353,12 +415,12 @@ async def test_api_index_without_an_index():
 async def test_default_index_is_the_packaged_prior_and_mock_mode_uses_the_mock_truths():
     from cutoffmix.config import default_config
 
-    async with client(create_app(default_config())) as c:  # no request reaches a model: no key needed
+    async with client(create_app(default_config(), allowed_hosts=TEST_HOSTS)) as c:  # no request reaches a model: no key needed
         real = (await c.get("/api/index")).json()
     assert real["available"] is True and real["source"] == "packaged index_prior.json"
     assert real["meta"]["sources"] == ["apoorvumang/knowledge-cutoff (CC BY 4.0)"]
     assert real["meta"]["data_range"]["last"] <= "2026-06-30" and "PRIOR" in real["meta"]["note"]
-    async with client(create_app(default_config(), mock=True)) as c:
+    async with client(create_app(default_config(), mock=True, allowed_hosts=TEST_HOSTS)) as c:
         mock = (await c.get("/api/index")).json()
     assert mock["source"] == "mock truths" and "not a measurement" in mock["meta"]["note"]
 
@@ -368,8 +430,8 @@ async def test_v1_models():
     async with client(app) as c:
         data = (await c.get("/v1/models")).json()
     assert data["object"] == "list"
-    assert [m["id"] for m in data["data"]] == ["cutoffmix", "cutoffmix-speculative", "cutoffmix-fixed-a",
-                                               "cutoffmix-fixed-b"]
+    assert [m["id"] for m in data["data"]] == ["cutoffmix", "cutoffmix-speculative", "cutoffmix-explore",
+                                               "cutoffmix-fixed-a", "cutoffmix-fixed-b"]
 
 
 # --------------------------------------------------------------------------------------
@@ -404,6 +466,50 @@ async def test_api_relay_applies_per_request_overrides():
     assert {req.target_tokens for req in backend.requests if req.phase == "think"} == {64}
 
 
+async def test_api_relay_preset_runs_the_explore_configuration():
+    """``"preset": "explore"`` runs the config ``serve --preset explore`` would have: the preset is layered between
+    the packaged default and the server's config file; the other per-request overrides apply on top."""
+    app, backend = make_app()
+    async with client(app) as c:
+        r = await c.post("/api/relay", json={"question": "q?", "preset": "explore"})
+        assert r.status_code == 200 and sse_payloads(r.text)[-1]["type"] == "done"
+        cfg = app.state.runtime.seen_cfgs[-1]
+        assert cfg.explore.enabled and cfg.relay.segment_tokens == 192 and cfg.relay.hard_cut_chars == 1500
+        assert cfg.model("gpt-6.2-sol").supports_seed and cfg.router.policy == "softmax"
+        assert {req.target_tokens for req in backend.requests if req.phase == "think"} == {192}
+        r = await c.post("/api/relay", json={"question": "q?", "preset": "explore", "segment_tokens": 64,
+                                             "policy": "round_robin"})
+        assert r.status_code == 200
+        cfg = app.state.runtime.seen_cfgs[-1]
+        assert cfg.explore.enabled and cfg.relay.segment_tokens == 64 and cfg.router.policy == "round_robin"
+        r = await c.post("/api/relay", json={"question": "q?"})  # the server's own config is untouched
+        assert r.status_code == 200
+        cfg = app.state.runtime.seen_cfgs[-1]
+        assert not cfg.explore.enabled and cfg.relay.segment_tokens == 128 and cfg.model_keys() == ["a", "b"]
+    assert backend.closed == backend.open + backend.closed  # the shared backend served every run
+
+
+async def test_api_relay_preset_is_layered_under_the_servers_config_file(tmp_path):
+    cfg_file = tmp_path / "server.yaml"
+    cfg_file.write_text("relay: {segment_tokens: 150}\napp_title: mine\n", encoding="utf-8")
+    from cutoffmix.config import load_config
+
+    app = create_app(load_config(cfg_file), backend=FakeBackend(), allowed_hosts=TEST_HOSTS, config_path=cfg_file)
+    runtime = app.state.runtime
+    runtime.seen_cfgs = []
+    runtime.router_factory = lambda cfg: (runtime.seen_cfgs.append(cfg), FakeRouter(cfg.model_keys()))[1]
+    runtime._load_routing = lambda: (None, None, None)
+    async with client(app) as c:
+        r = await c.post("/api/relay", json={"question": "q?", "preset": "explore"})
+    assert r.status_code == 200
+    cfg = runtime.seen_cfgs[-1]
+    assert cfg.explore.enabled and cfg.relay.hard_cut_chars == 1500  # from the preset
+    assert cfg.relay.segment_tokens == 150 and cfg.app_title == "mine"  # the file still wins over the preset
+    async with client(app) as c:
+        presets = (await c.get("/api/config")).json()["presets"]
+    assert presets == [{"name": "explore", "segment_tokens": 150, "max_segments": 16}]
+
+
 @pytest.mark.parametrize("payload, needle", [
     ({}, "question"),
     ({"question": "   "}, "question"),
@@ -412,6 +518,9 @@ async def test_api_relay_applies_per_request_overrides():
     ({"question": "q", "segment_tokens": "many"}, "segment_tokens"),
     ({"question": "q", "segment_tokens": 0}, "segment_tokens"),
     ({"question": "q", "segment_tokens": 99999}, "segment_tokens"),
+    ({"question": "q", "preset": "wild"}, "preset must be 'explore'"),
+    ({"question": "q", "preset": 1}, "preset"),
+    ({"question": "q", "preset": "default"}, "preset"),
 ])
 async def test_api_relay_rejects_invalid_requests(payload, needle):
     app, backend = make_app()
@@ -474,7 +583,7 @@ async def test_posts_from_another_origin_are_refused(path, origin):
 ])
 async def test_posts_from_the_own_or_an_allowed_origin_run(origin, headers, allowed):
     backend = FakeBackend()
-    app = create_app(make_cfg(), backend=backend, allowed_origins=allowed)
+    app = create_app(make_cfg(), backend=backend, allowed_origins=allowed, allowed_hosts=TEST_HOSTS)
     app.state.runtime.router_factory = lambda cfg: FakeRouter(cfg.model_keys())
     app.state.runtime._load_routing = lambda: (None, None, None)
     async with client(app) as c:
@@ -564,8 +673,10 @@ async def test_chat_completions_non_stream():
     assert message["role"] == "assistant" and message["content"] == "The answer is 42."
     assert message["reasoning"].startswith("Step 0:") and "\n\nStep 1:" in message["reasoning"]
     assert data["choices"][0]["finish_reason"] == "stop"
+    # the concluding segment was closed at the final marker, before its usage chunk: the totals are a lower bound
     assert data["usage"] == {"prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45,
-                             "cost": pytest.approx(0.03)}
+                             "cost": pytest.approx(0.03), "cutoffmix_partial": True}
+    assert data["cutoffmix"]["usage_complete"] is False
     assert data["cutoffmix"]["answer"] == "The answer is 42." and "segments" in data["cutoffmix"]
 
 
@@ -606,6 +717,87 @@ async def test_chat_completions_model_ids_select_strategy_and_policy(model_id, f
     assert r.status_code == 200
     cfg = app.state.runtime.seen_cfgs[-1]
     assert (cfg.relay.strategy if field == "strategy" else cfg.router.policy) == value
+
+
+async def test_chat_completions_explore_model_id_and_preset_override():
+    app, _ = make_app()
+    async with client(app) as c:
+        r = await c.post("/v1/chat/completions", json={"model": "cutoffmix-explore",
+                                                       "messages": [{"role": "user", "content": "q?"}]})
+        assert r.status_code == 200 and r.json()["model"] == "cutoffmix-explore"
+        cfg = app.state.runtime.seen_cfgs[-1]
+        assert cfg.explore.enabled and cfg.relay.segment_tokens == 192
+        r = await c.post("/v1/chat/completions", json={"model": "cutoffmix", "preset": "explore", "stream": True,
+                                                       "messages": [{"role": "user", "content": "q?"}]})
+        assert r.status_code == 200 and app.state.runtime.seen_cfgs[-1].explore.enabled
+        bad = await c.post("/v1/chat/completions", json={"model": "cutoffmix", "preset": "wild",
+                                                         "messages": [{"role": "user", "content": "q?"}]})
+        assert bad.status_code == 400 and "preset must be 'explore'" in bad.json()["error"]["message"]
+        unknown = await c.post("/v1/chat/completions", json={"model": "cutoffmix-wild",
+                                                             "messages": [{"role": "user", "content": "q?"}]})
+    assert unknown.status_code == 404 and "cutoffmix-explore" in unknown.json()["error"]["message"]
+
+
+class ExploreRelay:
+    """A scripted relay: a lens note, its check and the explore metrics in ``done`` (as DESIGN.md §7 defines)."""
+
+    EXPLORE = {"topics_visited": {"all": 2, "main_line": 1},
+               "lens": {"offered": 1, "written": 1, "kept": 1, "dropped": 0, "ignored": 0, "unverified": 0},
+               "labels": {"counts": {"Claim": 2}, "coverage": {"two_or_more_items": 1.0, "where_we_stand": 1.0}},
+               "forced_continuations": 0, "premature_finals": [], "seed": 1, "seed_source": "run"}
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(self, question, *, run_id=None):
+        from cutoffmix.types import RelayEvent
+
+        self.calls += 1
+        base = dict(phase="think", decision="sample", topic_posterior={"government": 1.0})
+        yield RelayEvent(type="segment_start", segment=0, model="a", data={"explore": {"kind": "lens", "field": "ecology",
+                                                                                       "tier": "mid", "cue": None}},
+                         **base)
+        yield RelayEvent(type="delta", segment=0, model="a", phase="think", text="Lens (ecology): a mapping.")
+        yield RelayEvent(type="segment_end", segment=0, model="a", phase="think", text="Lens (ecology): a mapping.",
+                         decision="sample", data={"explore": {"kind": "lens", "field": "ecology", "tier": "mid",
+                                                              "lens_prefix_ok": True}})
+        yield RelayEvent(type="segment_start", segment=1, model="b", data={"explore": {"kind": "check", "field": "ecology",
+                                                                                       "tier": None, "cue": None}},
+                         **base)
+        yield RelayEvent(type="segment_end", segment=1, model="b", phase="think", text="Lens kept: it holds.",
+                         decision="sample", data={"explore": {"kind": "check", "field": "ecology",
+                                                              "lens_verdict": "kept"}})
+        yield RelayEvent(type="phase", segment=2, model="b", phase="answer", decision="sample", data={})
+        yield RelayEvent(type="delta", segment=2, model="b", phase="answer", text="42")
+        yield RelayEvent(type="segment_end", segment=2, model="b", phase="answer", text="42", decision="sample", data={})
+        yield RelayEvent(type="done", data={"question": question, "answer": "42", "status": "ok", "switches": 1,
+                                            "share_by_model": {"a": 0.5, "b": 0.5}, "usage_total": {},
+                                            "segments": [], "explore": self.EXPLORE})
+
+
+async def test_explore_metadata_reaches_both_streams_and_the_final_chunk(monkeypatch):
+    from cutoffmix.relay import RelayRuntime
+
+    app, _ = make_app()
+    scripted = ExploreRelay()
+    monkeypatch.setattr(RelayRuntime, "relay", lambda self, cfg=None: scripted)  # the preset runtime too
+    async with client(app) as c:
+        sse = await c.post("/api/relay", json={"question": "q?", "preset": "explore"})
+        events = sse_payloads(sse.text)
+        assert events[0]["data"]["explore"] == {"kind": "lens", "field": "ecology", "tier": "mid", "cue": None}
+        assert events[4]["data"]["explore"]["lens_verdict"] == "kept"
+        assert events[-1]["data"]["explore"] == ExploreRelay.EXPLORE
+        r = await c.post("/v1/chat/completions", json={"model": "cutoffmix-explore", "stream": True,
+                                                       "messages": [{"role": "user", "content": "q?"}]})
+        chunks = [ch for ch in sse_payloads(r.text) if ch != "[DONE]"]
+        metas = [ch["choices"][0]["delta"]["cutoffmix"] for ch in chunks if ch["choices"]
+                 and "cutoffmix" in ch["choices"][0]["delta"]]
+        starts = [m for m in metas if m.get("type") == "segment_start"]
+        assert starts[0]["data"]["explore"]["kind"] == "lens" and starts[1]["data"]["explore"]["kind"] == "check"
+        assert chunks[-1]["cutoffmix"]["explore"] == ExploreRelay.EXPLORE  # the final chunk carries the metrics
+        plain = await c.post("/v1/chat/completions", json={"model": "cutoffmix-explore",
+                                                           "messages": [{"role": "user", "content": "q?"}]})
+    assert plain.json()["cutoffmix"]["explore"]["lens"]["kept"] == 1 and scripted.calls == 3
 
 
 async def test_chat_completions_body_overrides_win():
