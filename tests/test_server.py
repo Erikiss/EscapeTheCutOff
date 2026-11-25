@@ -418,8 +418,9 @@ async def test_default_index_is_the_packaged_prior_and_mock_mode_uses_the_mock_t
     async with client(create_app(default_config(), allowed_hosts=TEST_HOSTS)) as c:  # no request reaches a model: no key needed
         real = (await c.get("/api/index")).json()
     assert real["available"] is True and real["source"] == "packaged index_prior.json"
-    assert real["meta"]["sources"] == ["apoorvumang/knowledge-cutoff (CC BY 4.0)"]
-    assert real["meta"]["data_range"]["last"] <= "2026-06-30" and "PRIOR" in real["meta"]["note"]
+    assert real["meta"]["sources"][0] == "apoorvumang/knowledge-cutoff (CC BY 4.0)"
+    assert real["meta"]["data_range"]["last"] <= "2026-11-30"
+    assert "PRIOR" in real["meta"]["note"] and "MEASURED" in real["meta"]["note"]
     async with client(create_app(default_config(), mock=True, allowed_hosts=TEST_HOSTS)) as c:
         mock = (await c.get("/api/index")).json()
     assert mock["source"] == "mock truths" and "not a measurement" in mock["meta"]["note"]

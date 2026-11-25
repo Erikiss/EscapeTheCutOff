@@ -439,6 +439,7 @@ TOPIC_BY_ID: dict[str, Topic] = {t.id: t for t in TOPICS}
 
 EVENT_TYPES: tuple[str, ...] = (
     "death", "office_change", "election", "release", "award", "sports_result", "other", "control_alive", "fake_event",
+    "paper", "fake_paper",  # arXiv first-author probes and their spliced-title controls (bench/sources/papers.py)
 )
 
 # Wikipedia Current-events section heading -> candidate topics (first = default when nothing finer matches)

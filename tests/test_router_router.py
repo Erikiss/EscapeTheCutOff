@@ -164,8 +164,10 @@ def test_from_config_uses_the_packaged_prior_index_by_default():
     router = Router.from_config(default_config())
     assert router.index is not None and router.probe == "current"
     assert router.index.models == default_config().model_keys()
-    assert router.index.meta["sources"] == ["apoorvumang/knowledge-cutoff (CC BY 4.0)"]
-    assert router.index.meta["data_range"]["last"] <= "2026-06-30"  # a prior: the data cannot see later cutoffs
+    sources = router.index.meta["sources"]
+    assert sources[0] == "apoorvumang/knowledge-cutoff (CC BY 4.0)" and any("arXiv" in x for x in sources)
+    assert router.index.meta["data_range"]["last"] <= "2026-11-30"  # papers to 2026-11; world events end 2026-06
+    assert router.index.meta["global_origins"] == ["kc"]  # model-level cutoffs anchored on the world events
 
 
 def test_default_config_and_from_config(tmp_path):

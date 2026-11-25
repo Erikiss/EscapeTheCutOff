@@ -26,6 +26,7 @@ ORIGIN_ATTRIBUTION: dict[str, str] = {
     "kc": "apoorvumang/knowledge-cutoff (CC BY 4.0)",
     "wikidata": "Wikidata (CC0 1.0)",
     "wikipedia": "Wikipedia (CC BY-SA 4.0)",
+    "arxiv_hf": "arXiv metadata via the arXiv API (arXiv API terms of use; thank you to arXiv for use of its open access interoperability), selected via the Hugging Face daily-papers listing",
 }
 
 

@@ -9,16 +9,22 @@
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
     cutoffmix bench build-wikipedia --out FILE --start DATE --end DATE [--probe-model KEY]
+    cutoffmix bench build-papers --out FILE [--dense-from 2025-10 --dense-to 2026-11 --per-month 12
+                        --anchor-from 2024-01 --anchor-to 2025-09 --anchor-every 3 --anchor-per-month 6
+                        --interp-share 0.5 --controls-share 0.1 --seed 0 --meta FILE --cache DIR --candidates 300]
     cutoffmix bench run --events FILE --out FILE --models KEY... --probes P... [--dry-run] [--batch] [--limit N]
-    cutoffmix bench grade --events FILE --results FILE
+    cutoffmix bench grade --events FILE... --in FILE --out FILE [--judges KEY...] [--regrade-all] [--mock]
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
+                        [--probe-map FROM=TO...] [--global-origins ORIGIN...]
                         [--priors KEY=MONTH...] [--note TEXT]
     cutoffmix router train [options of cutoffmix.router.train]
     cutoffmix simulate [--out DIR]
 
 ``--mock`` uses the simulated models of :mod:`cutoffmix.backends.mock` everywhere. Commands that call the real
 models stop with a clear message when the API key variable (``OPENROUTER_API_KEY``) is not set. Benchmark modules
-are imported only by the subcommands that need them. ``--preset explore`` (``run`` and ``serve``) merges the packaged
+are imported only by the subcommands that need them. ``bench grade`` re-grades a results file into a *new* file
+(never in place; ``usage`` and ``latency_s`` are kept): offline with the rule grader alone, with ``--judges`` for
+the rows the rules cannot decide; it prints the grade counts per model and probe before and after. ``--preset explore`` (``run`` and ``serve``) merges the packaged
 explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
 and the summary line adds the exploration metrics of the ``done`` event.
 """
@@ -571,10 +577,59 @@ def _cmd_build_wikipedia(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_build_papers(args: argparse.Namespace) -> int:
+    from cutoffmix.bench.io import save_events, write_jsonl
+    from cutoffmix.bench.sources.papers import build_paper_events
+
+    errors: list[str] = []
+    try:
+        events, meta = build_paper_events(
+            args.dense_from, args.dense_to, per_month=args.per_month, anchor_from=args.anchor_from,
+            anchor_to=args.anchor_to, anchor_every=args.anchor_every, anchor_per_month=args.anchor_per_month,
+            interp_share=args.interp_share, controls_share=args.controls_share, seed=args.seed,
+            candidates_per_month=args.candidates, cache_dir=args.cache, errors=errors)
+    except ValueError as e:
+        raise CLIError(str(e)) from e
+    save_events(args.out, events)
+    meta_path = args.meta or str(Path(args.out).with_name("papers_meta.jsonl"))
+    write_jsonl(meta_path, meta)
+    by_id = {m["event_id"]: m for m in meta}
+    controls = sum(e.control for e in events)
+    interp = sum(1 for e in events if by_id[e.id].get("interp"))
+    months = sorted({e.month for e in events})
+    print(f"{len(events)} events ({len(events) - controls} papers, {interp} interp-tagged, {controls} controls) over "
+          f"{len(months)} months {months[0] if months else '-'}..{months[-1] if months else '-'} -> {args.out}\n"
+          f"meta -> {meta_path}")
+    if errors:
+        print(f"{len(errors)} daily list(s) could not be fetched (rerun fills them from the network):\n  "
+              + "\n  ".join(errors), file=sys.stderr)
+    return 0
+
+
 async def _close(backend: Any) -> None:
     close = getattr(backend, "aclose", None)
     if close is not None:
         await close()
+
+
+def _token_spec(values: Sequence[str], what: str) -> int | dict[str, int]:
+    """``["600"]`` -> ``600``; ``["claude-fable-5.2=350", "default=60"]`` -> ``{"claude-fable-5.2": 350, "default":
+    60}`` (a bare number among KEY=N entries is the default)."""
+    out: dict[str, int] = {}
+    for item in values:
+        key, _, number = item.partition("=")
+        if not number:
+            key, number = "default", key
+        try:
+            n = int(number)
+        except ValueError:
+            raise CLIError(f"--{what.replace('_', '-')}: expected N or KEY=N, got {item!r}") from None
+        if n < 0:
+            raise CLIError(f"--{what.replace('_', '-')}: token counts must be >= 0, got {item!r}")
+        out[key.strip()] = n
+    if list(out) == ["default"]:
+        return out["default"]
+    return out
 
 
 def _cmd_bench_run(args: argparse.Namespace) -> int:
@@ -590,8 +645,16 @@ def _cmd_bench_run(args: argparse.Namespace) -> int:
         events = events[: args.limit]
     models = [_model_spec(cfg, k) for k in (args.models or cfg.model_keys())]
     judges = [_model_spec(cfg, k) for k in args.judges] or None
+    extra: dict[str, Any] = {}  # only what was given, so the estimator's defaults stay its own
+    if args.max_tokens is not None:
+        extra["max_tokens"] = args.max_tokens
     if args.dry_run:
-        print(json.dumps(estimate_cost(models, events, args.probes, batch=args.batch), indent=2))
+        for name, spec in (("in_tokens", args.in_tokens), ("out_tokens", args.out_tokens)):
+            if spec:
+                extra[name] = _token_spec(spec, name)
+        if args.out_tokens_measured:
+            extra["measured"] = True
+        print(json.dumps(estimate_cost(models, events, args.probes, batch=args.batch, **extra), indent=2))
         return 0
     if not args.mock:
         _require_key(cfg, "'cutoffmix bench run'")
@@ -601,7 +664,7 @@ def _cmd_bench_run(args: argparse.Namespace) -> int:
         try:
             return await run_probes(backend, models, events, args.probes, args.out, today=cfg.today,
                                     concurrency=args.concurrency, use_batch_variant=args.batch, judges=judges,
-                                    progress=_progress(sys.stderr))
+                                    progress=_progress(sys.stderr), **extra)
         finally:
             await _close(backend)
 
@@ -620,11 +683,40 @@ def _print_grades(results: Sequence[Any]) -> None:
         print(f"  {model:<24} {probe:<10} " + "  ".join(f"{g} {n}" for g, n in sorted(grades.items())))
 
 
+_GRADE_ORDER = ("correct", "outdated", "incorrect", "abstain", "ungraded")
+
+
+def _grade_table(before: Sequence[Any], after: Sequence[Any]) -> str:
+    """Grade counts per model and probe (and per model over all probes, ``all``) before and after re-grading, one
+    line each: a count that changed reads ``before->after``; the last column counts the rows whose grade or hedge
+    changed. ``before`` and ``after`` hold the same rows in the same order."""
+    counts: dict[tuple[str, str], dict[str, list[int]]] = {}  # (model, probe) -> grade -> [before, after]
+    changed: dict[tuple[str, str], int] = {}
+    for b, a in zip(before, after, strict=True):
+        for key in ((b.model, b.probe), (b.model, "all")):
+            row = counts.setdefault(key, {})
+            row.setdefault(b.grade, [0, 0])[0] += 1
+            row.setdefault(a.grade, [0, 0])[1] += 1
+            changed[key] = changed.get(key, 0) + int(a.grade != b.grade or a.hedged != b.hedged)
+    seen = {g for row in counts.values() for g in row}
+    grades = [g for g in _GRADE_ORDER if g in seen] + sorted(seen - set(_GRADE_ORDER))
+    lines = [f"  {'model':<24} {'probe':<10} " + " ".join(f"{g:>11}" for g in grades) + f" {'changed':>8}"]
+    for key in sorted(counts, key=lambda k: (k[0], k[1] == "all", k[1])):
+        cells = [f"{b}->{a}" if b != a else str(a) for b, a in (counts[key].get(g, [0, 0]) for g in grades)]
+        lines.append(f"  {key[0]:<24} {key[1]:<10} " + " ".join(f"{c:>11}" for c in cells)
+                     + f" {changed[key]:>8}")
+    return "\n".join(lines)
+
+
 def _cmd_bench_grade(args: argparse.Namespace) -> int:
     from cutoffmix.backends import make_backend
     from cutoffmix.bench.grading import grade_results
     from cutoffmix.bench.io import load_events, load_results, save_results
 
+    src, out = Path(args.results), Path(args.out)
+    if src.resolve() == out.resolve() or (src.exists() and out.exists() and src.samefile(out)):
+        raise CLIError(f"--out must be a new file, not --in itself ({args.results}): results are never re-graded in "
+                       "place")
     cfg = _load_cfg(args)
     events = [e for path in args.events for e in load_events(path)]
     results = load_results(args.results)
@@ -644,22 +736,42 @@ def _cmd_bench_grade(args: argparse.Namespace) -> int:
                 await _close(backend)
 
     graded = asyncio.run(go())
-    out = args.out or args.results
     save_results(out, graded)
-    _print_grades(graded)
-    print(f"{len(graded)} results -> {out}")
+    print(_grade_table(results, graded))
+    changed = sum(a.grade != b.grade or a.hedged != b.hedged for b, a in zip(results, graded, strict=True))
+    print(f"{len(graded)} results ({changed} changed) -> {out}")
     return 0
 
 
 def _cmd_bench_fit(args: argparse.Namespace) -> int:
+    import dataclasses
+    from typing import cast
+
     from cutoffmix.bench.estimate import fit_index
     from cutoffmix.bench.io import load_events, load_results
+    from cutoffmix.types import ProbeKind
 
+    probe_map: dict[str, str] = {}
+    for item in args.probe_map:
+        src, sep, dst = item.partition("=")
+        if not sep or not src or dst not in PROBE_CHOICES:
+            raise CLIError(f"--probe-map expects FROM=TO with TO one of {', '.join(PROBE_CHOICES)}, got {item!r}")
+        if src in probe_map:
+            raise CLIError(f"--probe-map maps {src!r} twice")
+        probe_map[src] = dst
     events = [e for path in args.events for e in load_events(path)]
     results = [r for path in args.results for r in load_results(path)]
+    if probe_map:  # relabel at fit time, e.g. current_d=current (the dated paper probes join the kc 'current' table)
+        results = [dataclasses.replace(r, probe=cast(ProbeKind, probe_map[r.probe])) if r.probe in probe_map else r
+                   for r in results]
+    meta: dict[str, Any] = {}
+    if args.note:
+        meta["note"] = args.note
+    if probe_map:
+        meta["probe_map"] = probe_map
     index = fit_index(events, results, models=args.models or None, probes=args.probes or None,
                       priors=_parse_priors(args.priors) or None, prior_sd=args.prior_sd, bootstrap=args.bootstrap,
-                      seed=args.seed, meta={"note": args.note} if args.note else None)
+                      seed=args.seed, global_origins=args.global_origins or None, meta=meta or None)
     index.save(args.out)
     print(render_index(index, index.primary().probe, color=use_color(sys.stdout)))
     print(f"index -> {args.out}")
@@ -794,6 +906,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(wp)
     wp.set_defaults(func=_cmd_build_wikipedia)
 
+    pp = bench_sub.add_parser("build-papers",
+                              help="first-author probes from AI/ML papers (Hugging Face daily papers + arXiv API)")
+    pp.add_argument("--out", required=True, metavar="FILE")
+    pp.add_argument("--dense-from", default="2025-10", metavar="YYYY-MM", help="first month with --per-month papers")
+    pp.add_argument("--dense-to", default="2026-11", metavar="YYYY-MM", help="last month with --per-month papers")
+    pp.add_argument("--per-month", type=int, default=12)
+    pp.add_argument("--anchor-from", default="2024-01", metavar="YYYY-MM", help="first anchor month")
+    pp.add_argument("--anchor-to", default="2025-09", metavar="YYYY-MM", help="last anchor month")
+    pp.add_argument("--anchor-every", type=int, default=3, help="every n-th month of the anchor range")
+    pp.add_argument("--anchor-per-month", type=int, default=6)
+    pp.add_argument("--interp-share", type=float, default=0.5,
+                    help="share of a month's papers taken from the interpretability-tagged pool when available")
+    pp.add_argument("--controls-share", type=float, default=0.1, help="fake-paper controls as a share of real papers")
+    pp.add_argument("--seed", type=int, default=0, help="MCQ order, distractor draw and control titles")
+    pp.add_argument("--meta", metavar="FILE", help="side table (default: papers_meta.jsonl next to --out)")
+    pp.add_argument("--cache", metavar="DIR", help="raw-response cache (default: $CUTOFFMIX_PAPERS_CACHE or "
+                                                  "~/.cache/cutoffmix/papers)")
+    pp.add_argument("--candidates", type=int, default=300,
+                    help="Hugging Face top-N per month before filtering (deep, so that the interp pool is not empty; "
+                         "the non-interp picks are the top-upvoted anyway)")
+    pp.set_defaults(func=_cmd_build_papers)
+
     br = bench_sub.add_parser("run", help="probe the models on benchmark events")
     br.add_argument("--events", required=True, metavar="FILE")
     br.add_argument("--out", required=True, metavar="FILE", help="results JSONL (resumed if it exists)")
@@ -806,16 +940,31 @@ def build_parser() -> argparse.ArgumentParser:
     br.add_argument("--limit", type=int, metavar="N", help="only the first N events")
     br.add_argument("--judges", nargs="*", default=[], metavar="KEY", help="judge models for open answers")
     br.add_argument("--concurrency", type=int, default=8)
+    br.add_argument("--max-tokens", type=int, metavar="N",
+                    help="completion budget per call, hidden reasoning included (default 4096; ~1500 suffices for "
+                         "first-author probes and caps the worst-case cost shown by --dry-run)")
+    br.add_argument("--in-tokens", nargs="+", metavar="N|KEY=N", default=[],
+                    help="--dry-run: prompt tokens per call, one number or per model key (default 200)")
+    br.add_argument("--out-tokens", nargs="+", metavar="N|KEY=N", default=[],
+                    help="--dry-run: completion tokens per call incl. hidden reasoning, one number or per model key "
+                         "(e.g. claude-fable-5.2=350 gemini-4-neon=900 default=60; default 600)")
+    br.add_argument("--out-tokens-measured", action="store_true",
+                    help="--dry-run: mark the --out-tokens values as measured on a pilot")
     br.add_argument("--mock", action="store_true", help="probe the simulated models")
     _add_config(br)
     br.set_defaults(func=_cmd_bench_run)
 
-    bg = bench_sub.add_parser("grade", help="(re-)grade stored results, with judges for unsure open answers")
+    bg = bench_sub.add_parser("grade", help="re-grade stored results into a new file: the rules offline, judges for "
+                                           "unsure open answers when given; prints the grades before and after")
     bg.add_argument("--events", required=True, nargs="+", metavar="FILE")
-    bg.add_argument("--results", required=True, metavar="FILE")
-    bg.add_argument("--out", metavar="FILE", help="default: overwrite --results")
-    bg.add_argument("--judges", nargs="*", default=[], metavar="KEY")
-    bg.add_argument("--regrade-all", action="store_true")
+    bg.add_argument("--in", "--results", dest="results", required=True, metavar="FILE",
+                    help="results JSONL to re-grade (read only)")
+    bg.add_argument("--out", required=True, metavar="FILE",
+                    help="new results JSONL (never --in itself); usage and latency are kept")
+    bg.add_argument("--judges", nargs="*", default=[], metavar="KEY",
+                    help="judge models for the rows the rules cannot decide (default: none, offline)")
+    bg.add_argument("--regrade-all", action="store_true",
+                    help="re-grade every row with a response, not only the ungraded ones")
     bg.add_argument("--concurrency", type=int, default=8)
     bg.add_argument("--mock", action="store_true")
     _add_config(bg)
@@ -832,6 +981,14 @@ def build_parser() -> argparse.ArgumentParser:
     bf.add_argument("--prior-sd", type=float, default=3.0)
     bf.add_argument("--bootstrap", type=int, default=200)
     bf.add_argument("--seed", type=int, default=0)
+    bf.add_argument("--global-origins", nargs="+", metavar="ORIGIN",
+                    help="fit the model-level cutoff, slope and plateau from events of these origins only (e.g. kc, "
+                         "the world events); topic cells, offsets, draws and hazard rates still use every row, so "
+                         "topics without own data inherit this anchor (DESIGN.md §4)")
+    bf.add_argument("--probe-map", nargs="+", default=[], metavar="FROM=TO",
+                    help="relabel result probes before the fit, e.g. current_d=current: the paper probes were asked "
+                         "with the dated deployment prompt (current_d) but join the kc direct probe 'current' so one "
+                         "per-topic table exists; the paper-specific difference lands in the ai_ml topic cell")
     bf.add_argument("--note", help="free text stored as meta.note (what the index is, what it may be used for)")
     bf.set_defaults(func=_cmd_bench_fit)
 

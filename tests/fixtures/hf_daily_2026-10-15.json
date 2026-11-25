@@ -1,0 +1,828 @@
+[
+ {
+  "title": "Cortex: Consolidating Context into Parametric Memory",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.20399",
+   "title": "Cortex: Consolidating Context into Parametric Memory",
+   "upvotes": 70,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Jintian Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Feng He",
+     "hidden": false
+    },
+    {
+     "name": "Xinnian Liang",
+     "hidden": false
+    },
+    {
+     "name": "Ziwen Xu",
+     "hidden": false
+    },
+    {
+     "name": "Haoming Xu",
+     "hidden": false
+    },
+    {
+     "name": "Haojing Huang",
+     "hidden": false
+    },
+    {
+     "name": "Shuangzhi Wu",
+     "hidden": false
+    },
+    {
+     "name": "Ningyu Zhang",
+     "hidden": false
+    }
+   ],
+   "summary": "Context can improve large language model performance, but these gains may be lost after context removal. Inspired by biological systems consolidation, we formulate Memory Consolidation (MC) as internalizing these gains while preserving non-target capabilities, connecting context-specified editing, skill learning, and behavioral steering under a common objective. We introduce a five-task-family tes"
+  }
+ },
+ {
+  "title": "Any Time, Any Space: A World-State-Centric Framework for Agentic Video Generation",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.20571",
+   "title": "Any Time, Any Space: A World-State-Centric Framework for Agentic Video Generation",
+   "upvotes": 61,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Weijie Wang",
+     "hidden": false
+    },
+    {
+     "name": "Haomin Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Ye Li",
+     "hidden": false
+    },
+    {
+     "name": "Akide Liu",
+     "hidden": false
+    },
+    {
+     "name": "Zeyu Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Haoyu Zhao",
+     "hidden": false
+    },
+    {
+     "name": "Yefei He",
+     "hidden": false
+    },
+    {
+     "name": "Donny Y. Chen",
+     "hidden": false
+    },
+    {
+     "name": "Feng Chen",
+     "hidden": false
+    },
+    {
+     "name": "Bohan Zhuang",
+     "hidden": false
+    }
+   ],
+   "summary": "Long-form agentic video generation must turn a screenplay into shots that remain spatially and temporally consistent across nonconsecutive requests. Passing prompts or recent frames between shots does not provide a shared spatial frame for revisiting a scene or a time-indexed record for replaying an earlier event. We present Any Time, Any Space (ATAS), which compiles a screenplay into shot request"
+  }
+ },
+ {
+  "title": "Beyond Domain-Routed Supervision: Cross-Teacher Guarding for Multi-Teacher On-Policy Distillation",
+  "publishedAt": "2026-10-08T20:00:00.000Z",
+  "paper": {
+   "id": "2610.13521",
+   "title": "Beyond Domain-Routed Supervision: Cross-Teacher Guarding for Multi-Teacher On-Policy Distillation",
+   "upvotes": 59,
+   "publishedAt": "2026-10-09T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Shi-Yu Tian",
+     "hidden": false
+    },
+    {
+     "name": "Yong Liu",
+     "hidden": false
+    },
+    {
+     "name": "Ximan Liu",
+     "hidden": false
+    },
+    {
+     "name": "Tianrui Zhu",
+     "hidden": false
+    },
+    {
+     "name": "Sule Bai",
+     "hidden": false
+    },
+    {
+     "name": "Xinwei Yang",
+     "hidden": false
+    },
+    {
+     "name": "Ruiqi Liu",
+     "hidden": false
+    },
+    {
+     "name": "Kun-Yang Yu",
+     "hidden": false
+    },
+    {
+     "name": "Ming Yang",
+     "hidden": false
+    },
+    {
+     "name": "Zhi Zhou",
+     "hidden": false
+    },
+    {
+     "name": "Yu-Feng Li",
+     "hidden": false
+    },
+    {
+     "name": "Yipeng Sun",
+     "hidden": false
+    },
+    {
+     "name": "Gu Simiu",
+     "hidden": false
+    }
+   ],
+   "summary": "Multi-teacher on-policy distillation (MOPD) extends on-policy distillation (OPD) by routing domain-specific data to specialized teachers, integrating their capabilities through dense token-level supervision on student-generated trajectories. However, domain routing only distinguishes the supervision sources for different domains; updates from all domains still act on shared parameters. When teache"
+  }
+ },
+ {
+  "title": "Player-1: Learning to Play from Synthetic Experience",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.20584",
+   "title": "Player-1: Learning to Play from Synthetic Experience",
+   "upvotes": 57,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Mingyu Ouyang",
+     "hidden": false
+    },
+    {
+     "name": "Yiran Wang",
+     "hidden": false
+    },
+    {
+     "name": "Siyuan Hu",
+     "hidden": false
+    },
+    {
+     "name": "Xingyilang Yin",
+     "hidden": false
+    },
+    {
+     "name": "Huiqiang Sun",
+     "hidden": false
+    },
+    {
+     "name": "Guangzhi Wang",
+     "hidden": false
+    },
+    {
+     "name": "Junfu Pu",
+     "hidden": false
+    },
+    {
+     "name": "Cheng Cheng",
+     "hidden": false
+    },
+    {
+     "name": "Honghao Chen",
+     "hidden": false
+    },
+    {
+     "name": "Ying Shan",
+     "hidden": false
+    },
+    {
+     "name": "Mike Zheng Shou",
+     "hidden": false
+    },
+    {
+     "name": "Hwee Tou Ng",
+     "hidden": false
+    }
+   ],
+   "summary": "Computer-use agents have demonstrated strong capabilities in interpreting screens and executing keyboard and mouse actions. However, games, with their visually rich worlds and diverse mechanics, remain challenging and offer a demanding next step toward general digital control. Current game-agent learning pipelines often rely on large-scale demonstrations with limited coverage of dynamic game state"
+  }
+ },
+ {
+  "title": "ActionOPD: Distilling Decisions, Not Tokens",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.19820",
+   "title": "ActionOPD: Distilling Decisions, Not Tokens",
+   "upvotes": 55,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Huining Yuan",
+     "hidden": false
+    },
+    {
+     "name": "Xiangmin Yi",
+     "hidden": false
+    },
+    {
+     "name": "Zelai Xu",
+     "hidden": false
+    },
+    {
+     "name": "Zixu Wang",
+     "hidden": false
+    },
+    {
+     "name": "Xinlei Chen",
+     "hidden": false
+    },
+    {
+     "name": "Xiao-Ping Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Yu Wang",
+     "hidden": false
+    },
+    {
+     "name": "Chao Yu",
+     "hidden": false
+    }
+   ],
+   "summary": "Distilling capable language-model agents into smaller models requires aligning the student's behavior with the teacher's. This raises a fundamental question: at which states and at what granularity should this alignment be performed? Offline imitation provides dense but token-specific supervision and can suffer from state-distribution mismatch. Token-level on-policy distillation (OPD) addresses th"
+  }
+ },
+ {
+  "title": "Seeing, Maintaining, and Learning: The Evolution of Multimodal Agent Memory",
+  "publishedAt": "2026-10-13T21:11:57.000Z",
+  "paper": {
+   "id": "2610.19366",
+   "title": "Seeing, Maintaining, and Learning: The Evolution of Multimodal Agent Memory",
+   "upvotes": 50,
+   "publishedAt": "2026-10-14T01:11:57.000Z",
+   "authors": [
+    {
+     "name": "Minghao Guo",
+     "hidden": false
+    },
+    {
+     "name": "Qingyue Jiao",
+     "hidden": false
+    },
+    {
+     "name": "Xiujin Liu",
+     "hidden": false
+    },
+    {
+     "name": "Jianhong Pang",
+     "hidden": false
+    },
+    {
+     "name": "Ruimeng Yang",
+     "hidden": false
+    },
+    {
+     "name": "Naihao Xu",
+     "hidden": false
+    },
+    {
+     "name": "Liwei Che",
+     "hidden": false
+    },
+    {
+     "name": "Haochen Xue",
+     "hidden": false
+    },
+    {
+     "name": "Ziqi Wang",
+     "hidden": false
+    },
+    {
+     "name": "Xinying Cai",
+     "hidden": false
+    },
+    {
+     "name": "Jiaxuan Luo",
+     "hidden": false
+    },
+    {
+     "name": "Jiaxin Deng",
+     "hidden": false
+    },
+    {
+     "name": "Xuesong Ye",
+     "hidden": false
+    },
+    {
+     "name": "Jintao Qu",
+     "hidden": false
+    },
+    {
+     "name": "Wenyao Gao",
+     "hidden": false
+    },
+    {
+     "name": "Jingwen Gu",
+     "hidden": false
+    },
+    {
+     "name": "Chenyang Zhao",
+     "hidden": false
+    },
+    {
+     "name": "Shichun Liu",
+     "hidden": false
+    },
+    {
+     "name": "Guibin Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Zefang Liu",
+     "hidden": false
+    },
+    {
+     "name": "Siyin Wang",
+     "hidden": false
+    },
+    {
+     "name": "Wujiang Xu",
+     "hidden": false
+    },
+    {
+     "name": "Danrui Li",
+     "hidden": false
+    },
+    {
+     "name": "Zeru Shi",
+     "hidden": false
+    },
+    {
+     "name": "Woongyeong Yeo",
+     "hidden": false
+    },
+    {
+     "name": "Shuang Liu",
+     "hidden": false
+    },
+    {
+     "name": "Wei-Chieh Huang",
+     "hidden": false
+    },
+    {
+     "name": "Weizhi Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Tianyu Yang",
+     "hidden": false
+    },
+    {
+     "name": "Kangsan Kim",
+     "hidden": false
+    },
+    {
+     "name": "Yebowen Hu",
+     "hidden": false
+    },
+    {
+     "name": "Bowen Wen",
+     "hidden": false
+    },
+    {
+     "name": "Bowen Jiang",
+     "hidden": false
+    },
+    {
+     "name": "Haohao Su",
+     "hidden": false
+    },
+    {
+     "name": "Ming Yin",
+     "hidden": false
+    },
+    {
+     "name": "Sheldon Yu",
+     "hidden": false
+    },
+    {
+     "name": "Mian Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Yuyan Chen",
+     "hidden": false
+    },
+    {
+     "name": "Hanrong Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Kai Mei",
+     "hidden": false
+    },
+    {
+     "name": "Zihao Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Mingyu Jin",
+     "hidden": false
+    },
+    {
+     "name": "Xi Zhu",
+     "hidden": false
+    },
+    {
+     "name": "Hengyi Wang",
+     "hidden": false
+    },
+    {
+     "name": "Tianxin Wei",
+     "hidden": false
+    },
+    {
+     "name": "Linyong Nan",
+     "hidden": false
+    },
+    {
+     "name": "Zhenwen Liang",
+     "hidden": false
+    },
+    {
+     "name": "Zhendong Chu",
+     "hidden": false
+    },
+    {
+     "name": "Ziqi Huang",
+     "hidden": false
+    },
+    {
+     "name": "Yongye Su",
+     "hidden": false
+    },
+    {
+     "name": "Sixun Dong",
+     "hidden": false
+    },
+    {
+     "name": "Shujian Liu",
+     "hidden": false
+    },
+    {
+     "name": "Kaiqu Liang",
+     "hidden": false
+    },
+    {
+     "name": "Jiaojiao Han",
+     "hidden": false
+    },
+    {
+     "name": "Zhaoye Fei",
+     "hidden": false
+    },
+    {
+     "name": "Kun Wang",
+     "hidden": false
+    },
+    {
+     "name": "Shihan Dou",
+     "hidden": false
+    },
+    {
+     "name": "Zhichun Guo",
+     "hidden": false
+    },
+    {
+     "name": "Xingjian Diao",
+     "hidden": false
+    },
+    {
+     "name": "Zeqi Gu",
+     "hidden": false
+    },
+    {
+     "name": "Heng Wang",
+     "hidden": false
+    },
+    {
+     "name": "Tao Feng",
+     "hidden": false
+    },
+    {
+     "name": "Cheng Qian",
+     "hidden": false
+    },
+    {
+     "name": "Hamid Palangi",
+     "hidden": false
+    },
+    {
+     "name": "Silei Xu",
+     "hidden": false
+    },
+    {
+     "name": "Xi Yun",
+     "hidden": false
+    },
+    {
+     "name": "Yi Zhu",
+     "hidden": false
+    },
+    {
+     "name": "Shilong Liu",
+     "hidden": false
+    },
+    {
+     "name": "Qingsong Wen",
+     "hidden": false
+    },
+    {
+     "name": "Sung Ju Hwang",
+     "hidden": false
+    },
+    {
+     "name": "Zuxuan Wu",
+     "hidden": false
+    },
+    {
+     "name": "Yu-Gang Jiang",
+     "hidden": false
+    },
+    {
+     "name": "Yiyu Shi",
+     "hidden": false
+    },
+    {
+     "name": "Dimitris N. Metaxas",
+     "hidden": false
+    },
+    {
+     "name": "Jiaxuan You",
+     "hidden": false
+    },
+    {
+     "name": "Julian McAuley",
+     "hidden": false
+    },
+    {
+     "name": "Mengdi Wang",
+     "hidden": false
+    },
+    {
+     "name": "Jiawei Han",
+     "hidden": false
+    },
+    {
+     "name": "Philip S. Yu",
+     "hidden": false
+    },
+    {
+     "name": "Ziyi Ye",
+     "hidden": false
+    }
+   ],
+   "summary": "Multimodal models and agents have emerged to enable AI systems to learn from and interact with the real world more like humans by integrating information across multiple modalities. However, enabling multimodal agents to continually acquire useful information from complex, heterogeneous multimodal data remains a significant challenge as they move toward long-horizon tasks and lifelong settings. Ad"
+  }
+ },
+ {
+  "title": "LatentLoop: Scaling Looped MoE Models with Asymmetric Compute Allocation",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.19975",
+   "title": "LatentLoop: Scaling Looped MoE Models with Asymmetric Compute Allocation",
+   "upvotes": 44,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Zefeng He",
+     "hidden": false
+    },
+    {
+     "name": "Yunkai Chai",
+     "hidden": false
+    },
+    {
+     "name": "Xiaoyang Chen",
+     "hidden": false
+    },
+    {
+     "name": "Tong Zhu",
+     "hidden": false
+    },
+    {
+     "name": "Zongliang Wu",
+     "hidden": false
+    },
+    {
+     "name": "Yun Luo",
+     "hidden": false
+    },
+    {
+     "name": "Yafu Li",
+     "hidden": false
+    },
+    {
+     "name": "Yu Cheng",
+     "hidden": false
+    }
+   ],
+   "summary": "Looped Mixture-of-Experts (MoE) models combine parameter reuse with sparse computation to improve performance under matched budgets. Prior work demonstrates that different loop visits can play different roles even when they share parameters. To probe the contributions of different loop visits, we learn separate residual coefficients in a model that applies a shared block twice, observing a smaller"
+  }
+ },
+ {
+  "title": "Doc2Harness: Benchmarking LLMs on Long-Horizon Harness Engineering of Coding Agents",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.20344",
+   "title": "Doc2Harness: Benchmarking LLMs on Long-Horizon Harness Engineering of Coding Agents",
+   "upvotes": 40,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Yuyao Ge",
+     "hidden": false
+    },
+    {
+     "name": "Shenghua Liu",
+     "hidden": false
+    },
+    {
+     "name": "Peizhong Gao",
+     "hidden": false
+    },
+    {
+     "name": "Chendi Ge",
+     "hidden": false
+    },
+    {
+     "name": "Chenxu Liu",
+     "hidden": false
+    },
+    {
+     "name": "Yiwei Wang",
+     "hidden": false
+    },
+    {
+     "name": "Lingrui Mei",
+     "hidden": false
+    },
+    {
+     "name": "Baolong Bi",
+     "hidden": false
+    },
+    {
+     "name": "Jiayu Yao",
+     "hidden": false
+    },
+    {
+     "name": "Jiafeng Guo",
+     "hidden": false
+    },
+    {
+     "name": "Xueqi Cheng",
+     "hidden": false
+    }
+   ],
+   "summary": "Agents driven by large language models are increasingly deployed on long-horizon tasks, where they use tools and modify real workspaces. How well they perform depends as much on the harness around the model as on the model itself. Existing benchmarks measure downstream task success under a fixed harness, leaving harness engineering itself unexplored. We propose Doc2Harness, a two-stage benchmark t"
+  }
+ },
+ {
+  "title": "LensErase: A Foundation Model for Erase Anything",
+  "publishedAt": "2026-10-13T05:56:02.000Z",
+  "paper": {
+   "id": "2610.18072",
+   "title": "LensErase: A Foundation Model for Erase Anything",
+   "upvotes": 40,
+   "publishedAt": "2026-10-13T09:56:02.000Z",
+   "authors": [
+    {
+     "name": "Yunuo Chen",
+     "hidden": false
+    },
+    {
+     "name": "Xiuyu Wu",
+     "hidden": false
+    },
+    {
+     "name": "Qinhong Yang",
+     "hidden": false
+    },
+    {
+     "name": "Jinjing Zhao",
+     "hidden": false
+    },
+    {
+     "name": "Yanchen Dong",
+     "hidden": false
+    },
+    {
+     "name": "Sirui Zhang",
+     "hidden": false
+    },
+    {
+     "name": "Dong Chen",
+     "hidden": false
+    },
+    {
+     "name": "Fangyun Wei",
+     "hidden": false
+    },
+    {
+     "name": "Lei Shi",
+     "hidden": false
+    },
+    {
+     "name": "Ji Li",
+     "hidden": false
+    },
+    {
+     "name": "Dongdong Chen",
+     "hidden": false
+    },
+    {
+     "name": "Guo Lu",
+     "hidden": false
+    },
+    {
+     "name": "Yan Lu",
+     "hidden": false
+    },
+    {
+     "name": "Baining Guo",
+     "hidden": false
+    }
+   ],
+   "summary": "We introduce LensErase, a general-purpose mask-based Erase Anything foundation model designed to cover a broad spectrum of real-world erase scenarios. LensErase supports diverse objects, visual text, watermarks, associated visual effects, multiple-object removal, and a wide range of object scales, aspect ratios, and image resolutions. First, to enable such broad coverage, we construct LensErase-10"
+  }
+ },
+ {
+  "title": "More Methods, Better Agents? A Reality Check on Self-Distillation in Agentic Reinforcement Learning",
+  "publishedAt": "2026-10-13T20:00:00.000Z",
+  "paper": {
+   "id": "2610.19789",
+   "title": "More Methods, Better Agents? A Reality Check on Self-Distillation in Agentic Reinforcement Learning",
+   "upvotes": 38,
+   "publishedAt": "2026-10-14T00:00:00.000Z",
+   "authors": [
+    {
+     "name": "Linhao Zhong",
+     "hidden": false
+    },
+    {
+     "name": "Bozhen Fang",
+     "hidden": false
+    },
+    {
+     "name": "Xuehao Wang",
+     "hidden": false
+    },
+    {
+     "name": "Duochao Shi",
+     "hidden": false
+    },
+    {
+     "name": "Zekai Luo",
+     "hidden": false
+    },
+    {
+     "name": "Guangming Yao",
+     "hidden": false
+    },
+    {
+     "name": "Yi Yuan",
+     "hidden": false
+    },
+    {
+     "name": "Hao Chen",
+     "hidden": false
+    },
+    {
+     "name": "Jingdong Chen",
+     "hidden": false
+    },
+    {
+     "name": "Chunhua Shen",
+     "hidden": false
+    }
+   ],
+   "summary": "Self-distillation in agentic reinforcement learning has produced a growing number of methods. However, existing evaluations often reuse published baseline scores under differing experimental conditions, provide few direct comparisons among contemporaneous methods, and give limited attention to training stability and computational cost. These limitations obscure the source of reported gains and the"
+  }
+ }
+]

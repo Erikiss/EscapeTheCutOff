@@ -250,6 +250,28 @@ def test_estimate_cost_uses_builtin_list_prices() -> None:
     assert DEFAULT_PRICING["google/gemini-4-neon"] == (3.0, 15.0)
 
 
+def test_estimate_cost_takes_per_model_token_counts() -> None:
+    events = [make_event(0), make_event(1, recall=False)]
+    est = estimate_cost([FABLE, SOL], events, ["current", "recall", "mcq"],
+                        out_tokens={"fable": 350, "default": 60}, in_tokens={"openai/gpt-6.2-sol": 110, "fable": 120},
+                        max_tokens=1500, measured=True)
+    fable, sol = est["per_model"]["fable"], est["per_model"]["sol"]
+    assert fable["out_tokens_per_call"] == 350 and fable["in_tokens_per_call"] == 120  # by key
+    assert sol["out_tokens_per_call"] == 60 and sol["in_tokens_per_call"] == 110  # default, then by provider id
+    assert fable["usd"] == pytest.approx(5 * (120 * 8 + 350 * 40) / 1e6)
+    assert sol["usd"] == pytest.approx(5 * (110 * 2 + 60 * 10) / 1e6)
+    assert fable["max_usd"] == pytest.approx(5 * (120 * 8 + 1500 * 40) / 1e6)
+    assert est["assumptions"]["out_tokens"] == {"fable": 350, "default": 60}
+    assert est["assumptions"]["out_tokens_measured"] is True and est["assumptions"]["max_tokens"] == 1500
+    # a mapping without an entry for a model falls back to the module default
+    only_fable = estimate_cost([FABLE, SOL], events, ["mcq"], out_tokens={"fable": 100})
+    assert only_fable["per_model"]["sol"]["out_tokens_per_call"] == 600
+    with pytest.raises(ValueError, match=">= 0"):
+        estimate_cost([FABLE], events, ["mcq"], out_tokens={"fable": -1})
+    with pytest.raises(ValueError, match="max_tokens"):
+        estimate_cost([FABLE], events, ["mcq"], max_tokens=0)
+
+
 def test_estimate_cost_custom_pricing_batch_discount_and_missing_prices() -> None:
     events = [make_event(0)]
     custom = estimate_cost([FABLE], events, ["current"], pricing={"fable": {"input": 1.0, "output": 2.0}},

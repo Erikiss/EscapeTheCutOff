@@ -118,10 +118,18 @@ def events_for_printer() -> list[RelayEvent]:
     ["bench", "build-wikidata", "--out", "wd.jsonl"],
     ["bench", "build-wikipedia", "--out", "wp.jsonl", "--start", "2026-10-01", "--end", "2026-10-07",
      "--probe-model", "deepseek/deepseek-v4-pro"],
+    ["bench", "build-papers", "--out", "papers.jsonl", "--dense-from", "2025-10", "--dense-to", "2026-11",
+     "--per-month", "12", "--anchor-from", "2024-01", "--anchor-to", "2025-09", "--anchor-every", "3",
+     "--anchor-per-month", "6", "--interp-share", "0.5", "--controls-share", "0.1", "--seed", "0", "--meta", "m.jsonl",
+     "--cache", "cache", "--candidates", "60"],
     ["bench", "run", "--events", "e.jsonl", "--out", "r.jsonl", "--models", "a", "b", "--probes", "current_d", "mcq",
      "--dry-run", "--batch", "--limit", "10"],
-    ["bench", "grade", "--events", "e.jsonl", "--results", "r.jsonl"],
+    ["bench", "grade", "--events", "e.jsonl", "--in", "r.jsonl", "--out", "g.jsonl"],
+    ["bench", "grade", "--events", "e.jsonl", "f.jsonl", "--results", "r.jsonl", "--out", "g.jsonl", "--regrade-all",
+     "--judges", "a", "--concurrency", "2", "--mock"],
     ["bench", "fit", "--events", "e.jsonl", "--results", "r.jsonl", "--out", "i.json", "--priors", "a=27.75"],
+    ["bench", "fit", "--events", "e.jsonl", "p.jsonl", "--results", "r.jsonl", "s.jsonl", "--out", "i.json",
+     "--probe-map", "current_d=current", "--global-origins", "kc", "--models", "a", "--probes", "current", "mcq"],
     ["router", "train"],
     ["simulate", "--out", "sim"],
 ])
@@ -476,6 +484,41 @@ def test_bench_fit_rejects_malformed_priors(monkeypatch, capsys):
     assert code == 2 and "KEY=VALUE" in capsys.readouterr().err
 
 
+def test_bench_fit_relabels_probes_and_passes_the_anchor_origins(monkeypatch, tmp_path, capsys):
+    import cutoffmix.bench.io as bench_io
+    from cutoffmix.bench import estimate
+    from cutoffmix.types import ProbeResult
+
+    calls: dict[str, Any] = {}
+
+    def fake_fit(events, results, **kw):
+        calls.update(kw, results=results)
+        return _truth_index()
+
+    rows = [ProbeResult("paper:1", "m", "current_d", "x", "correct"), ProbeResult("kc:1", "m", "current", "x", "correct"),
+            ProbeResult("paper:1", "m", "mcq", "A", "correct")]
+    monkeypatch.setattr(estimate, "fit_index", fake_fit)
+    monkeypatch.setattr(bench_io, "load_events", lambda path: [])
+    monkeypatch.setattr(bench_io, "load_results", lambda path: list(rows))
+    out = tmp_path / "idx.json"
+    base = ["bench", "fit", "--events", "e.jsonl", "--results", "r.jsonl", "--out", str(out)]
+    code = main([*base, "--probe-map", "current_d=current", "--global-origins", "kc", "wikidata", "--note", "n"])
+    assert code == 0 and out.exists()
+    assert [r.probe for r in calls["results"]] == ["current", "current", "mcq"]  # relabelled at fit time
+    assert [r.event_id for r in calls["results"]] == ["paper:1", "kc:1", "paper:1"]
+    assert calls["global_origins"] == ["kc", "wikidata"]
+    assert calls["meta"] == {"note": "n", "probe_map": {"current_d": "current"}}
+    # without the options: rows untouched, no anchor origins, no meta
+    assert main(base) == 0
+    assert [r.probe for r in calls["results"]] == ["current_d", "current", "mcq"]
+    assert calls["global_origins"] is None and calls["meta"] is None
+    for bad in ("nonsense", "current_d=bogus", "=current", "current_d="):
+        assert main([*base, "--probe-map", bad]) == 2
+        assert "FROM=TO" in capsys.readouterr().err
+    assert main([*base, "--probe-map", "current_d=current", "current_d=mcq"]) == 2
+    assert "twice" in capsys.readouterr().err
+
+
 def test_bench_run_dry_run_prints_the_estimate(monkeypatch, capsys):
     import cutoffmix.bench.io as bench_io
     from cutoffmix.bench import runner
@@ -494,6 +537,110 @@ def test_bench_run_dry_run_prints_the_estimate(monkeypatch, capsys):
     assert code == 0
     assert seen == {"models": ["gpt-6.2-sol", "deepseek/deepseek-v4-pro"], "n": 2, "probes": ["mcq"], "batch": True}
     assert json.loads(capsys.readouterr().out)["total_usd"] == 0.5
+
+
+def test_bench_run_dry_run_passes_token_options_only_when_given(monkeypatch, capsys):
+    import cutoffmix.bench.io as bench_io
+    from cutoffmix.bench import runner
+
+    seen: dict[str, Any] = {}
+
+    def fake_estimate(models, evs, probes, *, batch=False, **kw):
+        seen.update(kw)
+        return {"calls": 1, "total_usd": 0.1}
+
+    monkeypatch.setattr(bench_io, "load_events", lambda path: [SimpleNamespace(id="e0")])
+    monkeypatch.setattr(runner, "estimate_cost", fake_estimate)
+    base = ["bench", "run", "--events", "e.jsonl", "--out", "r.jsonl", "--models", "gpt-6.2-sol", "--probes", "mcq",
+            "--dry-run"]
+    assert main(base) == 0 and seen == {}
+    assert main([*base, "--out-tokens", "claude-fable-5.2=350", "gemini-4-neon=900", "60", "--in-tokens", "110",
+                 "--max-tokens", "1500", "--out-tokens-measured"]) == 0
+    assert seen == {"out_tokens": {"claude-fable-5.2": 350, "gemini-4-neon": 900, "default": 60}, "in_tokens": 110,
+                    "max_tokens": 1500, "measured": True}
+    capsys.readouterr()
+    assert main([*base, "--out-tokens", "fable=lots"]) != 0 and "KEY=N" in capsys.readouterr().err
+    assert main([*base, "--out-tokens", "-5"]) != 0 and ">= 0" in capsys.readouterr().err
+
+
+def test_bench_run_passes_max_tokens_to_run_probes(monkeypatch, tmp_path):
+    from cutoffmix.bench import runner
+    from cutoffmix.bench.io import save_events
+    from cutoffmix.types import Event
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run(backend, models, events, probes, out, **kw):
+        seen.update(kw, n=len(events), probes=list(probes))
+        return []
+
+    monkeypatch.setattr(runner, "run_probes", fake_run)
+    events_path = tmp_path / "e.jsonl"
+    save_events(events_path, [Event(id="x", date="2026-01-05", month="2026-01", topic="ai_ml", category="paper",
+                                    subject="s", fact="f", mcq_question="q?", mcq_choices=["A) a", "B) b", "C) c",
+                                                                                           "D) d"], mcq_answer="A")])
+    base = ["bench", "run", "--events", str(events_path), "--out", str(tmp_path / "r.jsonl"), "--models",
+            "gpt-6.2-sol", "--probes", "mcq", "--mock"]
+    assert main(base) == 0 and "max_tokens" not in seen and seen["n"] == 1  # the runner's own default applies
+    assert main([*base, "--max-tokens", "1500"]) == 0 and seen["max_tokens"] == 1500
+
+
+def _pilot_fixture(tmp_path):
+    from cutoffmix.bench.io import save_events, save_results
+    from cutoffmix.types import Event, ProbeResult
+
+    fake = Event(id="fakepaper:1", date="2024-01-18", month="2024-01", topic="ai_ml", category="fake_paper",
+                 subject="Efficient Temporal Adaptation Modeling through Language-Conditioned Video Generation",
+                 fact="control: no such arXiv paper exists",
+                 question_current="Who is the first author of the arXiv paper titled 'Efficient Temporal Adaptation "
+                                  "Modeling through Language-Conditioned Video Generation'?", control=True)
+    rows = [
+        ProbeResult("fakepaper:1", "gpt-6.2-sol", "current_d", "The first author is **Sho Maeoki**.", "ungraded",
+                    latency_s=0.7, usage={"prompt_tokens": 100, "completion_tokens": 12, "cost": 0.001}),
+        ProbeResult("fakepaper:1", "gpt-6.2-sol", "current_d", "I'm not aware of this paper.", "correct", latency_s=0.4,
+                    usage={"prompt_tokens": 100, "completion_tokens": 9}),
+        ProbeResult("fakepaper:1", "gemini-4-neon", "current_d", "", "ungraded", error="timeout"),
+    ]
+    events, results = tmp_path / "events.jsonl", tmp_path / "pilot.jsonl"
+    save_events(events, [fake])
+    save_results(results, rows)
+    return events, results, rows
+
+
+def test_bench_grade_regrades_offline_into_a_new_file_and_prints_before_and_after(tmp_path, capsys):
+    from cutoffmix.bench.io import load_results
+
+    events, src, rows = _pilot_fixture(tmp_path)
+    before = src.read_text(encoding="utf-8")
+    out = tmp_path / "regraded.jsonl"
+    code = main(["bench", "grade", "--events", str(events), "--in", str(src), "--out", str(out)])
+    assert code == 0 and src.read_text(encoding="utf-8") == before  # never in place
+    graded = load_results(out)
+    assert [r.grade for r in graded] == ["incorrect", "correct", "ungraded"]
+    assert (graded[0].grader, graded[0].latency_s, graded[0].usage) == ("rule", 0.7, rows[0].usage)
+    assert graded[1] == rows[1] and graded[2] == rows[2]  # untouched rows, an API error among them
+    text = capsys.readouterr().out
+    lines = {tuple(line.split()[:2]): line.split()[2:] for line in text.splitlines() if line.startswith("  ")}
+    assert lines[("model", "probe")] == ["correct", "incorrect", "ungraded", "changed"]
+    assert lines[("gpt-6.2-sol", "current_d")] == ["1", "0->1", "1->0", "1"]
+    assert lines[("gpt-6.2-sol", "all")] == ["1", "0->1", "1->0", "1"]
+    assert lines[("gemini-4-neon", "all")] == ["0", "0", "1", "0"]
+    assert f"3 results (1 changed) -> {out}" in text
+    again = tmp_path / "again.jsonl"  # --results is the old spelling of --in; --regrade-all keeps sure grades
+    assert main(["bench", "grade", "--events", str(events), "--results", str(out), "--out", str(again),
+                 "--regrade-all"]) == 0
+    assert [r.grade for r in load_results(again)] == ["incorrect", "correct", "ungraded"]
+    assert "3 results (0 changed)" in capsys.readouterr().out
+
+
+def test_bench_grade_refuses_to_regrade_in_place(tmp_path, capsys):
+    events, src, _ = _pilot_fixture(tmp_path)
+    before = src.read_text(encoding="utf-8")
+    code = main(["bench", "grade", "--events", str(events), "--in", str(src), "--out", str(src)])
+    assert code == 2 and "never re-graded in place" in capsys.readouterr().err
+    assert src.read_text(encoding="utf-8") == before
+    with pytest.raises(SystemExit):  # --out is required
+        main(["bench", "grade", "--events", str(events), "--in", str(src)])
 
 
 def test_bench_run_requires_a_key_unless_mocked(monkeypatch, capsys):

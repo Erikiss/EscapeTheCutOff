@@ -283,6 +283,84 @@ def test_fit_is_fast_enough() -> None:
     assert elapsed < 30.0, f"fit took {elapsed:.1f} s"
 
 
+# ------------------------------------------------------------------------------------------------- global origins
+
+
+def _two_origin_data() -> tuple[list[Event], list[Event], list[ProbeResult]]:
+    """Origin A: world events on three topics (M1 tau 28, M2 tau 26). Origin B: ai_ml only and dense, where M1 knows
+    far less (tau 20, plateau 0.8; a different knowledge structure, like paper first authors) and M2 is unchanged."""
+    ev_a = [dataclasses.replace(e, origin="A")
+            for e in synthetic_events(["sports", "government", "ai_ml"], range(14, 35), 8, seed=11)]
+    ev_b = [dataclasses.replace(e, id="b-" + e.id, origin="B") for e in synthetic_events(["ai_ml"], range(14, 35), 24,
+                                                                                            seed=13)]
+    on_a = {"M1": truth("M1", default_tau=28.0), "M2": truth("M2", default_tau=26.0)}
+    on_b = {"M1": truth("M1", default_tau=20.0, plateau=0.8), "M2": truth("M2", default_tau=26.0)}
+    results = simulate_results(on_a, ev_a, ["current"], seed=1) + simulate_results(on_b, ev_b, ["current"], seed=2)
+    return ev_a, ev_b, results
+
+
+def test_global_origins_anchor_the_model_level_fit_on_the_chosen_origins() -> None:
+    ev_a, ev_b, results = _two_origin_data()
+    b_ids = {e.id for e in ev_b}
+    base = fit_index(ev_a + ev_b, results, bootstrap=0)
+    anchored = fit_index(ev_a + ev_b, results, bootstrap=0, global_origins=["A"])
+    a_only = fit_index(ev_a, [r for r in results if r.event_id not in b_ids], bootstrap=0)
+    p, pa, pb = anchored.probes["current"], a_only.probes["current"], base.probes["current"]
+    # the model-level anchor is the A-only fit (the same rows go through the same grid search)
+    np.testing.assert_allclose(p.global_tau, pa.global_tau, atol=0.05 + 1e-9)
+    np.testing.assert_array_equal(p.slope, pa.slope)
+    np.testing.assert_array_equal(p.plateau, pa.plateau)
+    assert abs(p.global_tau[0] - 28.0) < 1.0 and abs(p.global_tau[1] - 26.0) < 1.0
+    # without the option, B's weak recall drags M1's anchor months down (M2 is the same on both origins)
+    assert pb.global_tau[0] < p.global_tau[0] - 2.0 and pb.plateau[0] <= p.plateau[0]
+    assert abs(pb.global_tau[1] - p.global_tau[1]) < 0.5
+    # the ai_ml cell still sees B's rows: earlier than the anchor and than the A-only cell
+    assert cell(anchored, "current", "M1", "ai_ml", "n") == 21 * (8 + 24)
+    assert cell(anchored, "current", "M1", "ai_ml") < cell(a_only, "current", "M1", "ai_ml") - 1.0
+    assert cell(anchored, "current", "M1", "ai_ml") < p.global_tau[0] - 1.0
+    # topics with A data and topics without data stay on the A anchor
+    assert abs(cell(anchored, "current", "M1", "sports") - 28.0) < 1.0
+    gamma = anchored.meta["hyper"]["current"]["gamma"]
+    assert gamma["space_astronomy"] == 0.0 and gamma["ai_ml"] < -0.3
+    assert cell(anchored, "current", "M1", "space_astronomy") == pytest.approx(p.global_tau[0], abs=0.05)
+    assert cell(anchored, "current", "M1", "space_astronomy") > cell(base, "current", "M1", "space_astronomy") + 2.0
+    # meta: what fed the model-level fit
+    assert base.meta["global_origins"] is None and anchored.meta["global_origins"] == ["A"]
+    assert anchored.meta["hyper"]["current"]["model_level"]["M1"] == {
+        "n": 21 * 8 * 3, "by_origin": {"A": 21 * 8 * 3}, "excluded": 21 * 24}
+    assert base.meta["hyper"]["current"]["model_level"]["M1"] == {
+        "n": 21 * 8 * 3 + 21 * 24, "by_origin": {"A": 21 * 8 * 3, "B": 21 * 24}, "excluded": 0}
+
+
+def test_global_origins_fallback_to_the_prior_and_validation() -> None:
+    ev_a, ev_b, results = _two_origin_data()
+    # a model probed only on B events: without B in the anchor set it is treated as a model without data
+    only_b = simulate_results({"onlyB": truth("onlyB", default_tau=24.0)}, ev_b, ["current"], seed=4)
+    index = fit_index(ev_a + ev_b, results + only_b, models=["M1", "M2", "onlyB", "noprior"], priors={"onlyB": 26.0},
+                      bootstrap=5, global_origins=["A"])
+    p = index.probes["current"]
+    k = index.models.index("onlyB")
+    assert np.isnan(p.slope[k]) and np.isnan(p.plateau[k]) and p.global_tau[k] == 26.0 and (p.n[k] == 0).all()
+    gamma = np.array([index.meta["hyper"]["current"]["gamma"][t] for t in index.topics])
+    sigma = index.meta["hyper"]["current"]["sigma_eps"]
+    np.testing.assert_allclose(p.tau[k], 26.0 + gamma, atol=0.05)
+    np.testing.assert_allclose(p.var[k], sigma ** 2 + 9.0, rtol=0.05)
+    assert np.isfinite(p.draws[:, k]).all() and np.isfinite(p.hazard[k]).all()
+    assert np.isnan(p.tau[index.models.index("noprior")]).all()
+    model_level = index.meta["hyper"]["current"]["model_level"]
+    assert model_level["onlyB"] == {"n": 0, "by_origin": {}, "excluded": 21 * 24, "fallback": "prior"}
+    assert model_level["noprior"] == {"n": 0, "by_origin": {}, "excluded": 0, "fallback": "none"}
+    assert "fallback" not in model_level["M1"]
+    # with B among the anchor origins the same model is fitted from its rows
+    both = fit_index(ev_a + ev_b, results + only_b, models=["onlyB"], bootstrap=0, global_origins=["B", "A", "B"])
+    assert abs(both.probes["current"].global_tau[0] - 24.0) < 1.0 and both.meta["global_origins"] == ["B", "A"]
+    assert both.meta["hyper"]["current"]["model_level"]["onlyB"]["by_origin"] == {"B": 21 * 24}
+    with pytest.raises(ValueError, match="at least one"):
+        fit_index(ev_a, results, global_origins=[])
+    with pytest.raises(ValueError, match="origins present"):
+        fit_index(ev_a + ev_b, results, global_origins=["kc"])
+
+
 # ------------------------------------------------------------------------------------------------- kc style
 
 

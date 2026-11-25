@@ -20,6 +20,12 @@ Per probe kind, on graded results of non-control, low/medium-predictability even
    two-level Beta shrinkage, 5 pseudo-observations each: cell rate toward the model-level rate, model-level rate
    toward the rate pooled over all models (a model with few items after its cutoff gets about the pooled rate).
 
+With ``global_origins`` (CLI ``--global-origins kc``) step 1 sees only rows whose event origin is in that set, so the
+model-level anchor τ_m (and s, a) comes from one kind of knowledge; steps 2-4 (cells, γ/σ_ε, bootstrap, rates) use all
+rows, so a topic with its own data from another origin still gets its own cutoff while topics without data inherit the
+anchor of the chosen origins. A model without rows from those origins falls back to the prior as if it had no data
+(``meta.hyper[probe].model_level`` records, per model, the rows and origins behind step 1 and that fallback).
+
 Everything is vectorised numpy; log-likelihoods use stable log-sigmoid forms and posteriors are normalised with
 log-sum-exp, so no cell can overflow, underflow to an empty posterior or run off to infinity.
 """
@@ -92,10 +98,17 @@ class _Rows:
     event: np.ndarray  # [N] position in the event list
     t: np.ndarray  # [N] fractional event month
     code: np.ndarray  # [N] 0 correct, 1 outdated, 2 incorrect, 3 abstain
+    origin: np.ndarray  # [N] event origin (``Event.origin``: kc, arxiv_hf, synthetic, ...)
 
     @property
     def y(self) -> np.ndarray:
         return self.code == 0
+
+    def step1_mask(self, global_origins: Sequence[str] | None) -> np.ndarray:
+        """Rows that feed the model-level fit: all of them, or those whose event origin is in ``global_origins``."""
+        if global_origins is None:
+            return np.ones(len(self.t), dtype=bool)
+        return np.isin(self.origin, np.asarray(list(global_origins), dtype=str))
 
 
 def _latest(results: Sequence[ProbeResult]) -> list[ProbeResult]:
@@ -269,29 +282,34 @@ class _ProbeFit:
     slope: np.ndarray
     plateau: np.ndarray
     hyper: _Hyper
+    step1: np.ndarray  # [N] rows that fed the model-level fit (all rows unless global_origins restricts them)
 
 
 def _fit_probe(rows: _Rows, g: float, n_models: int, n_topics: int, prior_mu: np.ndarray, prior_sd: float,
-               bootstrap: int, rng: np.random.Generator, grid: np.ndarray) -> _ProbeFit:
+               bootstrap: int, rng: np.random.Generator, grid: np.ndarray,
+               global_origins: Sequence[str] | None = None) -> _ProbeFit:
     M, T, G = n_models, n_topics, len(grid)
     y = rows.y
 
-    # step 1: model-level 4PL
+    # step 1: model-level 4PL (on the rows of the chosen origins only, when global_origins is given)
+    step1 = rows.step1_mask(global_origins)
     global_tau = prior_mu.copy()
     slope = np.full(M, np.nan)
     plateau = np.full(M, np.nan)
     for m in range(M):
-        sel = rows.model == m
+        sel = step1 & (rows.model == m)
         if sel.any():
             mu0 = prior_mu[m] if np.isfinite(prior_mu[m]) else float(np.median(rows.t[sel]))
             global_tau[m], slope[m], plateau[m] = _fit_global(rows.t[sel], y[sel], g, mu0, prior_sd, grid)
-    fitted = np.isfinite(slope)  # models with data
+    fitted = np.isfinite(slope)  # models with step-1 data (without global_origins: models with data)
     known = np.isfinite(global_tau)  # models with data or a prior
 
-    # step 2: cell likelihoods (rows are grouped by topic for the bootstrap)
+    # step 2: cell likelihoods (rows are grouped by topic for the bootstrap). A model without step-1 rows has no
+    # slope/plateau to evaluate cell likelihoods with: it is treated as having no data (its rows count nowhere).
     in_index = rows.topic >= 0
     n = np.zeros((M, T), dtype=np.int64)
     np.add.at(n, (rows.model[in_index], rows.topic[in_index]), 1)
+    n[~fitted] = 0
     cell_rows = {(m, z): np.flatnonzero(in_index & (rows.model == m) & (rows.topic == z))
                  for m in range(M) for z in range(T) if n[m, z] > 0}
 
@@ -343,7 +361,7 @@ def _fit_probe(rows: _Rows, g: float, n_models: int, n_topics: int, prior_mu: np
         draws = np.where(known[None, :, None], draws, np.nan)
 
     hazard, abstain = _rates(rows, tau, slope, M, T)
-    return _ProbeFit(tau, var, hazard, abstain, n, draws, global_tau, slope, plateau, hyper)
+    return _ProbeFit(tau, var, hazard, abstain, n, draws, global_tau, slope, plateau, hyper, step1)
 
 
 def _rates(rows: _Rows, tau: np.ndarray, slope: np.ndarray, M: int, T: int) -> tuple[np.ndarray, np.ndarray]:
@@ -386,6 +404,7 @@ def fit_index(
     bootstrap: int = 200,
     seed: int = 0,
     grid_step: float = 0.05,
+    global_origins: Sequence[str] | None = None,
     meta: Mapping[str, Any] | None = None,
 ) -> CutoffIndex:
     """Fit the per-(model, topic) cutoff index from graded probe results (see the module docstring, DESIGN.md §4).
@@ -400,9 +419,19 @@ def fit_index(
     (never chosen by the router). Probes without any usable row are left out; ``ValueError`` if none is left.
     Draws are seeded per probe, so the same ``seed`` and data give the same index.
 
+    ``global_origins`` restricts the *model-level* fit (τ_m, slope, plateau; step 1) to rows whose event origin is in
+    that set, e.g. ``["kc"]`` to anchor every model on the world-event evidence while AI-paper probes (origin
+    ``arxiv_hf``, topic ``ai_ml`` only, a different plateau and knowledge structure) still shape their own topic
+    cell: the per-cell posteriors, γ_z/σ_ε, the bootstrap and the hazard/abstain rates use all rows. A model with no
+    rows from those origins for a probe falls back to the prior exactly as a model without data (its other rows
+    count nowhere for that probe). ``None`` (the default) uses all rows everywhere. ``ValueError`` if no usable row
+    at all comes from the chosen origins (a typo, most likely).
+
     ``index.meta`` records provenance: ``sources`` (the attribution of every event origin used, most events first),
-    ``events_by_origin``, ``data_range`` (first and last event date) and the fit settings; entries of ``meta`` (e.g.
-    a ``note`` on what the index may be used for) are added last.
+    ``events_by_origin``, ``data_range`` (first and last event date), ``global_origins`` and the fit settings;
+    ``hyper[probe].model_level`` lists per model the rows (``n``, ``by_origin``) behind the model-level fit, the
+    rows left out of it (``excluded``) and a ``fallback`` (``prior``/``none``) when it had none; entries of ``meta``
+    (e.g. a ``note`` on what the index may be used for) are added last.
     """
     if prior_sd <= 0:
         raise ValueError(f"prior_sd must be > 0, got {prior_sd}")
@@ -410,6 +439,11 @@ def fit_index(
         raise ValueError(f"bootstrap must be >= 0, got {bootstrap}")
     if not 0 < grid_step <= 1:
         raise ValueError(f"grid_step must be in (0, 1], got {grid_step}")
+    origin_list: list[str] | None = None
+    if global_origins is not None:
+        origin_list = list(dict.fromkeys(global_origins))
+        if not origin_list or not all(isinstance(o, str) and o for o in origin_list):
+            raise ValueError(f"global_origins must name at least one event origin, got {list(global_origins)!r}")
     by_id, usable = _usable(events, results)
     model_list = list(models) if models is not None else list(dict.fromkeys(r.model for r in usable))
     present_topics = sorted({by_id[r.event_id].topic for r in usable} - set(TOPIC_IDS))
@@ -426,6 +460,11 @@ def fit_index(
     event_ids = sorted({r.event_id for r in used})
     event_pos = {e: i for i, e in enumerate(event_ids)}
     times = {e: _event_time(by_id[e]) for e in event_ids}
+    if origin_list is not None:
+        present = {by_id[e].origin for e in event_ids}
+        if not present & set(origin_list):
+            raise ValueError(f"no usable result has an event of origin {origin_list} for the model-level fit; "
+                             f"origins present: {sorted(present)}")
     prior_map = {k: _prior_value(v) for k, v in (priors or {}).items()}
     prior_mu = np.array([prior_map.get(m, np.nan) for m in model_list], dtype=np.float64)
     grid = np.round(np.arange(TAU_MIN, TAU_MAX + grid_step / 2, grid_step), 10)
@@ -442,16 +481,19 @@ def fit_index(
             event=np.array([event_pos[r.event_id] for r in sel], dtype=np.int64),
             t=np.array([times[r.event_id] for r in sel], dtype=np.float64),
             code=np.array([_GRADE_CODES[r.grade] for r in sel], dtype=np.int8),
+            origin=np.array([by_id[r.event_id].origin for r in sel], dtype=str),
         )
         rng = np.random.default_rng([seed, zlib.crc32(probe.encode("utf-8"))])
         g = MCQ_FLOOR if probe == "mcq" else 0.0
-        fit = _fit_probe(rows, g, len(model_list), len(topic_list), prior_mu, prior_sd, bootstrap, rng, grid)
+        fit = _fit_probe(rows, g, len(model_list), len(topic_list), prior_mu, prior_sd, bootstrap, rng, grid,
+                         origin_list)
         fitted[probe] = ProbeIndex(probe=probe, tau=fit.tau, var=fit.var, hazard=fit.hazard, abstain=fit.abstain,
                                    n=fit.n, draws=fit.draws, global_tau=fit.global_tau, slope=fit.slope,
                                    plateau=fit.plateau)
         hyper_meta[probe] = {"sigma_eps": round(fit.hyper.sigma_eps, 4), "mom_cells": fit.hyper.mom_cells,
                              "gamma": {t: round(float(v), 4) for t, v in zip(topic_list, fit.hyper.gamma, strict=True)},
-                             "n_results": len(sel), "floor": g}
+                             "n_results": len(sel), "floor": g,
+                             "model_level": _model_level_meta(rows, fit.step1, model_list, prior_mu)}
     if not fitted:
         raise ValueError("no usable graded results for the requested models/probes")
     used_in_fit = [r for r in used if r.probe in fitted]
@@ -472,11 +514,29 @@ def fit_index(
         "bootstrap": bootstrap,
         "seed": seed,
         "grid_step": grid_step,
+        "global_origins": origin_list,
         "month_axis": MONTH_AXIS,
         "hyper": hyper_meta,
     }
     info.update(meta or {})
     return CutoffIndex(model_list, topic_list, fitted, info)
+
+
+def _model_level_meta(rows: _Rows, step1: np.ndarray, models: Sequence[str],
+                      prior_mu: np.ndarray) -> dict[str, dict[str, Any]]:
+    """Per model: the rows behind the model-level fit (``n``, ``by_origin``), the model's rows left out of it
+    (``excluded``) and, without any, the ``fallback`` (``prior`` or ``none`` = NaN cells)."""
+    out: dict[str, dict[str, Any]] = {}
+    for m, model in enumerate(models):
+        mine = rows.model == m
+        sel = step1 & mine
+        entry: dict[str, Any] = {"n": int(sel.sum()),
+                                 "by_origin": dict(Counter(rows.origin[sel].tolist()).most_common()),
+                                 "excluded": int((mine & ~step1).sum())}
+        if not entry["n"]:
+            entry["fallback"] = "prior" if np.isfinite(prior_mu[m]) else "none"
+        out[model] = entry
+    return out
 
 
 def kc_style_cutoffs(

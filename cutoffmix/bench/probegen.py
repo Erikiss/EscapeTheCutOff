@@ -111,9 +111,10 @@ def validate_event(e: Event) -> list[str]:
     """Return the reasons why ``e`` fails the V3 format gates (an empty list means valid).
 
     Checks: id, ISO date and matching month, known topic/category/predictability; at least one probe question,
-    each with its expected answer; no year or month tokens in ``question_current``; no accepted answer alias inside
-    any question; MCQ (when present) with exactly four ``"A) "``..``"D) "`` choices, unique texts and a valid
-    answer letter; no overlap between ``aliases`` and ``reject_aliases``.
+    each with its expected answer (control events may leave it empty: there is no right answer to a fake paper, the
+    ``fact`` is what the judges read); no year or month tokens in ``question_current``; no accepted answer alias
+    inside any question; MCQ (when present) with exactly four ``"A) "``..``"D) "`` choices, unique texts and a
+    valid answer letter; no overlap between ``aliases`` and ``reject_aliases``.
     """
     errors: list[str] = []
     if not e.id.strip():
@@ -134,9 +135,9 @@ def validate_event(e: Event) -> list[str]:
     has_mcq = bool(e.mcq_question or e.mcq_choices or e.mcq_answer)
     if not (e.question_current or e.question_recall or has_mcq):
         errors.append("no probe question")
-    if e.question_current and not e.expected_current:
+    if e.question_current and not e.expected_current and not e.control:
         errors.append("question_current without expected_current")
-    if e.question_recall and not (e.expected_recall or e.expected_current):
+    if e.question_recall and not (e.expected_recall or e.expected_current) and not e.control:
         errors.append("question_recall without an expected answer")
     if e.question_current:
         tokens = date_tokens(e.question_current)
@@ -238,7 +239,7 @@ def event_from_probe_json(item: Mapping[str, Any], data: Mapping[str, Any]) -> E
     aliases = [a for a in dict.fromkeys(aliases) if a.casefold() not in rejected]
 
     category = str(data.get("category") or "other")
-    if category not in EVENT_TYPES or category in ("control_alive", "fake_event"):
+    if category not in EVENT_TYPES or category in ("control_alive", "fake_event", "paper", "fake_paper"):
         category = "other"
     predictability = str(data.get("predictability") or "medium")
     topic = item.get("topic")

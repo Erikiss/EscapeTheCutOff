@@ -48,10 +48,10 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
 
   Alle drei denken vor jeder Ausgabe verdeckt; die niedrigste mögliche Stufe ist `low`. Ein Wechsel kostet deshalb
   jedes Mal diese Anlaufzeit. Schneller als ein Wechsel pro Abschnitt geht über diese APIs nicht.
-- **Der mitgelieferte Index ist ein Prior, keine themenaufgelöste Messung.** Er ist aus den öffentlichen Daten des
-  Knowledge-Cutoff-Bench gefittet. Diese Daten enden im **Juni 2026**, und GPT-6.2 Sol liegt dort **in jedem Thema
-  vorn**. Mit echten Modellen und diesem Index schreibt deshalb meist Sol, und die anderen kommen nur durch das
-  Sampling zum Zug. „Immer Sol“ ist damit die Baseline, die das Routing schlagen muss.
+- **Der mitgelieferte Index ist für 14 Themen ein Prior und für `ai_ml` eine Messung.** Der Prior-Teil stammt aus
+  den öffentlichen Daten des Knowledge-Cutoff-Bench (bis **Juni 2026**), dort liegt GPT-6.2 Sol in jedem Thema vorn.
+  Die Zelle `ai_ml` wurde am 25.11.2026 mit 210 AI-Papern gemessen: dort liegt **Fable** klar vorn. Für KI-Fragen
+  schreibt also Fable, für Nachrichten-Themen Sol.
 - **Themen-Umkehrungen** (z. B. Fable bei KI-Themen, Neon bei Raumfahrt) lassen sich erst mit einem neuen,
   themenstratifizierten Benchmark-Lauf über Juli–November 2026 messen. Die 953 Wikidata-Ereignisse dafür liegen in
   `data/events/`. Der Lauf kostet Geld (siehe unten) und wird nur mit Freigabe gestartet.
@@ -107,7 +107,11 @@ Frage ──► [Abschnitt 1: Modell A] ─► [Abschnitt 2: Modell B] ─► �
      wie das Modell im Relay tatsächlich gefragt wird. Diese Sonde ist der „virtuelle Cutoff“.
    - Mit `cutoffmix simulate` kann man prüfen, ob der Schätzer bekannte Cutoffs wiederfindet.
 
-## Mitgelieferter Prior-Index
+## Mitgelieferter Index: Prior für Weltereignisse, gemessene Zelle `ai_ml`
+
+Die Weltereignis-Themen stammen aus dem Prior (unten), die Zelle `ai_ml` aus der eigenen Messung (nächster Abschnitt).
+
+### Prior-Teil (Knowledge-Cutoff-Bench, Daten bis Juni 2026)
 
 Sonde `current`, also die direkte Frage des Knowledge-Cutoff-Bench. Datenbasis: 280 Ereignisse, 1677 bewertete
 Antworten, Ereignisse von 2024-01 bis 2026-06. In jeder Zelle steht τ als `JJJJ-MM.Zehntel` und dahinter P(best);
@@ -125,6 +129,69 @@ Antworten, Ereignisse von 2024-01 bis 2026-06. In jeder Zelle steht τ als `JJJJ
 Die globalen τ (Fable 2026-03.2, Sol 2026-05.2, Neon 2026-03.5) liegen jeweils etwa 0,5 Monate über den
 veröffentlichten Werten des Bench. Das entspricht unserer tagesgenauen Zeitachse (Monatsmitte = +0,5). In Themen
 mit nur 0–4 Ereignissen steht einfach der Modellwert. `cutoffmix index show` zeigt die vollständige Tabelle.
+
+## Gemessene Zelle `ai_ml`: AI-Paper-Probe-Set (25.11.2026)
+
+Für Research-Fragen zählt die Zelle `ai_ml`, und die stand im Prior-Index auf einem einzigen Ereignis. Deshalb wurde
+ein eigenes Probe-Set gemessen: **210 AI-Paper** (Januar 2024 bis November 2026, dicht ab Oktober 2025 mit 12 pro
+Monat), ausgewählt nach Bekanntheit über die Hugging-Face-Daily-Papers-Liste, Metadaten exakt von arXiv (v1), dazu
+**21 erfundene Titel** als Kontrollen. Sonde: „Wer ist Erstautor des arXiv-Papers mit dem Titel ‚…‘?“ (aus dem Titel
+nicht zu raten, per Regel bewertbar) plus 4er-Multiple-Choice. 34 Paper gehören zur Interpretability-Teilmenge.
+Aufbau: `cutoffmix bench build-papers`; Daten: `data/events/papers_events.jsonl`, Antworten:
+`data/results/papers_probes_2026-11-25.jsonl`; Kosten des Laufs ≈ 5,9 $.
+
+**Anteil richtiger Erstautoren je Monat** (offene Frage, Datum im Systemprompt; n = 12 pro Monat ab 2025-10):
+
+| Monat | Fable 5.2 | Gemini 4 Neon | GPT-6.2 Sol |
+|---|---|---|---|
+| 2025-07 | 1,00 | 0,83 | 0,00 |
+| 2025-10 | 1,00 | 0,83 | 0,08 |
+| 2025-11 | 1,00 | 0,75 | 0,17 |
+| 2025-12 | 1,00 | 0,58 | 0,00 |
+| 2026-01 | 1,00 | 0,33 | 0,17 |
+| 2026-02 | 0,75 | 0,00 | 0,00 |
+| 2026-03 | 0,83 | 0,17 | 0,00 |
+| 2026-04 | 0,67 | 0,08 | 0,17 |
+| 2026-05 | 0,25 | 0,00 | 0,00 |
+| 2026-06 | 0,08 | 0,00 | 0,00 |
+| 2026-07 … 2026-11 | 0,00–0,17 | 0,00–0,08 | 0,00–0,08 |
+
+- **Umkehrung gegenüber dem Prior:** Bei ML-Literatur liegt Fable klar vorn, Neon folgt, Sol kennt Erstautoren
+  selbst von 2025er-Papern kaum (Plateau ≈ 0,5 schon 2024/25). Der Prior-Index hatte Sol in jedem Thema vorn.
+- **Multiple Choice** (Wiedererkennen): Fable bis Juli 2026 ≥ 0,92, bis November 2026 noch über Zufall (0,25);
+  Neon bis Juli 2026 ≥ 0,67; Sol meist 0,2–0,5. Fable hat also auch Titel aus Herbst 2026 gesehen, kann aber die
+  Autoren nicht mehr abrufen.
+- **Kontrollen (erfundene Titel):** Fable 0 von 21 konfabuliert, Neon 0 von 21, Sol 4 von 21. Bei echten Papern nennt
+  Sol in 26 % der Fälle einen falschen Autor, Fable in 4 %, Neon in 1 %. Das geht als Halluzinationsterm H ins
+  Routing ein.
+- **Interpretability-Teilmenge:** Fable bis März 2026 alle richtig, Neon und Sol ab Ende 2025 fast nichts; für eine
+  eigene Kurve ist die Teilmenge (0–3 Paper pro Monat) zu klein.
+
+**Gefitteter Index** (hierarchisches 4PL, Modellniveau auf den Bench-Weltereignissen verankert, Zelle `ai_ml` aus
+den Paper-Daten; `cutoffmix index show`):
+
+| Sonde | Fable 5.2 | Gemini 4 Neon | GPT-6.2 Sol |
+|---|---|---|---|
+| `current` (offene Frage), Zelle `ai_ml` | **2026-04.6 · P(freshest) 100 %** | 2026-01.3 | 2025-09.9 |
+| `mcq` (Wiedererkennen), Zelle `ai_ml` | **2026-09.8 · 100 %** | 2026-04.5 | 2025-10.0 |
+| `current`, Weltereignis-Themen (Prior, unverändert) | ≈ 2026-03.2 | ≈ 2026-03.5 | **≈ 2026-05.2** |
+
+Dieser Index ist jetzt der **Standard** (`cutoffmix/data/index_prior.json`). Für KI-Fragen schreibt damit Fable,
+für Nachrichten-Themen weiterhin Sol; der Themenklassifikator entscheidet pro Abschnitt. Sols `ai_ml`-Wert hängt
+davon ab, wie die flache Kurve seines Paper-Wissens gelesen wird (Halbwert 2025-04 oder Nullpunkt 2025-10); an
+der Reihenfolge ändert das nichts. Reproduktion:
+
+```bash
+cutoffmix bench import-kc --out runs/kc
+cutoffmix bench fit --events runs/kc/kc_events.jsonl data/events/papers_events.jsonl \
+    --results runs/kc/kc_results.jsonl data/results/papers_probes_2026-11-25.jsonl \
+    --probe-map current_d=current --global-origins kc --probes current mcq \
+    --priors claude-fable-5.2=25.8 gpt-6.2-sol=27.75 gemini-4-neon=26.0 --prior-sd 3 --out runs/index.json
+```
+
+Einschränkungen: Die Sonde misst Erstautor-Wissen, nicht Verständnis des Inhalts; Paper, die nach v1 umbenannt
+wurden, fehlen; die Monate Juli bis November 2026 liegen für alle drei Modelle hinter dem Cutoff, und 12 Paper pro
+Monat geben pro Zelle eine Unsicherheit von etwa einem Monat.
 
 ## Installation
 

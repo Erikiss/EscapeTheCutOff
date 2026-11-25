@@ -416,6 +416,116 @@ def simulate_results(truths: dict[str, MockModelTruth], events, probes, seed) ->
 def recovery_report(index: CutoffIndex, truths, probe) -> dict   # RMSE, rank agreement, P_best calibration
 ```
 
+#### 3.5.1 AI/ML paper probes (bench/sources/papers.py) and their grading
+
+The `ai_ml` cell of the index needs dated facts that a model either knows or does not. A paper's *first author* is
+such a fact: unguessable from the title, fixed on the arXiv date, verifiable from arXiv metadata, rule-gradable.
+
+```python
+# bench/sources/papers.py  (selection: Hugging Face daily papers; ground truth: arXiv API; topic ai_ml)
+HF_DAILY_URL = "https://huggingface.co/api/daily_papers"    # ?date=YYYY-MM-DD; public listing used only to pick papers
+ARXIV_API_URL = "https://export.arxiv.org/api/query"        # id_list batches of <= 100 ids, >= 3 s apart (ARXIV_PACE_S)
+def fetch_hf_daily(date, *, client=None, cache_dir=None, retries=4) -> list     # raw items; cached as hf/<date>.json
+def collect_month(year, month, top_n, *, ...) -> list[HFPaper]  # the month's daily lists merged, deduped by arXiv id
+                                                                 # (highest upvotes kept), top_n by upvotes
+def fetch_arxiv(ids, *, client=None, cache_dir=None, version=None) -> dict[str, ArxivPaper]
+                                                       # version=None: bare ids = latest version (cache arxiv/<id>.json);
+                                                       # version=1: "<id>v1" = the paper on its first day (arxiv/<id>v1.json);
+                                                       # raw Atom feeds under arxiv/raw/
+def parse_arxiv_atom(xml) -> dict[str, ArxivPaper]     # title whitespace-normalised, authors in order, v1 published
+                                                       # date, primary category, version (the vN of the entry id);
+                                                       # bad entries skipped, bad XML raises
+def is_interp(title, summary="") -> bool               # specific terms anywhere (sparse autoencoder/SAE with context,
+                                                       # activation patching, logit lens, monosemantic, transcoder,
+                                                       # crosscoder, causal tracing, steering vector, ...); generic words
+                                                       # (interpretab, mechanistic, superposition) in the title
+                                                       # or 3x in the summary; or two weak families (circuit, attribution,
+                                                       # probing, steering, neuron, ...; feature/activation only next to
+                                                       # one of those) with a specific one in the title
+def plan_months(dense_from, dense_to, per_month, *, anchor_from, anchor_to, anchor_every, anchor_per_month)
+def build_paper_events(dense_from="2025-10", dense_to="2026-11", *, per_month=12, anchor_from="2024-01",
+                       anchor_to="2025-09", anchor_every=3, anchor_per_month=6, interp_share=0.5,
+                       controls_share=0.1, seed=0, candidates_per_month=300, cache_dir=None) -> (events, meta)
+# CLI: cutoffmix bench build-papers --out FILE [--meta FILE --cache DIR ...]   (all of the above as options)
+```
+
+- **Versions.** Every id is fetched twice: as `<id>v1` (the paper as it appeared on the event date: the probe's
+  title, first author and date all come from this record) and bare (the latest version, the one the paper is cited
+  under; its summary feeds the interp tag). A candidate whose title (word tokens) or first author differs between
+  the two is dropped (`_unusable`: "title changed after v1" / "first author changed after v1"), so the probe never
+  depends on which version a model saw. Ids whose latest version is v1 are not asked for again; the meta records
+  `latest_version`.
+- **Filing and filters.** A paper is filed under the month of its arXiv `published` (v1) date, never under the
+  Hugging Face date. Dropped: first authors that are not a person's name the probe can ask for (`plausible_person`:
+  organisation tokens such as `DeepSeek-AI`, `Kimi Team`, `Tencent Robotics X`, `Bytedance Seed`; a surname of fewer
+  than two letters or without a lower-case letter; a given name that is only initials, `B. An`, `I. Apanasevich`,
+  which a rule grader cannot match against a written-out name), titles with year or month tokens (they would date
+  `question_current`), titles that contain the author's name, ids arXiv does not know, version changes (above).
+  Preferred (ranked first): at least 3 authors and 6+ title words. Per month, about `interp_share` of the picks
+  come from the `is_interp` pool when it has enough, the rest are the top-upvoted others. The pool is deep
+  (`candidates_per_month=300`, about a third of a month's listings) because interpretability papers are rare on
+  the daily lists; the non-interp half still comes from the very top (upvote floor 71 in the 2026-11-25 build).
+  `is_interp` ignores the generic words and summary-only terms when the title names an applied domain
+  (`INTERP_APPLIED_DOMAINS`: medical, driving, MEG/EEG/brain, compression, ...), and `INTERP_FALSE_POSITIVES` is a
+  hand-checked list of ids the keywords still mis-tag (applied in `gather_candidates`). MCQ distractors are first
+  authors of other papers that are not co-authors of the paper itself.
+- **Event shape** (category `paper`, `origin: "arxiv_hf"`, `topic: "ai_ml"`, `predictability: "low"`): id
+  `paper:<arxiv id>`, `date` = arXiv date, `subject` = title, `fact` = "first author N; authors: ...; arXiv ID (month)",
+  `question_current` = "Who is the first author of the arXiv paper titled '<title>'?" (no date; the `current_d` probe),
+  `question_recall` = the same with " (arXiv, <Month YYYY>)" appended, expected = the first author's full name,
+  `aliases` = full name, "Surname, Given", "G. Surname", "Surname G.", "Surname Given" (and "First Surname" when
+  there is a middle name) plus their diacritic-free forms,
+  `reject_aliases` = the three MCQ distractors (first authors of other papers of the same or adjacent months, never
+  the answer's surname, surnames pairwise distinct), MCQ order shuffled with `seed` and the event id, `source` =
+  the arXiv abstract URL. The side table `papers_meta.jsonl` (one row per event id) carries `interp`, `upvotes`,
+  `n_authors`, `authors`, `hf_authors`, `primary_category`, `hf_date`, `distractors` and, for controls, `donors`.
+- **Controls** (category `fake_paper`, `control: True`, id `fakepaper:<n>`, about `controls_share` of the real
+  count): the first half of one real title's *subtitle* (the part after the colon, so a control never opens with a
+  real system name such as "SWE-Game:") joined with the second half of another's from a different month, both
+  halves >= 3 words, the seam not on punctuation or a function word (`_joinable`; the split moves one word when it
+  would be), not equal or near-equal (similarity >= 0.9) to any real title or to either donor's subtitle; donors
+  are never papers probed in the same build. Dated to the first donor's arXiv date. No MCQ, no aliases, no reject
+  aliases, and **no expected answer**: `expected_current`/`expected_recall` are empty (`CONTROL_EXPECTED == ""`;
+  `validate_event` allows that for control events), the judges read the `fact` ("control: no such arXiv paper
+  exists; ...") as the ground truth.
+- **Taxonomy.** `EVENT_TYPES` gains `paper` and `fake_paper`; `grading.CONTROL_CATEGORIES` gains `fake_paper`, so
+  the estimator excludes the controls as it does the other control families.
+
+**Grading of paper probes** (`grading.grade_paper`, reached through `grade_rule` for both categories):
+
+- abstain cues first: the shared `_ABSTAIN` phrases plus paper-specific ones ("I am not aware of", "I don't have
+  information", "cannot verify/find/locate", "no record", "does not exist", "not familiar with"; German "ist mir
+  nicht bekannt", "kenne ich nicht", "kann ich nicht verifizieren/finden", "liegen mir keine Informationen",
+  "existiert nicht");
+- real papers: `correct` when the expected name is asserted in a full form (aliases; diacritics folded; spaces and
+  hyphens inside a name are free in both directions, so "Jun-sol Kim", "Jun Sol Kim" and "Junsol Kim" are one
+  name; negated, conditional or interrogative clauses do not count, as everywhere in the rule grader) or by
+  surname alone, except that a common surname (<= 4 letters, or Li/Wang/Zhang/Chen/Liu/Yang/Kim/Lee/Park/Singh/
+  Kumar/Smith and a few more) also needs the given name's first token; `incorrect` when a distractor
+  (`reject_aliases`) or any other capitalised two-to-five-token name is asserted instead (words of the question,
+  title and stop words excluded; "Perhaps Wei Chen" names Wei Chen, "Hugging Face", "Semantic Scholar" and
+  "Mechanistic Interpretability" name nobody); `abstain` for an abstain phrase without any name; everything else is
+  `None` and goes to the judges: the answer next to a distractor, a name only in a negated clause, "might be X", a
+  lone common surname, an unknown name next to a phrase that disclaims knowledge of the paper ("I could not find
+  this paper ... perhaps X"; "not sure" alone is not a disclaimer), and a name that could be the expected one
+  misspelt or written out (letters-only similarity >= 0.85, same given name with the same first four surname
+  letters, or initials that extend the expected ones);
+- controls: a distractor or any other named person -> `incorrect` (confabulation), an abstention -> `correct`; a
+  named person next to a disclaimer ("I cannot find a paper with this title; you may mean '...' by X") -> `None`,
+  the judges decide whether an author was claimed for the fake paper; otherwise `None`;
+- `hedged` is set when the asserted name comes with knowledge-horizon words (`_HEDGE`), uncertainty words
+  ("I believe", "probably", "not certain", "vermutlich", ...) or an abstain phrase;
+- surface forms (from the pilot of 2026-11-25): markdown emphasis around a name (`**Sho Maeoki**`, `*...*`,
+  backticks, `__...__`) is stripped before name detection (`_plain`); a name may follow "is", "was", "by" or
+  "first author:" and carry a middle initial ("Bardienus P. Duisterhof"); an opening parenthesis, bracket or quote
+  ends a name, so an affiliation ("Sho Maeoki (Tokyo Tech)") or a quoted title after it is not part of it; and the
+  words of the paper's own title (the whole title, its main title or its subtitle, three words or more) are masked
+  before the cue search (`_mask_title`), so "Leave **No** Context Behind" is not a negation and the correct name
+  next to it is asserted, not weak;
+- MCQ: `grade_mcq` as usual, but a distractor pick is `incorrect`, not `outdated` (papers have no stale state);
+  controls have no MCQ.
+- Judges see "(none: ...)" as the outdated answer for both categories (`prompts._DEFAULT_OUTDATED`).
+
 ## 4. Estimator (bench/estimate.py)
 
 For each probe q separately. Rows: graded results on non-control, low/medium-predictability events. `y = 1` iff
@@ -425,6 +535,25 @@ grade == correct. `t_i` = `timeutil.parse_fractional_month(event.date)`.
    τ ∈ [−6, 40] (step `grid_step`), s ∈ {0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0, 2.8, 4.0}, a ∈ {0.55, …, 0.99}.
    Priors: τ ~ N(priors[m] or the data median, prior_sd²), log s ~ N(log 1, 0.5²), a ~ Beta(9, 1). Gives
    global_tau, slope s_m and plateau a_m.
+   - **Anchor origins.** With `global_origins` (`bench fit --global-origins kc`) step 1 uses only rows whose event
+     origin is in that set; steps 2-4 use all rows. Reason: the sources differ in knowledge structure. World events
+     (`kc`) are recalled with a plateau near 1 up to the cutoff; AI-paper first authors (`arxiv_hf`, topic `ai_ml`
+     only) are recalled far less often even well before the cutoff (a lower, model-specific plateau and an earlier
+     apparent cutoff). Fitted together, the 210 paper rows pull τ_m, s_m and a_m of a model that knows few first
+     authors (GPT-6.2 Sol `current`: 28.25 -> 24.6, Gemini-4 Neon 26.5 -> 24.95), and every topic WITHOUT its own
+     data then inherits that paper-driven anchor through the cell prior N(τ_m + γ_z, σ_ε²). Anchored on `kc`, those
+     cells stay on the world-event evidence, while the `ai_ml` cell is still measured from its own rows (210 events:
+     the likelihood dominates the prior). γ_z and σ_ε (step 2) are still computed from all cells: the offsets
+     describe the topics given the anchor, and a cell whose data come from another origin simply shows a larger
+     deviation. A model without any row from the chosen origins for a probe falls back to the prior exactly as a
+     model without data (NaN cells without a prior); its rows from other origins count nowhere for that probe
+     (n = 0). `meta.global_origins` and `meta.hyper[probe].model_level` (per model: `n`, `by_origin`, `excluded`,
+     `fallback`) record what fed step 1. Without the option the fit is unchanged.
+   - **Probe relabelling.** `bench fit --probe-map current_d=current` relabels result rows before the fit (recorded as
+     `meta.probe_map`). The paper probes were asked with the dated deployment prompt (`current_d`), but they are
+     grouped with the kc direct probe `current` so that one per-topic table exists for routing; the paper-specific
+     difference (prompt and recall structure) is absorbed by the `ai_ml` topic cell. After relabelling the usual rule
+     applies: of repeated (event, model, probe) rows the last one counts.
 2. **Per-cell posterior.** For each (m, z), fix s_m and a_m and compute the 1-D grid posterior of τ_mz:
    likelihood × N(τ; global_tau_m + γ_z, σ_ε²).
    - γ_z = topic offset shared by all models: a precision-weighted mean over models of (cell MLE − global_tau_m),
@@ -439,8 +568,10 @@ grade == correct. `t_i` = `timeutil.parse_fractional_month(event.date)`.
    H_m = (k_m + 5·H_pool)/(n_m + 5); cell H_mz = (k_mz + 5·H_m)/(n_mz + 5). A model with few items after its cutoff
    (the freshest one, when the data end near it) thus gets about the pooled rate. Abstain rate is computed the same
    way.
-5. `meta`: created (ISO), sources, n_events, n_results, probe list, method string, priors, and the month axis
-   definition.
+5. `meta`: created (ISO), sources, events_by_origin, data_range, n_events, n_results, probe list, method string,
+   priors, prior_sd, bootstrap, seed, grid_step, global_origins (null without the option), the month axis
+   definition and `hyper` per probe (σ_ε, mom_cells, γ_z, n_results, floor, `model_level`); `probe_map` and `note`
+   when given on the command line.
 
 ## 5. Relay (relay.py, WP5)
 
@@ -533,8 +664,14 @@ Loop, with i = segment index:
   - `bench build-wikipedia --out FILE --start --end [--probe-model KEY]`
   - `bench run --events --out --models --probes [--dry-run] [--batch] [--limit]` (`--batch` is refused outside
     `--dry-run`, see §3.5)
-  - `bench grade`
-  - `bench fit --events --results --out [--priors]`
+  - `bench grade --events FILE... --in FILE --out FILE [--judges KEY...] [--regrade-all] [--mock]` re-grades a
+    results file into a *new* file (never in place; `--out` equal to `--in` is refused; `usage` and `latency_s` are
+    kept): offline with the rule grader alone, with `--judges` for the rows the rules cannot decide; by default only
+    `ungraded` rows are re-graded, `--regrade-all` every row with a response (a judge verdict stands where the new
+    pass cannot decide). Prints the grade counts per model and probe before and after (`before->after` cells).
+  - `bench fit --events FILE... --results FILE... --out FILE [--models] [--probes] [--priors KEY=MONTH...]
+    [--global-origins ORIGIN...] [--probe-map FROM=TO...] [--note]` (§4: the model-level anchor from the named
+    origins only; result probes relabelled before the fit)
   - `router train`
   - `simulate [--out DIR]`
   - `--mock` uses MockBackend everywhere. Without `--mock` and without `OPENROUTER_API_KEY`, print a clear message.
