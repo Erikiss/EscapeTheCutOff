@@ -115,14 +115,21 @@ The same English sentence can mean very different things. "All weights in the mi
 | `wsbench fetch arc` | Download the Code Golf data (§6.1). | as above |
 | `wsbench fetch all` | Both. | as above |
 
-**Line format of `wsbench run`:** `{label} (line {line}): {status}`, followed by each of these parts that applies:
+**Line format of `wsbench run`:** `{label} (line {line}): {status}`, followed by each of these parts whose value exists (an `ERROR` verdict has no `measured`, `dloss` or `passed`):
 
 - ` measured={measured}` (neox);
 - ` dloss={dloss:+.4f}` (neox);
 - ` passed={passed}/{total}` (grid);
 - ` {error.code}: {error.message}` (ERROR).
 
-Example: `R1 (line 4): CONFIRMED measured=exact dloss=+0.0000`. Progress output of `fetch` is free-form.
+Examples:
+
+```
+R1 (line 4): CONFIRMED measured=exact dloss=+0.0000
+R1 (line 4): ERROR E_DOWNLOAD: run: wsbench fetch pythia-14m
+```
+
+Progress output of `fetch` is free-form.
 
 ### 2.3 Package layout (create exactly these modules; you may add private helpers)
 
@@ -250,6 +257,7 @@ part         = "mlp" | "heads" | HNUM | "H" "[" INT "]" ;   (* HNUM = an IDENT m
   - the context in force: `model` (a string, or `None`) and `seed` (an int).
 - **Resolution.** For neox models, `parse` also resolves every layer index (`mid±k` → int) and head index, using `registry.SHAPES` (torch-free). Out-of-range values are kept as they are; `validate` reports them (`E_TARGET`).
 - **`errors`** holds the syntax errors and the directive errors, each `{"line", "col", "code", "message"}`.
+- **Types.** Statements are AST objects (dataclasses). Errors, hints and verdicts are **plain dicts** with exactly the keys listed in this document. This applies to `parse`, `validate`, `hints` and `run_script` alike.
 
 **Script-level rules:**
 
@@ -262,8 +270,10 @@ part         = "mlp" | "heads" | HNUM | "H" "[" INT "]" ;   (* HNUM = an IDENT m
 - **Range** `[a:b:s]`: `a, a+s, a+2s, …`.
   - It includes `b` if a term is within `1e-9·max(1,|s|)` of `b`.
   - It stops before passing `b`.
-  - `s = 0` gives `E_BAD_ARG`.
-  - Example: `[1:0.5:-0.1]` = `1, 0.9, 0.8, 0.7, 0.6, 0.5`. Compute term `n` as `a + n·s`, not by repeated addition.
+  - Compute term `n` as `a + n·s`, not by repeated addition.
+  - Example: `[1:0.5:-0.1]` = `1, 0.9, 0.8, 0.7, 0.6, 0.5`.
+  - The AST keeps a range as `(a, b, s)`. The public function `wsbench.lang.parser.expand_range(a, b, s) -> list[float]` expands it.
+  - `parse` never rejects a range. `validate` reports `E_BAD_ARG` in check 7, at the column of the range, if `s = 0` or `(b − a)·s < 0` (a range that would never reach `b`).
 - **One op only:** `train`, `path` and `solve` statements must contain exactly one op; otherwise `E_BAD_ARG`. Only `gauge`, `reparam`, `approx` and `edit` statements may chain ops with `;`.
 
 ### 3.3 Values that denote random group elements
@@ -321,14 +331,24 @@ The names `lerp`, `scale` and `prim` are both top-level ops and helpers; their p
   - a positional argument after a keyword argument;
   - an argument of the wrong type or value.
 - `chain` takes one or more positional `prim(…)` arguments.
-- A parameter shown with a value has that default. `phis`, `t` and `c` have no default.
+- A parameter shown with a value has that default. `phis`, `t`, `c` and `run` have no default; they are required.
 
-**Error code for a name.** A name is checked against the claim's top-level ops (or, for an argument, against what the parameter expects), in this order:
+**Error code for a call name.** Only call names (an `IDENT` followed by `(`) are names for check 6 of §3.11. A call name is checked against the claim's top-level ops, or, for a call in an argument position, against what the parameter expects, in this order:
 
 1. It fits → OK.
 2. A helper or top-level op of the **same** family in the wrong place → `E_BAD_ARG`. Examples: `edit lerp(L[2], L[4], 0.5)` (a layer expression at top level), and `path modadd(run=A)`.
 3. A top-level op or helper of **another** family → `E_MODEL`.
 4. Anything else → `E_UNKNOWN_OP`.
+
+**Bare identifiers are not names.** Examples are primitive names, the group-element words `orth`, `orth1`, `gl` and `randperm`, and enum words such as `pass`, `all`, `fixed` and `none`. A bare identifier that its parameter does not accept gives `E_BAD_ARG` in check 7: for example `solve prim(frob)` and `gauge rotate(resid, gl)`.
+
+**Helper families** (for rules 2 and 3):
+
+| Family | Helpers |
+|---|---|
+| neox | `block`, `perm`, `uniform`, and the layer expressions `lerp`, `neg_writers`, `neg`, `align` |
+| modadd | `grokfast`, `at`, `ckpt`, `diff`, and `scale` inside `at` |
+| grid | `prim` inside `chain` |
 
 **Family `neox`** (models `neox-tiny`, `pythia-14m`). State = `(W, norm_kind)`; it starts as `(W0, 'ln')`.
 
@@ -369,14 +389,15 @@ The names `lerp`, `scale` and `prim` are both top-level ops and helpers; their p
 
 | WSL | Arguments | Effect |
 |---|---|---|
-| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | All arguments are keyword arguments. Integers: `p`, `steps`, `seed`, every entry of `save`, every `STEP`. Numbers: `frac`, `lr`, `wd`, `alpha`, `lamb`, `C`. `filter` = the bare identifier `none`, or `grokfast(alpha, lamb)`. `intervene` = a list of `at(STEP, scale(C))`. `save` = a list of steps. `run` = a non-reserved identifier. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**: pass `save_steps = sorted(set(save) | {0, steps})`. Wire `on_eval` and `should_stop` to the callbacks of `run_script` (§5.5). |
+| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | All arguments are keyword arguments. Integers: `p`, `steps`, `seed`, every entry of `save`, every `STEP`. Numbers: `frac`, `lr`, `wd`, `alpha`, `lamb`, `C`. `filter` = the bare identifier `none`, or `grokfast(alpha, lamb)`. `intervene` = a list of `at(STEP, scale(C))`. `save` = a list of steps with `0 ≤ s ≤ steps` for each entry (otherwise `E_BAD_ARG` in check 7). `run` = a non-reserved identifier. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**: pass `save_steps = sorted(set(save) | {0, steps})`. Wire `on_eval` and `should_stop` to the callbacks of `run_script` (§5.5). |
 | `ckpt(NAME, STEP)` | – | A parameter dict (state_dict) of a stored run. Unknown run → `E_MISSING_RUN`; step not saved → `E_MISSING_RUN`. |
 | `diff(X, Y)` | `X`, `Y` are `ckpt(...)` | Per-key `X − Y`. |
-| `lerp(X, Y, t=RANGE)` | – | `path`: for each `t`, evaluate `(1−t)·X + t·Y`. |
+| `lerp(X, Y, t=RANGE)` | `X`, `Y` = `ckpt` | `path`: for each `t`, evaluate `(1−t)·X + t·Y`. |
 | `add(B, D, t=RANGE)` | `B` = `ckpt`, `D` = `diff` | `path`: for each `t`, evaluate `B + t·D`. |
 | `scale(X, c=RANGE)` | `X` = `ckpt` | `path`: for each `c`, evaluate `c·X`. |
 | `cosine(A, B)` | `A`, `B` ∈ {`ckpt`, `diff`} | `path`: cosine of the two flattened parameter vectors (concatenated in sorted key order), plus both norms. |
 
+- `t=` and `c=` must be a range `[a:b:s]`. A list or a single number gives `E_BAD_ARG`.
 - "Evaluate" means `eval_state(sd, p, frac)` from Appendix B. It uses the `p` and `frac` of the run named by the first `ckpt` in the expression.
 - All modadd arithmetic (`diff`, `lerp`, `add`, `scale`, `cosine`) is done on the float32 checkpoint tensors, key by key, over the keys of the first checkpoint.
 - `cosine` concatenates the flattened tensors in sorted key order and reports Python floats.
@@ -679,7 +700,7 @@ Fields:
 
 ### 5.3 Metrics for family `modadd`
 
-- `train`: `{"run": NAME, "first": {...}, "curves": {...}, "saved_steps": [...], "wall_s": ...}`. The keys of `first` are exactly those of Appendix B.
+- `train`: `{"run": NAME, "first": {...}, "curves": {...}, "saved_steps": [...], "wall_s": ...}`. The keys of `first` are exactly those of Appendix B. `saved_steps` = `sorted(result["checkpoints"])`, the steps that `train()` actually saved. The same list goes into `run.json`.
 - `path` with lerp / add / scale: `{"points": [{"t": 0.0, "train_acc": ..., "test_acc": ..., "train_loss": ..., "test_loss": ..., "wnorm": ...}, ...]}`. For `scale`, the key is `"c"` instead of `"t"`.
 - `path cosine(...)`: `{"cosine": ..., "norm_a": ..., "norm_b": ...}`.
 
@@ -696,14 +717,16 @@ Fields:
 - `got` may be `null` (not decodable) or an error string.
 - `compiled` is present only for `compile(...)`. `nnz` = the number of entries `≥ 0` in the `src` arrays, summed over all compiled tables.
 - For `golf()`, add `"bytes_raw"` and `"bytes_submitted"` (§6.1).
-- `first_failure` is the first failing example in the order train, test, arc-gen. `index` is its 0-based position within its split: call `check()` (Appendix C) once per split. It is `null` if every example passes.
+- `first_failure` is the first failing example in the order train, test, arc-gen, and `index` is its 0-based position within its split. It is `null` if every example passes.
+  - For `prim`, `chain` and `compile`: call `check()` (Appendix C) once per split.
+  - For `golf()`: the runner (§6.4) is invoked **once** per task, with all examples in the order train, test, arc-gen and one 60 s timeout. `by_split` and `first_failure` come from slicing its result list by the split lengths.
 - `compiled.sizes` lists the `[h, w]` input shapes in the key order of `CompiledNet.table`:
   - for `gated`, the distinct input shapes of the chosen examples, in first-seen order;
   - for `fixed`, the single shape of the first chosen example.
 
 ### 5.5 Script execution as a job
 
-- `POST /api/run` creates a **script run** with a new `run_id` (uuid4 hex). One background worker thread executes runs one at a time, from a process-wide FIFO queue.
+- `POST /api/run` creates a **script run** with a new `run_id` (uuid4 hex). It builds the initial verdict list at once, with the same `parse` / `validate` / `hints` logic as `run_script`, so a queued run already shows it. One background worker thread executes runs one at a time, from a process-wide FIFO queue.
 - `GET /api/runs/{run_id}` returns:
   ```json
   {"run_id": "...", "status": "queued|running|done|cancelled", "verdicts": [...], "current_line": 12}
@@ -728,11 +751,12 @@ Fields:
     - `wsbench.lang.validate.validate(statements) -> list`;
     - `wsbench.lang.hints.hints(statements) -> list`.
 - **Cancelling:** `POST /api/runs/{run_id}/cancel` makes `should_stop()` return true.
-  - The statement in progress gets `ERROR` with code `E_RUNTIME` and message `cancelled`.
+  - **Only `train` can be interrupted.** An interrupted `train` statement gets `ERROR` with code `E_RUNTIME` and message `cancelled`. Any other statement that is running when the cancel arrives completes and keeps its real verdict, including its `on_state` call.
   - A cancelled `train` keeps its partial `metrics.curves`. It writes nothing to `WSB_HOME/runs/`, and an existing run with the same name stays untouched.
   - Later statements get `ERROR` / `cancelled` without running.
   - The run status becomes `cancelled`.
-  - On a queued run, cancelling marks every statement `ERROR` / `cancelled` before it starts.
+  - On a queued run, the status becomes `cancelled` immediately. Only its `PENDING` verdicts turn into `ERROR` / `E_RUNTIME` / `cancelled`; syntax and validation `ERROR` verdicts stay as they are. The worker skips the run.
+  - A cancel received while the run is running always ends it with status `cancelled`, even if no statement is left to cancel.
   - On a run that is already done or cancelled, cancelling has no effect.
   - The answer is always `{"ok": true}`; an unknown `run_id` gives 404.
 - **Retention:** keep the last 50 script runs in memory. The worker must catch every exception, so the server never dies on a bad script.
@@ -970,9 +994,9 @@ They are used for:
    - System prompt = `TRANSLATE_SYSTEM` (Appendix E.2) with `{LANGUAGE_CARD}` and `{MODEL}` substituted.
    - User prompt = `Source text:\n<<<\n{text}\n>>>`.
    - From the reply, extract the first fenced block that starts with three backticks followed by `wsl` and ends with three backticks.
-   - Remove every `model` directive from the block and prepend `model {MODEL}`. The user's choice of target model always wins.
+   - Build the **check script**: `"model {MODEL}\n"` + the block, with each `model` directive line inside the block replaced by an empty line. The user's choice of target model always wins. Line numbers in errors refer to this check script, and steps 2–4 use the same construction.
 2. **Check and repair (at most once).**
-   - Run `parse` and then `validate` on the script `model {MODEL}` + the block. Line numbers refer to this script.
+   - Run `parse` and then `validate` on the check script.
    - If there are errors, call the same model again with the same system prompt. The messages are:
      - user = the original user prompt;
      - assistant = its previous reply;
@@ -989,7 +1013,7 @@ They are used for:
 4. **Alternatives.**
    - System prompt = `ALT_SYSTEM` (Appendix E.4).
    - User prompt = `Source text:\n<<<\n{text}\n>>>\nModel: {MODEL}\nStatements already proposed:\n{numbered statements}`.
-   - Extract the first wsl block, remove its `model` directives, and check it as `model {MODEL}` + the block.
+   - Extract the first wsl block, build its check script as in step 1, and check it.
    - Keep at most 3 valid statements, labelled `alt1..alt3`.
 5. **Execute** (if `execute`). Build one script from:
    - the model directive;
@@ -1011,11 +1035,11 @@ They are used for:
 - `cost_usd` is the sum over all calls.
 - **Failure cases:**
   - `execute=false`: `run_id` is `null`, and the script is not run.
-  - If translate fails (`ok = false`, for example `no-key` or a refusal), or its reply has no wsl block:
+  - If translate fails (`ok = false`, for example `no-key` or a refusal), or its reply has no wsl block, or no valid translator statement remains after the repair:
     - `script` is just `model {MODEL}`;
     - `roles.critic` and `roles.alternatives` are `null`;
     - `run_id` is `null`;
-    - the reason is added to `parse_errors` with role `translate`.
+    - the reason is added to `parse_errors` as `{"role": "translate", "line": null, "col": null, "code": "E_SYNTAX", "message": <reason>}`.
   - If the critic or the alternatives call fails, that role's result shows `ok = false`, and the pipeline continues without it.
 
 The UI then polls `/api/runs/{run_id}`.
@@ -1042,7 +1066,7 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
 | Method and path | Request | Response |
 |---|---|---|
 | `GET /api/health` | – | `{"ok": true, "version": "0.1.0", "models_local": {"pythia-14m": bool}, "arc_local": bool, "llm": "live" or "mock" or "no-key"}` |
-| `GET /api/language` | – | `{"card": LANGUAGE_CARD, "ops": [{"family": ..., "call": ..., "args": ..., "doc": ...}], "examples": [{"name": ..., "script": ...}]}` |
+| `GET /api/language` | – | `{"card": LANGUAGE_CARD, "ops": [{"family": ..., "call": ..., "args": ..., "doc": ...}], "examples": [{"name": ..., "script": ...}]}`. `ops` has one entry per row of the three §3.4 family tables (neox, modadd, grid), in table order: `call` = the WSL column verbatim (it is also the palette template), `args` = the Arguments column (`""` for `–`), `doc` = the last column. `examples` = the four D.1–D.4 scripts, with `name` = the file name. |
 | `POST /api/parse` | `{"script": str}` | `{"statements": [{"line", "label", "claim", "source", "family"}], "errors": [{"line", "col", "code", "message"}], "hints": [...]}` |
 | `POST /api/run` | `{"script": str}` | `{"run_id": str}` (also when the script has syntax errors: those lines become `ERROR` verdicts) |
 | `GET /api/runs/{run_id}` | – | §5.5 |
@@ -1093,7 +1117,10 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
 - **Clicking a neox row** opens the detail panel:
   - the changed tensors list;
   - clicking a tensor shows three heatmaps side by side (before / after / diff, §7.1);
-  - for a 2-D tensor, a block selector (`r0, r1, c0, c1`) with an "ARC view" toggle (§7.2), and a button `Insert gridop(...)`, which inserts `edit gridop(rot90, block("NAME", r0, r1, c0, c1))` into the editor.
+  - for a 2-D tensor:
+    - a block selector (`r0, r1, c0, c1`);
+    - an "ARC view" toggle (§7.2), which replaces each of the three heatmaps with the ARC grid of the selected block for that `which` (one `view=arc` request each; `which` is required there too);
+    - a button `Insert gridop(...)`, which inserts `edit gridop(rot90, block("NAME", r0, r1, c0, c1))` as a new line after the line that holds the cursor.
 - **Clicking a train or path row** shows the charts (§7.3).
 - **Clicking a grid row** shows the first failure (input / expected / got grids).
 
@@ -1151,7 +1178,7 @@ Run `pytest -q`. Network and live tests are opt-in: `pytest -m network` and `pyt
 ### M1 Language (no torch needed in these tests)
 
 - **AT1.1** Every script in Appendix D parses with `errors == []`. For every statement `st` in `parse(s)[0]`, the round trip of §3.10 holds: `parse(print_statement(st, with_label=True))[0]` has exactly one statement, equal to `st` under the §3.10 comparison.
-- **AT1.2** For each row, `statements, errors = parse(script)` and `codes = [e.code for e in errors] + [e.code for e in validate(statements)]`. `codes` must equal the one-element list in the table. No download and no torch are needed (§3.11). Line 1 is `model pythia-14m`; the statement is line 2.
+- **AT1.2** For each row, `statements, errors = parse(script)` and `codes = [e["code"] for e in errors] + [e["code"] for e in validate(statements)]`. `codes` must equal the one-element list in the table. No download and no torch are needed (§3.11). Line 1 is `model pythia-14m`; the statement is line 2.
 
   | Input (line 2) | Code |
   |---|---|
@@ -1166,7 +1193,10 @@ Run `pytest -q`. Network and live tests are opt-in: `pytest -m network` and `pyt
   | `gauge permute(L3.heads, perm([0, 0, 1, 2]))` | `E_BAD_ARG` |
 
 - **AT1.3** A script whose first statement precedes any `model` directive gives `E_MODEL` for that statement.
-- **AT1.4** Ranges: `[1:0.5:-0.1]` → `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]` (within 1e-12); `[0:1:0.25]` → 5 values; `[0:1:0]` → `E_BAD_ARG`.
+- **AT1.4** Ranges:
+  - `expand_range(1, 0.5, -0.1)` = `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]` (within 1e-12);
+  - `expand_range(0, 1, 0.25)` has 5 values;
+  - `validate` gives `E_BAD_ARG` for `path lerp(ckpt(A, 0), ckpt(A, 1), t=[0:1:0])` and for `t=[0:1:-0.5]` (under `model modadd`).
 - **AT1.5** Hints: each row of §3.8 has one test that triggers it and one that does not.
 
 ### M2 Executor on `neox-tiny` (offline)
@@ -1220,7 +1250,7 @@ Run Appendix D.3. The checks:
 - **AT5.2 (offline):** `decode(onehot(g)) == g` for 200 random grids (sizes 1–30, colours 0–9). `decode` of an all-zero array is `None`.
 - **AT5.3 (network):** `wsbench fetch arc` yields 400 / 400 / 400 files. The index lists exactly the 7 single-primitive tasks of Appendix F.4.
 - **AT5.4 (network):** For the 7 tasks, `prim`, `compile fixed` and `compile gated` give exactly the counts of Appendix F.4.
-- **AT5.5 (network):** `solve golf()` on all 400 tasks. **Report** the number of `CONFIRMED` tasks in `NOTES.md`; the source claims all 400 pass. Assert ≥ 390. Any failing task must have a `first_failure` with the error text.
+- **AT5.5 (network):** `solve golf()` on all 400 tasks. **Report** the number of `CONFIRMED` tasks in `NOTES.md`; the source claims all 400 pass. Assert ≥ 390. Any failing task must have a `first_failure` with the error text. Reference: a runner built to §6.4 passed 398 / 400 on the reference machine; task157 and task205 exceed the 60 s budget and report `error: timeout`.
 
 ### M6 UI
 
@@ -2145,7 +2175,7 @@ OPS ON GPT-NeoX MODELS (neox-tiny, pythia-14m: LayerNorm, GELU MLP, parallel res
 OPS ON modadd
   train modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none|grokfast(alpha, lamb),
                save=[steps], intervene=[at(STEP, scale(C))])
-  path lerp(ckpt(R, s1), ckpt(R, s2), t=[a:b:step])     path add(ckpt(R, s), diff(ckpt(A, s2), ckpt(A, s1)), t=[...])
+  path lerp(ckpt(R, s1), ckpt(R, s2), t=[a:b:step])     path add(ckpt(R, s), diff(ckpt(A, s2), ckpt(A, s1)), t=[a:b:step])
   path scale(ckpt(R, s), c=[a:b:step])                  path cosine(diff(...), diff(...))
 
 OPS ON grid:taskNNN (ARC-AGI-1 task from the 2025 Code Golf set)
