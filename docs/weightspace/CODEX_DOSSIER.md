@@ -533,7 +533,7 @@ A verdict's `source` (§5.1) is `print_statement(stmt, with_label=False)`.
 | 3 | no valid model in force | `E_MODEL` |
 | 4 | claim not valid for the family | `E_MODEL` |
 | 5 | `train`, `path` or `solve` with more than one op | `E_BAD_ARG` |
-| 6 | names, op by op from left to right (§3.4 "Error code for a name") | `E_BAD_ARG` / `E_MODEL` / `E_UNKNOWN_OP` |
+| 6 | names, op by op from left to right (§3.4 "Error code for a call name") | `E_BAD_ARG` / `E_MODEL` / `E_UNKNOWN_OP` |
 | 7 | arguments | `E_BAD_ARG` |
 | 8 | targets | `E_TARGET` |
 | 9 | shapes | `E_SHAPE` |
@@ -1009,7 +1009,7 @@ They are used for:
    - User prompt = `Model: {MODEL}\nStatements:\n` followed by the valid statements, numbered `1. …`, `2. …` in canonical form.
    - Extract the first block fenced as json. Parse it as a list of objects `{"n": int, "predict": str, "reason": str, "fix": str}`. Accept the `predict` values `exact`, `near`, `edit`, `pass`, `fail` and `unknown`. Ignore entries with any other value or with an `n` out of range.
    - A missing or malformed block gives no predictions and no fixes. Record it as one `parse_errors` entry: `{"role": "critic", "line": null, "col": null, "code": "E_SYNTAX", "message": …}`.
-   - A non-empty `fix` is checked as the script `model {MODEL}` + `fix`. If that gives exactly one valid statement, add it as an extra statement labelled `fix<n>`; otherwise record a `parse_errors` entry.
+   - A non-empty `fix` is checked as the script `"model {MODEL}\n"` + `fix` (the same construction as in step 1). If that gives exactly one valid statement, add it as an extra statement labelled `fix<n>`; otherwise record a `parse_errors` entry.
 4. **Alternatives.**
    - System prompt = `ALT_SYSTEM` (Appendix E.4).
    - User prompt = `Source text:\n<<<\n{text}\n>>>\nModel: {MODEL}\nStatements already proposed:\n{numbered statements}`.
@@ -1106,12 +1106,21 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
   - hints: amber.
 
   Hovering shows the message.
-- Buttons `Check` (parse only) and `Run`.
+- Buttons `Check` (parse only), `Run` and `Cancel`. `Cancel` is enabled while the run started by the last `Run` has status `queued` or `running`, and it sends `POST /api/runs/{run_id}/cancel` for that run. No other tab has a Cancel button.
 
 **Right: the results table**, one row per verdict:
 
-| label | claim | source | status | measured | dloss | rel | control ratio | hints and warnings |
-|---|---|---|---|---|---|---|---|---|
+| label | claim | source | status | result | measured | dloss | rel | control ratio | hints and warnings |
+|---|---|---|---|---|---|---|---|---|---|
+
+The `result` column shows:
+
+- `{passed}/{total}` for grid rows;
+- `{error.code}: {error.message}` for `ERROR` rows, so that, for example, the `E_DOWNLOAD` message with its `wsbench fetch` command is visible;
+- `cosine={cosine:.4f}` for `path cosine(...)` rows;
+- nothing otherwise.
+
+Columns without a value stay empty.
 
 - Status colours: `CONFIRMED` green, `REFUTED` red, `MEASURED` blue, `ERROR` grey, `RUNNING` and `PENDING` with an animated dot.
 - **Clicking a neox row** opens the detail panel:
@@ -1140,7 +1149,7 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
   - `prim ▾` (dropdown of primitives);
   - `compile ▾` (primitive + size fixed/gated + from all/train).
 
-  Each button runs a one-line script `model grid:taskNNN` / `solve …` and shows the verdict.
+  Each button runs a one-line script `model grid:taskNNN` / `solve …` and shows the verdict as one row of the Tab 1 results table (same columns and rendering).
 - For `compile`, a panel shows `src_grid` as a 30×30 grid of numbers (small font), and `P_preview` as a heatmap. For `gated`, a shape selector filled from `sizes` chooses the table.
 - A button `Open in editor` copies the generated script into Tab 1.
 
@@ -1155,7 +1164,7 @@ The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synerg
   - the three raw replies (collapsible);
   - the parse errors;
   - the combined script (with a button `Open in editor`);
-  - the verdict table with two extra columns, `predicted` (critic) and `agree?`.
+  - the Tab 1 results table, with two extra columns: `predicted` (critic) and `agree?`.
 
 ### Tab 4 "Language"
 
