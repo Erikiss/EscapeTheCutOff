@@ -15,6 +15,7 @@
     cutoffmix bench run --events FILE --out FILE --models KEY... --probes P... [--dry-run] [--batch] [--limit N]
     cutoffmix bench grade --events FILE... --in FILE --out FILE [--judges KEY...] [--regrade-all] [--mock]
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
+                        [--probe-map FROM=TO...] [--global-origins ORIGIN...]
                         [--priors KEY=MONTH...] [--note TEXT]
     cutoffmix router train [options of cutoffmix.router.train]
     cutoffmix simulate [--out DIR]
@@ -743,14 +744,34 @@ def _cmd_bench_grade(args: argparse.Namespace) -> int:
 
 
 def _cmd_bench_fit(args: argparse.Namespace) -> int:
+    import dataclasses
+    from typing import cast
+
     from cutoffmix.bench.estimate import fit_index
     from cutoffmix.bench.io import load_events, load_results
+    from cutoffmix.types import ProbeKind
 
+    probe_map: dict[str, str] = {}
+    for item in args.probe_map:
+        src, sep, dst = item.partition("=")
+        if not sep or not src or dst not in PROBE_CHOICES:
+            raise CLIError(f"--probe-map expects FROM=TO with TO one of {', '.join(PROBE_CHOICES)}, got {item!r}")
+        if src in probe_map:
+            raise CLIError(f"--probe-map maps {src!r} twice")
+        probe_map[src] = dst
     events = [e for path in args.events for e in load_events(path)]
     results = [r for path in args.results for r in load_results(path)]
+    if probe_map:  # relabel at fit time, e.g. current_d=current (the dated paper probes join the kc 'current' table)
+        results = [dataclasses.replace(r, probe=cast(ProbeKind, probe_map[r.probe])) if r.probe in probe_map else r
+                   for r in results]
+    meta: dict[str, Any] = {}
+    if args.note:
+        meta["note"] = args.note
+    if probe_map:
+        meta["probe_map"] = probe_map
     index = fit_index(events, results, models=args.models or None, probes=args.probes or None,
                       priors=_parse_priors(args.priors) or None, prior_sd=args.prior_sd, bootstrap=args.bootstrap,
-                      seed=args.seed, meta={"note": args.note} if args.note else None)
+                      seed=args.seed, global_origins=args.global_origins or None, meta=meta or None)
     index.save(args.out)
     print(render_index(index, index.primary().probe, color=use_color(sys.stdout)))
     print(f"index -> {args.out}")
@@ -960,6 +981,14 @@ def build_parser() -> argparse.ArgumentParser:
     bf.add_argument("--prior-sd", type=float, default=3.0)
     bf.add_argument("--bootstrap", type=int, default=200)
     bf.add_argument("--seed", type=int, default=0)
+    bf.add_argument("--global-origins", nargs="+", metavar="ORIGIN",
+                    help="fit the model-level cutoff, slope and plateau from events of these origins only (e.g. kc, "
+                         "the world events); topic cells, offsets, draws and hazard rates still use every row, so "
+                         "topics without own data inherit this anchor (DESIGN.md §4)")
+    bf.add_argument("--probe-map", nargs="+", default=[], metavar="FROM=TO",
+                    help="relabel result probes before the fit, e.g. current_d=current: the paper probes were asked "
+                         "with the dated deployment prompt (current_d) but join the kc direct probe 'current' so one "
+                         "per-topic table exists; the paper-specific difference lands in the ai_ml topic cell")
     bf.add_argument("--note", help="free text stored as meta.note (what the index is, what it may be used for)")
     bf.set_defaults(func=_cmd_bench_fit)
 

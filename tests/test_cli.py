@@ -128,6 +128,8 @@ def events_for_printer() -> list[RelayEvent]:
     ["bench", "grade", "--events", "e.jsonl", "f.jsonl", "--results", "r.jsonl", "--out", "g.jsonl", "--regrade-all",
      "--judges", "a", "--concurrency", "2", "--mock"],
     ["bench", "fit", "--events", "e.jsonl", "--results", "r.jsonl", "--out", "i.json", "--priors", "a=27.75"],
+    ["bench", "fit", "--events", "e.jsonl", "p.jsonl", "--results", "r.jsonl", "s.jsonl", "--out", "i.json",
+     "--probe-map", "current_d=current", "--global-origins", "kc", "--models", "a", "--probes", "current", "mcq"],
     ["router", "train"],
     ["simulate", "--out", "sim"],
 ])
@@ -480,6 +482,41 @@ def test_bench_fit_rejects_malformed_priors(monkeypatch, capsys):
     monkeypatch.setattr(bench_io, "load_results", lambda path: [])
     code = main(["bench", "fit", "--events", "e", "--results", "r", "--out", "o", "--priors", "nonsense"])
     assert code == 2 and "KEY=VALUE" in capsys.readouterr().err
+
+
+def test_bench_fit_relabels_probes_and_passes_the_anchor_origins(monkeypatch, tmp_path, capsys):
+    import cutoffmix.bench.io as bench_io
+    from cutoffmix.bench import estimate
+    from cutoffmix.types import ProbeResult
+
+    calls: dict[str, Any] = {}
+
+    def fake_fit(events, results, **kw):
+        calls.update(kw, results=results)
+        return _truth_index()
+
+    rows = [ProbeResult("paper:1", "m", "current_d", "x", "correct"), ProbeResult("kc:1", "m", "current", "x", "correct"),
+            ProbeResult("paper:1", "m", "mcq", "A", "correct")]
+    monkeypatch.setattr(estimate, "fit_index", fake_fit)
+    monkeypatch.setattr(bench_io, "load_events", lambda path: [])
+    monkeypatch.setattr(bench_io, "load_results", lambda path: list(rows))
+    out = tmp_path / "idx.json"
+    base = ["bench", "fit", "--events", "e.jsonl", "--results", "r.jsonl", "--out", str(out)]
+    code = main([*base, "--probe-map", "current_d=current", "--global-origins", "kc", "wikidata", "--note", "n"])
+    assert code == 0 and out.exists()
+    assert [r.probe for r in calls["results"]] == ["current", "current", "mcq"]  # relabelled at fit time
+    assert [r.event_id for r in calls["results"]] == ["paper:1", "kc:1", "paper:1"]
+    assert calls["global_origins"] == ["kc", "wikidata"]
+    assert calls["meta"] == {"note": "n", "probe_map": {"current_d": "current"}}
+    # without the options: rows untouched, no anchor origins, no meta
+    assert main(base) == 0
+    assert [r.probe for r in calls["results"]] == ["current_d", "current", "mcq"]
+    assert calls["global_origins"] is None and calls["meta"] is None
+    for bad in ("nonsense", "current_d=bogus", "=current", "current_d="):
+        assert main([*base, "--probe-map", bad]) == 2
+        assert "FROM=TO" in capsys.readouterr().err
+    assert main([*base, "--probe-map", "current_d=current", "current_d=mcq"]) == 2
+    assert "twice" in capsys.readouterr().err
 
 
 def test_bench_run_dry_run_prints_the_estimate(monkeypatch, capsys):

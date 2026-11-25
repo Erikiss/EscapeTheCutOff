@@ -535,6 +535,25 @@ grade == correct. `t_i` = `timeutil.parse_fractional_month(event.date)`.
    τ ∈ [−6, 40] (step `grid_step`), s ∈ {0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0, 2.8, 4.0}, a ∈ {0.55, …, 0.99}.
    Priors: τ ~ N(priors[m] or the data median, prior_sd²), log s ~ N(log 1, 0.5²), a ~ Beta(9, 1). Gives
    global_tau, slope s_m and plateau a_m.
+   - **Anchor origins.** With `global_origins` (`bench fit --global-origins kc`) step 1 uses only rows whose event
+     origin is in that set; steps 2-4 use all rows. Reason: the sources differ in knowledge structure. World events
+     (`kc`) are recalled with a plateau near 1 up to the cutoff; AI-paper first authors (`arxiv_hf`, topic `ai_ml`
+     only) are recalled far less often even well before the cutoff (a lower, model-specific plateau and an earlier
+     apparent cutoff). Fitted together, the 210 paper rows pull τ_m, s_m and a_m of a model that knows few first
+     authors (GPT-6.2 Sol `current`: 28.25 -> 24.6, Gemini-4 Neon 26.5 -> 24.95), and every topic WITHOUT its own
+     data then inherits that paper-driven anchor through the cell prior N(τ_m + γ_z, σ_ε²). Anchored on `kc`, those
+     cells stay on the world-event evidence, while the `ai_ml` cell is still measured from its own rows (210 events:
+     the likelihood dominates the prior). γ_z and σ_ε (step 2) are still computed from all cells: the offsets
+     describe the topics given the anchor, and a cell whose data come from another origin simply shows a larger
+     deviation. A model without any row from the chosen origins for a probe falls back to the prior exactly as a
+     model without data (NaN cells without a prior); its rows from other origins count nowhere for that probe
+     (n = 0). `meta.global_origins` and `meta.hyper[probe].model_level` (per model: `n`, `by_origin`, `excluded`,
+     `fallback`) record what fed step 1. Without the option the fit is unchanged.
+   - **Probe relabelling.** `bench fit --probe-map current_d=current` relabels result rows before the fit (recorded as
+     `meta.probe_map`). The paper probes were asked with the dated deployment prompt (`current_d`), but they are
+     grouped with the kc direct probe `current` so that one per-topic table exists for routing; the paper-specific
+     difference (prompt and recall structure) is absorbed by the `ai_ml` topic cell. After relabelling the usual rule
+     applies: of repeated (event, model, probe) rows the last one counts.
 2. **Per-cell posterior.** For each (m, z), fix s_m and a_m and compute the 1-D grid posterior of τ_mz:
    likelihood × N(τ; global_tau_m + γ_z, σ_ε²).
    - γ_z = topic offset shared by all models: a precision-weighted mean over models of (cell MLE − global_tau_m),
@@ -549,8 +568,10 @@ grade == correct. `t_i` = `timeutil.parse_fractional_month(event.date)`.
    H_m = (k_m + 5·H_pool)/(n_m + 5); cell H_mz = (k_mz + 5·H_m)/(n_mz + 5). A model with few items after its cutoff
    (the freshest one, when the data end near it) thus gets about the pooled rate. Abstain rate is computed the same
    way.
-5. `meta`: created (ISO), sources, n_events, n_results, probe list, method string, priors, and the month axis
-   definition.
+5. `meta`: created (ISO), sources, events_by_origin, data_range, n_events, n_results, probe list, method string,
+   priors, prior_sd, bootstrap, seed, grid_step, global_origins (null without the option), the month axis
+   definition and `hyper` per probe (σ_ε, mom_cells, γ_z, n_results, floor, `model_level`); `probe_map` and `note`
+   when given on the command line.
 
 ## 5. Relay (relay.py, WP5)
 
@@ -648,7 +669,9 @@ Loop, with i = segment index:
     kept): offline with the rule grader alone, with `--judges` for the rows the rules cannot decide; by default only
     `ungraded` rows are re-graded, `--regrade-all` every row with a response (a judge verdict stands where the new
     pass cannot decide). Prints the grade counts per model and probe before and after (`before->after` cells).
-  - `bench fit --events --results --out [--priors]`
+  - `bench fit --events FILE... --results FILE... --out FILE [--models] [--probes] [--priors KEY=MONTH...]
+    [--global-origins ORIGIN...] [--probe-map FROM=TO...] [--note]` (§4: the model-level anchor from the named
+    origins only; result probes relabelled before the fit)
   - `router train`
   - `simulate [--out DIR]`
   - `--mock` uses MockBackend everywhere. Without `--mock` and without `OPENROUTER_API_KEY`, print a clear message.
