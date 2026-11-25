@@ -9,6 +9,9 @@
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
     cutoffmix bench build-wikipedia --out FILE --start DATE --end DATE [--probe-model KEY]
+    cutoffmix bench build-papers --out FILE [--dense-from 2025-10 --dense-to 2026-11 --per-month 12
+                        --anchor-from 2024-01 --anchor-to 2025-09 --anchor-every 3 --anchor-per-month 6
+                        --interp-share 0.5 --controls-share 0.1 --seed 0 --meta FILE --cache DIR --candidates N]
     cutoffmix bench run --events FILE --out FILE --models KEY... --probes P... [--dry-run] [--batch] [--limit N]
     cutoffmix bench grade --events FILE --results FILE
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
@@ -571,6 +574,35 @@ def _cmd_build_wikipedia(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_build_papers(args: argparse.Namespace) -> int:
+    from cutoffmix.bench.io import save_events, write_jsonl
+    from cutoffmix.bench.sources.papers import build_paper_events
+
+    errors: list[str] = []
+    try:
+        events, meta = build_paper_events(
+            args.dense_from, args.dense_to, per_month=args.per_month, anchor_from=args.anchor_from,
+            anchor_to=args.anchor_to, anchor_every=args.anchor_every, anchor_per_month=args.anchor_per_month,
+            interp_share=args.interp_share, controls_share=args.controls_share, seed=args.seed,
+            candidates_per_month=args.candidates, cache_dir=args.cache, errors=errors)
+    except ValueError as e:
+        raise CLIError(str(e)) from e
+    save_events(args.out, events)
+    meta_path = args.meta or str(Path(args.out).with_name("papers_meta.jsonl"))
+    write_jsonl(meta_path, meta)
+    by_id = {m["event_id"]: m for m in meta}
+    controls = sum(e.control for e in events)
+    interp = sum(1 for e in events if by_id[e.id].get("interp"))
+    months = sorted({e.month for e in events})
+    print(f"{len(events)} events ({len(events) - controls} papers, {interp} interp-tagged, {controls} controls) over "
+          f"{len(months)} months {months[0] if months else '-'}..{months[-1] if months else '-'} -> {args.out}\n"
+          f"meta -> {meta_path}")
+    if errors:
+        print(f"{len(errors)} daily list(s) could not be fetched (rerun fills them from the network):\n  "
+              + "\n  ".join(errors), file=sys.stderr)
+    return 0
+
+
 async def _close(backend: Any) -> None:
     close = getattr(backend, "aclose", None)
     if close is not None:
@@ -793,6 +825,26 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--mock", action="store_true", help="use the simulated models for probe generation")
     _add_config(wp)
     wp.set_defaults(func=_cmd_build_wikipedia)
+
+    pp = bench_sub.add_parser("build-papers",
+                              help="first-author probes from AI/ML papers (Hugging Face daily papers + arXiv API)")
+    pp.add_argument("--out", required=True, metavar="FILE")
+    pp.add_argument("--dense-from", default="2025-10", metavar="YYYY-MM", help="first month with --per-month papers")
+    pp.add_argument("--dense-to", default="2026-11", metavar="YYYY-MM", help="last month with --per-month papers")
+    pp.add_argument("--per-month", type=int, default=12)
+    pp.add_argument("--anchor-from", default="2024-01", metavar="YYYY-MM", help="first anchor month")
+    pp.add_argument("--anchor-to", default="2025-09", metavar="YYYY-MM", help="last anchor month")
+    pp.add_argument("--anchor-every", type=int, default=3, help="every n-th month of the anchor range")
+    pp.add_argument("--anchor-per-month", type=int, default=6)
+    pp.add_argument("--interp-share", type=float, default=0.5,
+                    help="share of a month's papers taken from the interpretability-tagged pool when available")
+    pp.add_argument("--controls-share", type=float, default=0.1, help="fake-paper controls as a share of real papers")
+    pp.add_argument("--seed", type=int, default=0, help="MCQ order, distractor draw and control titles")
+    pp.add_argument("--meta", metavar="FILE", help="side table (default: papers_meta.jsonl next to --out)")
+    pp.add_argument("--cache", metavar="DIR", help="raw-response cache (default: $CUTOFFMIX_PAPERS_CACHE or "
+                                                  "~/.cache/cutoffmix/papers)")
+    pp.add_argument("--candidates", type=int, default=60, help="Hugging Face top-N per month before filtering")
+    pp.set_defaults(func=_cmd_build_papers)
 
     br = bench_sub.add_parser("run", help="probe the models on benchmark events")
     br.add_argument("--events", required=True, metavar="FILE")

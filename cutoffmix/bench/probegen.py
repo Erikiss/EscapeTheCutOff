@@ -238,7 +238,7 @@ def event_from_probe_json(item: Mapping[str, Any], data: Mapping[str, Any]) -> E
     aliases = [a for a in dict.fromkeys(aliases) if a.casefold() not in rejected]
 
     category = str(data.get("category") or "other")
-    if category not in EVENT_TYPES or category in ("control_alive", "fake_event"):
+    if category not in EVENT_TYPES or category in ("control_alive", "fake_event", "paper", "fake_paper"):
         category = "other"
     predictability = str(data.get("predictability") or "medium")
     topic = item.get("topic")

@@ -33,8 +33,10 @@ from cutoffmix.types import Backend, ChatRequest, Event, Grade, ModelSpec, Probe
 
 __all__ = [
     "CONTROL_CATEGORIES",
+    "PAPER_CATEGORIES",
     "extract_letter",
     "grade_mcq",
+    "grade_paper",
     "grade_response",
     "grade_results",
     "grade_rule",
@@ -43,7 +45,9 @@ __all__ = [
     "parse_judge_output",
 ]
 
-CONTROL_CATEGORIES: frozenset[str] = frozenset({"control_alive", "fake_event"})
+CONTROL_CATEGORIES: frozenset[str] = frozenset({"control_alive", "fake_event", "fake_paper"})
+# arXiv first-author probes (bench/sources/papers.py): graded by :func:`grade_paper`
+PAPER_CATEGORIES: frozenset[str] = frozenset({"paper", "fake_paper"})
 
 # ------------------------------------------------------------------------------------------------- MCQ
 
@@ -86,7 +90,10 @@ def _choice_text(choice: str) -> str:
 
 
 def _stale_letters(event: Event) -> set[str]:
-    """Letters of the MCQ options that state the stale (pre-event) world state."""
+    """Letters of the MCQ options that state the stale (pre-event) world state. Paper probes have no stale state:
+    their ``reject_aliases`` are distractor authors, so a distractor pick is plainly ``incorrect``."""
+    if event.category in PAPER_CATEGORIES:
+        return set()
     stale = _compile_forms(event.reject_aliases)
     if _is_death(event):
         stale.append(_ALIVE)
@@ -378,6 +385,8 @@ def grade_rule(event: Event, probe: str, response: str) -> tuple[Grade, bool] | 
         return "ungraded", False
     if probe == "mcq":
         return grade_mcq(event, response), False
+    if event.category in PAPER_CATEGORIES:
+        return grade_paper(event, probe, response)
     text = normalize_text(response)
     strong, weak = _hits(text, _outcome_patterns(event, probe), event.date)
     abstain = bool(_ABSTAIN.search(text))
@@ -392,6 +401,185 @@ def grade_rule(event: Event, probe: str, response: str) -> tuple[Grade, bool] | 
         return outcome, bool(_HEDGE.search(text)) or abstain
     if (not strong and not weak and abstain and not _GUESS_OR_CONTRAST.search(text)
             and not _names_someone_new(response, event)):
+        return "abstain", False
+    return None
+
+
+# ------------------------------------------------------------------------------------------------- papers
+
+# Extra abstain cues for "who is the first author of <paper>" probes (over normalised text; _ABSTAIN also applies).
+_PAPER_ABSTAIN = _phrases(
+    r"(?:i'?m|i am) not aware of", r"(?:i'?m|i am) not familiar with", r"not familiar with",
+    r"(?:don'?t|do not|cannot|can'?t) (?:recognize|recognise|recall|identify|place) (?:this|that|the|a|any)",
+    r"(?:don'?t|do not) have (?:any )?(?:specific |reliable |detailed |verified )?(?:information|details|knowledge|data)",
+    r"(?:cannot|can'?t|can not|could not|couldn'?t|unable to|not able to) (?:verify|confirm|find|locate|identify|"
+    r"recall|determine|access)",
+    r"no record", r"(?:not|never) (?:seen|encountered|come across)", r"(?:does not|doesn'?t|may not|might not) exist",
+    r"(?:no|not) (?:such|any) (?:paper|record|publication|preprint)", r"not in my (?:training )?data",
+    r"(?:don'?t|do not) (?:know|have) (?:this|that|the) (?:paper|publication|preprint)",
+    r"ist mir nicht bekannt", r"kenne ich nicht", r"ich kenne (?:\w+ ){0,3}nicht", r"nicht bekannt", r"unbekannt",
+    r"kann ich (?:leider )?nicht (?:verifizieren|bestatigen|uberprufen|nachprufen|finden|zuordnen|nennen)",
+    r"liegen mir (?:keine|nicht) (?:informationen|daten|angaben)?", r"keine (?:informationen|angaben|kenntnis|daten) "
+    r"(?:zu|uber|dazu|daruber)", r"(?:gibt es|existiert) (?:nicht|keine)", r"nicht finden", r"kein(?:e|en)? (?:solche|"
+    r"derartige)",
+)
+# Uncertainty words that make an asserted name "hedged".
+_UNCERTAIN = _phrases(
+    r"i (?:think|believe|suspect|recall|guess|assume)", r"if i recall", r"(?:i'?m|i am) not (?:entirely |completely |"
+    r"fully |100% )?(?:sure|certain|confident)", r"not (?:entirely |completely |fully |100% )?(?:sure|certain)",
+    r"probably", r"likely", r"possibly", r"perhaps", r"maybe", r"might be", r"may be", r"could be", r"it seems",
+    r"seems to be", r"appears to be", r"best guess", r"my guess", r"(?:i'?m|i am) uncertain", r"uncertain",
+    r"(?:may|might|could) (?:have been|be) (?:mistaken|wrong|misremembering)", r"vermutlich", r"wahrscheinlich",
+    r"moglicherweise", r"vielleicht", r"ich (?:glaube|vermute|denke|meine|schatze)", r"konnte", r"unsicher",
+    r"nicht sicher", r"soweit ich (?:mich erinnere|weiss)",
+)
+# Surnames too common to accept alone (the given name's first token is required too).
+_COMMON_SURNAMES = frozenset({
+    "li", "wang", "zhang", "chen", "liu", "yang", "kim", "lee", "park", "singh", "kumar", "smith", "huang", "zhao",
+    "zhou", "zhu", "yuan", "yuan", "nguyen", "patel", "gupta", "sharma", "jones", "brown", "williams", "johnson",
+    "garcia", "martin", "muller", "schmidt", "cheng", "zheng", "jiang", "tang", "wei", "shen", "song",
+})
+# Capitalised words that never start or make up a person's name in a first-author answer.
+_NAME_STOP = frozenset({
+    *_COMMON_CAPITALISED, "first", "author", "authors", "arxiv", "paper", "papers", "title", "titled", "unfortunately",
+    "note", "sorry", "please", "unknown", "university", "institute", "research", "lab", "labs", "google", "deepmind",
+    "openai", "microsoft", "meta", "anthropic", "nvidia", "stanford", "berkeley", "mit", "cmu", "hugging", "face",
+    "team", "llm", "llms", "model", "models", "language", "learning", "transformer", "transformers", "neural",
+    "network", "networks", "deep", "machine", "large", "data", "dataset", "benchmark", "new", "york", "san", "francisco",
+    "china", "united", "states", "european", "kingdom", "dr", "prof", "mr", "ms", "mrs", "et", "al", "der", "die",
+    "das", "ein", "eine", "mein", "meine", "meinem", "ich", "es", "leider", "dieses", "diese", "erstautor",
+    "erstautorin", "autor", "autorin", "wissensstand", "kenntnisstand", "informationen", "kenntnis", "daten",
+    "training", "trainingsdaten", "stand", "zeitpunkt", "veroffentlichung", "titel", "arbeit", "artikel", "modell",
+    "sprachmodell", "forschung", "universitat", "institut", "antwort", "frage", "hinweis", "quelle", "quellen",
+    "is", "an", "a", "of", "to", "by", "for", "with", "was", "are", "be", "not", "so", "we", "do", "did", "up",
+    "using", "also", "indeed", "actually", "additionally", "specifically", "i'm", "i've", "i'd", "it's", "that's",
+    "there's", "here", "then", "thus", "hence", "therefore", "though", "although", "because", "yet", "when", "where",
+    "which", "who", "whose", "what", "why", "how", "can", "could", "would", "should", "will", "might", "must", "let",
+    "see", "ok", "okay", "hi", "hello", "thanks", "thank", "you", "your", "our", "me", "him", "her", "them", "its",
+    "their", "his", "one", "two", "three", "some", "any", "all", "none", "each", "every", "both", "such", "same",
+    "other", "another", "more", "most", "less", "least", "many", "much", "few", "several", "very", "too", "quite",
+    "rather", "only", "just", "even", "still", "already", "again", "once", "now", "today", "recently", "currently",
+    "finally", "second", "third", "last", "next", "previous", "well", "perhaps", "maybe", "probably", "likely",
+    "possibly", "certainly", "definitely", "apparently", "presumably", "supposedly", "reportedly", "allegedly",
+    "generally", "typically", "usually", "often", "sometimes", "always", "never", "written", "by", "led", "lead",
+    "corresponding", "senior", "co-author", "coauthor", "co-authors", "coauthors", "colleagues", "collaborators",
+})
+_INITIAL = re.compile(r"^[A-Z]\.$")
+_TOKEN_TRIM = "()[]{}\"'“”‘’*_,;:!?"
+_NAME_PARTICLES = frozenset({"van", "von", "de", "der", "den", "da", "di", "du", "la", "le", "del", "bin", "ibn"})
+# stop words that are also surnames: inside a run after a name-like token ("Feng He", "Long May") they are names
+_SURNAME_HOMOGRAPHS = frozenset({"he", "an", "will", "may", "so", "do", "no", "see", "well", "long", "young", "new"})
+_POSSESSIVE = re.compile(r"['’]s$")
+
+
+def _name_like(token: str) -> bool:
+    """A capitalised word of letters (``Zhang``, ``He``, ``Shi-Yu``, ``McCarthy``) with at least one lower-case
+    letter and no more capitals than lower-case letters, no digits: not ``LLM``, ``GPT-4``, ``SAEs``."""
+    if len(token) < 2 or not token[0].isupper() or any(c.isdigit() for c in token):
+        return False
+    if not all(c.isalpha() or c in "'’-." for c in token):
+        return False
+    lower = sum(c.islower() for c in token)
+    return lower >= 1 and sum(c.isupper() for c in token) <= lower
+
+
+def _other_person(response: str, event: Event) -> bool:
+    """True if the response contains a capitalised run of two to five tokens (``Wei Chen``, ``J. Smith``, ``Jan van
+    der Berg``) that is not an accepted or rejected answer form and whose words occur neither in the question or
+    title nor in :data:`_NAME_STOP`: a person we have no alias for, i.e. a wrong or invented author. Leading and
+    trailing stop words of a run ("Perhaps Wei Chen") are ignored, except surname homographs after a name ("Feng
+    He"); a stop word inside the run ("Hugging Face") dismisses it."""
+    known = set(normalize_text(" ".join([event.question_current, event.question_recall, event.subject])).split())
+    known |= {w.strip(".,;:()'\"") for w in known}
+    names = {normalize_text(a) for a in [event.expected_current, event.expected_recall, *event.aliases,
+                                         *event.reject_aliases] if a}
+
+    def stop(words: list[str], i: int) -> bool:
+        if i > 0 and words[i] in _SURNAME_HOMOGRAPHS:
+            return False
+        return words[i] in _NAME_STOP
+
+    def person(run: list[str]) -> bool:
+        words = [_POSSESSIVE.sub("", normalize_text(t).strip(".,;:()'\"")) for t in run]
+        while words and stop(words, 0):
+            words, run = words[1:], run[1:]
+        while words and stop(words, len(words) - 1):
+            words, run = words[:-1], run[:-1]
+        if not 2 <= len(run) <= 5 or sum(_name_like(t) for t in run) < 2 or " ".join(words) in names:
+            return False
+        return not any(w in known or stop(words, i) for i, w in enumerate(words) if w)
+
+    run: list[str] = []
+    for raw in response.split():
+        token = raw.strip(_TOKEN_TRIM)
+        ends = raw[-1:] in ".,;:!?)\"'" if raw else False
+        if len(token) > 2 and token.endswith("."):
+            token = token[:-1]
+        if _name_like(token) or _INITIAL.match(token) or (run and token.casefold() in _NAME_PARTICLES):
+            run.append(token)
+            if ends and not _INITIAL.match(token):
+                if person(run):
+                    return True
+                run = []
+        else:
+            if person(run):
+                return True
+            run = []
+    return person(run)
+
+
+def _surname_given(name: str) -> tuple[str, str]:
+    """``'Jan van der Berg'`` -> ``('Berg', 'Jan')``: last token and first token of a name."""
+    toks = name.split()
+    return (toks[-1] if toks else ""), (toks[0] if len(toks) >= 2 else "")
+
+
+def grade_paper(event: Event, probe: str, response: str) -> tuple[Grade, bool] | None:
+    """Rule grade for first-author probes (categories ``paper`` and ``fake_paper``), or ``None`` when unsure.
+
+    Real papers: ``correct`` when the expected name is asserted in a full form (``Event.aliases``: full name,
+    ``Surname, Given``, ``G. Surname``, diacritics folded) or by surname alone, unless the surname is common
+    (four letters or fewer, or in :data:`_COMMON_SURNAMES`), in which case the given name's first token must
+    appear too; ``incorrect`` when a distractor (``reject_aliases``) or any other capitalised two-token name is
+    asserted instead; ``abstain`` for an abstain phrase without any name; otherwise ``None`` (a name only in a
+    negated clause, the answer next to a distractor, ...). Controls (fake papers): any named person is
+    ``incorrect`` (a confabulation), an abstention is ``correct``, anything else ``None``. ``hedged`` is set when
+    the asserted name comes with uncertainty or knowledge-horizon words or an abstain phrase.
+    """
+    if not (response or "").strip():
+        return "ungraded", False
+    if probe == "mcq":
+        return grade_mcq(event, response), False
+    text = normalize_text(response)
+    abstain = bool(_ABSTAIN.search(text) or _PAPER_ABSTAIN.search(text))
+    uncertain = bool(_HEDGE.search(text) or _UNCERTAIN.search(text))
+    reject = _compile_forms(event.reject_aliases)
+    other = _other_person(response, event)
+    if _is_control(event):
+        strong, _ = _hits(text, {"correct": [], "outdated": [], "incorrect": reject}, event.date)
+        if "incorrect" in strong or other:
+            return "incorrect", uncertain or abstain
+        return ("correct", False) if abstain else None
+    expected = (event.expected_recall if probe == "recall" else "") or event.expected_current
+    full_forms = _compile_forms(a for a in [*event.aliases, expected] if len(a.split()) >= 2)
+    strong, weak = _hits(text, {"correct": full_forms, "outdated": [], "incorrect": reject}, event.date)
+    if "correct" not in strong:
+        surname, given = _surname_given(expected)
+        s_strong, s_weak = _hits(text, {"correct": _compile_forms([surname]), "outdated": [], "incorrect": []},
+                                 event.date)
+        common = len(normalize_text(surname)) <= 4 or normalize_text(surname) in _COMMON_SURNAMES
+        given_seen = bool(given) and any(p.search(text) for p in _compile_forms([given]))
+        if "correct" in s_strong and (not common or given_seen):
+            strong.add("correct")
+        elif "correct" in s_strong or "correct" in s_weak:
+            weak.add("correct")
+    if "correct" in strong:
+        if "incorrect" in strong:
+            return None  # the answer and a distractor are both asserted: judges decide
+        return "correct", uncertain or abstain
+    if "incorrect" in strong or other:
+        return "incorrect", uncertain or abstain
+    if abstain and not weak:
         return "abstain", False
     return None
 

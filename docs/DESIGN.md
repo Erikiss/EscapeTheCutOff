@@ -416,6 +416,78 @@ def simulate_results(truths: dict[str, MockModelTruth], events, probes, seed) ->
 def recovery_report(index: CutoffIndex, truths, probe) -> dict   # RMSE, rank agreement, P_best calibration
 ```
 
+#### 3.5.1 AI/ML paper probes (bench/sources/papers.py) and their grading
+
+The `ai_ml` cell of the index needs dated facts that a model either knows or does not. A paper's *first author* is
+such a fact: unguessable from the title, fixed on the arXiv date, verifiable from arXiv metadata, rule-gradable.
+
+```python
+# bench/sources/papers.py  (selection: Hugging Face daily papers; ground truth: arXiv API; topic ai_ml)
+HF_DAILY_URL = "https://huggingface.co/api/daily_papers"    # ?date=YYYY-MM-DD; public listing used only to pick papers
+ARXIV_API_URL = "https://export.arxiv.org/api/query"        # id_list batches of <= 100 ids, >= 3 s apart (ARXIV_PACE_S)
+def fetch_hf_daily(date, *, client=None, cache_dir=None, retries=4) -> list     # raw items; cached as hf/<date>.json
+def collect_month(year, month, top_n, *, ...) -> list[HFPaper]  # the month's daily lists merged, deduped by arXiv id
+                                                                 # (highest upvotes kept), top_n by upvotes
+def fetch_arxiv(ids, *, client=None, cache_dir=None) -> dict[str, ArxivPaper]  # per-id cache arxiv/<id>.json, raw Atom
+                                                                               # feeds under arxiv/raw/
+def parse_arxiv_atom(xml) -> dict[str, ArxivPaper]     # title whitespace-normalised, authors in order, v1 published
+                                                       # date, primary category; bad entries skipped, bad XML raises
+def is_interp(title, summary="") -> bool               # strong keywords (interpretab, sparse autoencoder/SAE, superposition,
+                                                       # activation patching, logit lens, monosemantic, mechanistic,
+                                                       # transcoder, crosscoder, causal tracing, ...) or two weak
+                                                       # families (circuit, attribution, probing, steering, neuron, ...;
+                                                       # feature/activation only next to one of those), one in the title
+def plan_months(dense_from, dense_to, per_month, *, anchor_from, anchor_to, anchor_every, anchor_per_month)
+def build_paper_events(dense_from="2025-10", dense_to="2026-11", *, per_month=12, anchor_from="2024-01",
+                       anchor_to="2025-09", anchor_every=3, anchor_per_month=6, interp_share=0.5,
+                       controls_share=0.1, seed=0, candidates_per_month=60, cache_dir=None) -> (events, meta)
+# CLI: cutoffmix bench build-papers --out FILE [--meta FILE --cache DIR ...]   (all of the above as options)
+```
+
+- **Filing and filters.** A paper is filed under the month of its arXiv `published` (v1) date, never under the
+  Hugging Face date. Dropped: first authors that are not two-token person names (`DeepSeek-AI`, `Kimi Team`), titles
+  with year or month tokens (they would date `question_current`), titles that contain the author's name, ids arXiv
+  does not know. Preferred (ranked first): at least 3 authors and 6+ title words. Per month, about `interp_share`
+  of the picks come from the `is_interp` pool when it has enough, the rest are the top-upvoted others.
+- **Event shape** (category `paper`, `origin: "arxiv_hf"`, `topic: "ai_ml"`, `predictability: "low"`): id
+  `paper:<arxiv id>`, `date` = arXiv date, `subject` = title, `fact` = "first author N; authors: ...; arXiv ID (month)",
+  `question_current` = "Who is the first author of the arXiv paper titled '<title>'?" (no date; the `current_d` probe),
+  `question_recall` = the same with " (arXiv, <Month YYYY>)" appended, expected = the first author's full name,
+  `aliases` = full name, "Surname, Given", "G. Surname", "Surname G." and their diacritic-free forms,
+  `reject_aliases` = the three MCQ distractors (first authors of other papers of the same or adjacent months, never
+  the answer's surname, surnames pairwise distinct), MCQ order shuffled with `seed` and the event id, `source` =
+  the arXiv abstract URL. The side table `papers_meta.jsonl` (one row per event id) carries `interp`, `upvotes`,
+  `n_authors`, `authors`, `hf_authors`, `primary_category`, `hf_date`, `distractors` and, for controls, `donors`.
+- **Controls** (category `fake_paper`, `control: True`, id `fakepaper:<n>`, about `controls_share` of the real
+  count): the first half of one real title joined with the second half of another from a different month (both
+  halves >= 3 words; not equal or near-equal to any real title), dated to the first donor's arXiv date. No MCQ, no
+  aliases, no reject aliases. `expected_current` is the sentinel `CONTROL_EXPECTED` ("No such paper exists
+  (control): ...") rather than empty, because `validate_event` requires an expected answer for every question and
+  judges need a ground truth to read; the rule grader ignores it.
+- **Taxonomy.** `EVENT_TYPES` gains `paper` and `fake_paper`; `grading.CONTROL_CATEGORIES` gains `fake_paper`, so
+  the estimator excludes the controls as it does the other control families.
+
+**Grading of paper probes** (`grading.grade_paper`, reached through `grade_rule` for both categories):
+
+- abstain cues first: the shared `_ABSTAIN` phrases plus paper-specific ones ("I am not aware of", "I don't have
+  information", "cannot verify/find/locate", "no record", "does not exist", "not familiar with"; German "ist mir
+  nicht bekannt", "kenne ich nicht", "kann ich nicht verifizieren/finden", "liegen mir keine Informationen",
+  "existiert nicht");
+- real papers: `correct` when the expected name is asserted in a full form (aliases; diacritics folded; negated,
+  conditional or interrogative clauses do not count, as everywhere in the rule grader) or by surname alone, except
+  that a common surname (<= 4 letters, or Li/Wang/Zhang/Chen/Liu/Yang/Kim/Lee/Park/Singh/Kumar/Smith and a few
+  more) also needs the given name's first token; `incorrect` when a distractor (`reject_aliases`) or any other
+  capitalised two-to-five-token name is asserted instead (words of the question, title and stop words excluded;
+  "Perhaps Wei Chen" names Wei Chen, "Hugging Face" names nobody); `abstain` for an abstain phrase without any
+  name; everything else (the answer next to a distractor, a name only in a negated clause, "might be X", a lone
+  common surname) is `None` and goes to the judges;
+- controls: any named person -> `incorrect` (confabulation), an abstention -> `correct`, otherwise `None`;
+- `hedged` is set when the asserted name comes with knowledge-horizon words (`_HEDGE`), uncertainty words
+  ("I believe", "probably", "not certain", "vermutlich", ...) or an abstain phrase;
+- MCQ: `grade_mcq` as usual, but a distractor pick is `incorrect`, not `outdated` (papers have no stale state);
+  controls have no MCQ.
+- Judges see "(none: ...)" as the outdated answer for both categories (`prompts._DEFAULT_OUTDATED`).
+
 ## 4. Estimator (bench/estimate.py)
 
 For each probe q separately. Rows: graded results on non-control, low/medium-predictability events. `y = 1` iff

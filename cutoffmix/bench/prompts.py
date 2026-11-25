@@ -134,6 +134,8 @@ _DEFAULT_OUTDATED: Mapping[str, str] = {
     "release": "the previous release or version",
     "control_alive": "(none: nothing changed)",
     "fake_event": "(none: the event did not happen)",
+    "paper": "(none: a paper's first author does not change; any other person named is incorrect)",
+    "fake_paper": "(none: the paper does not exist; naming any author is a confabulation, only an abstention is correct)",
 }
 
 
