@@ -126,6 +126,49 @@ Die globalen τ (Fable 2026-03.2, Sol 2026-05.2, Neon 2026-03.5) liegen jeweils 
 veröffentlichten Werten des Bench. Das entspricht unserer tagesgenauen Zeitachse (Monatsmitte = +0,5). In Themen
 mit nur 0–4 Ereignissen steht einfach der Modellwert. `cutoffmix index show` zeigt die vollständige Tabelle.
 
+## Gemessene Zelle `ai_ml`: AI-Paper-Probe-Set (25.11.2026)
+
+Für Research-Fragen zählt die Zelle `ai_ml`, und die stand im Prior-Index auf einem einzigen Ereignis. Deshalb wurde
+ein eigenes Probe-Set gemessen: **210 AI-Paper** (Januar 2024 bis November 2026, dicht ab Oktober 2025 mit 12 pro
+Monat), ausgewählt nach Bekanntheit über die Hugging-Face-Daily-Papers-Liste, Metadaten exakt von arXiv (v1), dazu
+**21 erfundene Titel** als Kontrollen. Sonde: „Wer ist Erstautor des arXiv-Papers mit dem Titel ‚…‘?“ (aus dem Titel
+nicht zu raten, per Regel bewertbar) plus 4er-Multiple-Choice. 34 Paper gehören zur Interpretability-Teilmenge.
+Aufbau: `cutoffmix bench build-papers`; Daten: `data/events/papers_events.jsonl`, Antworten:
+`data/results/papers_probes_2026-11-25.jsonl`; Kosten des Laufs ≈ 5,9 $.
+
+**Anteil richtiger Erstautoren je Monat** (offene Frage, Datum im Systemprompt; n = 12 pro Monat ab 2025-10):
+
+| Monat | Fable 5.2 | Gemini 4 Neon | GPT-6.2 Sol |
+|---|---|---|---|
+| 2025-07 | 1,00 | 0,83 | 0,00 |
+| 2025-10 | 1,00 | 0,83 | 0,08 |
+| 2025-11 | 1,00 | 0,75 | 0,17 |
+| 2025-12 | 1,00 | 0,58 | 0,00 |
+| 2026-01 | 1,00 | 0,33 | 0,17 |
+| 2026-02 | 0,75 | 0,00 | 0,00 |
+| 2026-03 | 0,83 | 0,17 | 0,00 |
+| 2026-04 | 0,67 | 0,08 | 0,17 |
+| 2026-05 | 0,25 | 0,00 | 0,00 |
+| 2026-06 | 0,08 | 0,00 | 0,00 |
+| 2026-07 … 2026-11 | 0,00–0,17 | 0,00–0,08 | 0,00–0,08 |
+
+- **Umkehrung gegenüber dem Prior:** Bei ML-Literatur liegt Fable klar vorn, Neon folgt, Sol kennt Erstautoren
+  selbst von 2025er-Papern kaum (Plateau ≈ 0,5 schon 2024/25). Der Prior-Index hatte Sol in jedem Thema vorn.
+- **Multiple Choice** (Wiedererkennen): Fable bis Juli 2026 ≥ 0,92, bis November 2026 noch über Zufall (0,25);
+  Neon bis Juli 2026 ≥ 0,67; Sol meist 0,2–0,5. Fable hat also auch Titel aus Herbst 2026 gesehen, kann aber die
+  Autoren nicht mehr abrufen.
+- **Kontrollen (erfundene Titel):** Fable 0 von 21 konfabuliert, Neon 0 von 21, Sol 4 von 21. Bei echten Papern nennt
+  Sol in 26 % der Fälle einen falschen Autor, Fable in 4 %, Neon in 1 %. Das geht als Halluzinationsterm H ins
+  Routing ein.
+- **Interpretability-Teilmenge:** Fable bis März 2026 alle richtig, Neon und Sol ab Ende 2025 fast nichts; für eine
+  eigene Kurve ist die Teilmenge (0–3 Paper pro Monat) zu klein.
+
+FITTED_PLACEHOLDER
+
+Einschränkungen: Die Sonde misst Erstautor-Wissen, nicht Verständnis des Inhalts; Paper, die nach v1 umbenannt
+wurden, fehlen; die Monate Juli bis November 2026 liegen für alle drei Modelle hinter dem Cutoff, und 12 Paper pro
+Monat geben pro Zelle eine Unsicherheit von etwa einem Monat.
+
 ## Installation
 
 ```bash
