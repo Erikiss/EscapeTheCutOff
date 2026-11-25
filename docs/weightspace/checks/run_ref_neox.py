@@ -53,7 +53,7 @@ def run(name, cfg, W0, ids):
     m('E3n L[mid+1] := neg(L[mid-1])', R.set_layer(W0, mid + 1, R.neg_all(L2)))
     m('E4 L[mid] := lerp(L[mid-1], L[mid+1], .5)', R.set_layer(W0, mid, R.lerp_layer(L2, L4, 0.5)))
     key = R.P.format(mid) + 'attention.dense.weight'
-    m('G1 gridop(rot90, dense[0:64,0:64])', R.gridop_block(W0, 'rot90', key, 0, min(64, D), 0, min(64, D), lambda b: torch.rot90(b, -1, (0, 1))))
+    m('G1 gridop(rot90, dense[0:64,0:64])', R.gridop_block(W0, "rot90", key, 0, min(64, D), 0, min(64, D)))
     print(f'total {time.time()-t0:.1f} s')
 cfgj = json.load(open(f'{MD}/config.json'))
 cfg = R.cfg_from_hf_config(cfgj)

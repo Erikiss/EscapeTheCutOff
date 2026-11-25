@@ -20,11 +20,16 @@
 1. **Everything you need is in this document.** There is no repository to read. Do not look for one.
 2. **Build exactly what is specified. Add no features.** If something is unspecified, choose the simplest option that satisfies the acceptance tests and record the choice in `NOTES.md` (one line per decision).
 3. **The reference code in Appendices A–C is verified. Copy it into the package unchanged**, at the paths given in §2.3. You may add type hints and docstrings, but do not change the arithmetic, the order of random draws, the dtype or the parameter names. The acceptance numbers in Appendix F depend on it.
-4. **All weight-space arithmetic runs in float64 on CPU.** No GPU code paths.
+4. **Precision.** All arithmetic on the `neox` models runs in float64 on CPU. The `modadd` family stays in float32, exactly as in Appendix B: training, checkpoints and all `path` arithmetic. No GPU code paths.
 5. **Never evaluate text produced by a language model as Python.** Model output is only ever parsed as WSL (§3). WSL is a data language, not code.
 6. **Third-party code (the Code Golf solutions) runs only in a subprocess** with a timeout (§6.4).
 7. **Work milestone by milestone (§11).** A milestone is done when its acceptance tests pass. Commit after each milestone.
-8. **Tests must run offline.** Only tests marked `@pytest.mark.network` may download anything, and `@pytest.mark.live` tests call the paid LLM API. Both are skipped by default.
+8. **Tests must run offline and fast by default.** There are three opt-in markers:
+   - `network`: may download;
+   - `live`: calls the paid LLM API;
+   - `slow`: trains models for minutes.
+
+   Register them in `pyproject.toml` and set `addopts = "-m 'not network and not live and not slow'"`, so a plain `pytest -q` skips them.
 9. When the spec gives an exact string (error code, JSON key, file name, prompt text), use it exactly.
 
 ---
@@ -101,14 +106,23 @@ The same English sentence can mean very different things. "All weights in the mi
 
 ### 2.2 Commands (console script `wsbench`)
 
-| Command | Effect |
-|---|---|
-| `wsbench serve [--host 127.0.0.1] [--port 8765]` | Start the web app. |
-| `wsbench run FILE.wsl [--json OUT.json]` | Execute a script and print one line per verdict. Exit code 0 if no statement has status `ERROR`, otherwise 1. |
-| `wsbench check FILE.wsl` | Parse and run the static hints (§3.8). No execution. Prints `file:line:col: severity: CODE message`. |
-| `wsbench fetch pythia-14m` | Download the model (§4.2). |
-| `wsbench fetch arc` | Download the Code Golf data (§6.1). |
-| `wsbench fetch all` | Both. |
+| Command | Effect | Exit code |
+|---|---|---|
+| `wsbench serve [--host 127.0.0.1] [--port 8765]` | Start the web app. | – |
+| `wsbench run FILE.wsl [--json OUT.json]` | Execute the script with `run_script` (§5.5) and print one line per verdict, in line order (format below). `--json` writes the verdict list (§5.1) as a JSON array. | 0 if no verdict has status `ERROR`, else 1 |
+| `wsbench check FILE.wsl` | `parse` + `validate` + `hints`, no execution. Prints one line per problem, sorted by line and then column: parse and validation errors as `FILE:LINE:COL: error: CODE message`, hints as `FILE:LINE:COL: warning: CODE message`. Prints nothing for a clean file. | 1 if there is any error, else 0 (warnings do not count) |
+| `wsbench fetch pythia-14m` | Download the model (§4.2). | 0 on success; on failure, 1 and `E_DOWNLOAD message` on stderr |
+| `wsbench fetch arc` | Download the Code Golf data (§6.1). | as above |
+| `wsbench fetch all` | Both. | as above |
+
+**Line format of `wsbench run`:** `{label} (line {line}): {status}`, followed by each of these parts that applies:
+
+- ` measured={measured}` (neox);
+- ` dloss={dloss:+.4f}` (neox);
+- ` passed={passed}/{total}` (grid);
+- ` {error.code}: {error.message}` (ERROR).
+
+Example: `R1 (line 4): CONFIRMED measured=exact dloss=+0.0000`. Progress output of `fetch` is free-form.
 
 ### 2.3 Package layout (create exactly these modules; you may add private helpers)
 
@@ -120,11 +134,11 @@ wsbench/
   cli.py
   paths.py                        # WSB_HOME handling
   lang/
-    lexer.py  parser.py  ast.py  printer.py  hints.py  card.py   # card.py holds LANGUAGE_CARD (Appendix E.1)
+    lexer.py  parser.py  ast.py  printer.py  validate.py  hints.py  card.py   # card.py holds LANGUAGE_CARD (Appendix E.1)
   models/
     neox.py                       # = Appendix A, verbatim
     modadd.py                     # = Appendix B, verbatim
-    registry.py                   # model names -> loaders (§4)
+    registry.py                   # SHAPES table and param_shapes() (torch-free, §3.11), PROBE_TEXT (Appendix D.1), loaders (§4)
     fetch.py                      # downloads with sha256 checks
   exec/
     executor.py  verdict.py  resolve.py  jobs.py  runs.py
@@ -142,6 +156,7 @@ tests/
   test_lang.py  test_hints.py  test_neox_tiny.py  test_pythia.py  test_modadd.py  test_arc.py
   test_api.py  test_assist_mock.py
   fixtures/golf_mini/task087.json  fixtures/golf_mini/task150.json                           # Appendix D.5
+  data/tiny_battery.wsl                                                                     # Appendix D.6
 ```
 
 ---
@@ -151,53 +166,105 @@ tests/
 ### 3.1 Lexical rules
 
 - WSL is line-oriented: one statement or directive per line.
-- `#` starts a comment that runs to the end of the line. Blank lines are ignored.
-- Lines are numbered from 1 (comment and blank lines count).
-- **Identifiers:** `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive.
-- **Numbers:** an optional sign, digits, an optional fraction and an optional exponent (`-1.5e-3`).
-- **Strings:** double-quoted, no escapes except `\"` and `\\`.
-- **Booleans:** `true` and `false`.
-- **Multi-character tokens** must be lexed before single characters: `:=`, `->`.
-- **Single-character tokens:** `( ) [ ] , ; : = .` and also `+ -` inside layer indices (§3.3).
-- Whitespace other than the newline is insignificant.
-- **Keywords are contextual.** `model`, `seed` and the claim names are keywords only at the start of a line (after an optional `LABEL:`). Elsewhere they are ordinary identifiers, so `from=train` is valid. The words `all`, `pass`, `none`, `fixed`, `gated`, `mid`, `resid`, `orth`, `orth1`, `gl` and `randperm` are ordinary identifiers that the ops interpret.
+- `#` starts a comment that runs to the end of the line. Blank lines and comment-only lines are ignored.
+- Lines are numbered from 1; comment and blank lines count.
+- **Directive lines are not tokenised.** A line is a directive if, after leading whitespace, it starts with `model` or `seed` followed by at least one whitespace character or the end of the line. So `model: gauge …` is a statement labelled `model`. The rest of the line, up to `#` or the end of the line and stripped of whitespace, is the argument.
+  - `model`: the argument must match exactly one of `neox-tiny`, `pythia-14m`, `modadd`, or the regular expression `grid:task[0-9]{3}` with the number in 001–400. Anything else gives `E_MODEL`.
+  - `seed`: the argument must match `[0-9]+`; otherwise `E_SYNTAX`.
+  - **A bad directive** is reported by `parse` as an error on its own line, at col 1.
+    - After a bad `model` directive, no model is in force until the next valid one, so the statements in between get `E_MODEL` from `validate`.
+    - After a bad `seed` directive, the previous seed stays in force.
+    - In a script run, each bad directive line becomes an `ERROR` verdict (§5.1), so it counts for the exit code of `wsbench run`.
+- **Statement lines** are split into these tokens. Whitespace other than the newline only separates tokens.
 
-### 3.2 Grammar (EBNF)
+  | Token | Definition |
+  |---|---|
+  | `IDENT` | `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive |
+  | `INT` | `[0-9]+`: no sign, no decimal point, no exponent |
+  | `FLOAT` | `[0-9]+\.[0-9]*([eE][+-]?[0-9]+)?`, or `[0-9]+[eE][+-]?[0-9]+`, or `\.[0-9]+([eE][+-]?[0-9]+)?`, with no sign |
+  | `STRING` | double-quoted; the only escapes are `\"` and `\\` |
+  | two-character tokens | `:=` and `->` (lexed before single characters) |
+  | one-character tokens | `( ) [ ] , ; : = . + -` |
+
+- **Numbers carry no sign in the lexer.** A minus is always its own token, and the parser builds negative numbers (§3.2). So `L[mid-1]` lexes as `L [ mid - 1 ]`.
+- `L3`, `H0`, `L`, `H`, `mid`, `resid`, `true` and `false` are lexed as `IDENT`; the parser gives them meaning by position (§3.2).
+- **Reserved names.** These cannot be used as a label or a run name (`E_BAD_ARG`):
+  - `L` and `H`;
+  - every identifier matching `^[LH][0-9]+$`;
+  - every identifier matching `^line[0-9]+$`, which is reserved for unlabelled statements.
+- **Keywords are contextual.** The claim names are keywords only at the start of a statement (after an optional `LABEL:`). Elsewhere they are ordinary identifiers, so `from=train` is valid. The words `all`, `pass`, `none`, `fixed`, `gated`, `mid`, `resid`, `orth`, `orth1`, `gl` and `randperm` are ordinary identifiers that the ops interpret.
+
+### 3.2 Grammar of a statement line (EBNF over the tokens of §3.1)
 
 ```
-script       = { line } ;
-line         = [ directive | statement ] [ comment ] NEWLINE ;
-directive    = "model" model_name | "seed" INTEGER ;
-model_name   = "neox-tiny" | "pythia-14m" | "modadd" | "grid:" TASK ;      (* TASK = "task" followed by 3 digits *)
-statement    = [ IDENT ":" ] claim pipeline ;
-claim        = "gauge" | "reparam" | "edit" | "approx" [ "(" NUMBER ")" ] | "train" | "path" | "solve" ;
+statement    = [ label ":" ] claim pipeline ;        (* label = IDENT, not reserved; a label is recognised when the  *)
+                                                     (* first token is IDENT and the second is ":" (not ":=")         *)
+claim        = "gauge" | "reparam" | "edit" | "approx" [ "(" number ")" ] | "train" | "path" | "solve" ;
 pipeline     = op { ";" op } ;
-op           = assignment | call ;
+op           = assignment | call ;                   (* an op that starts with a layer is an assignment             *)
 assignment   = layer ":=" layer_expr ;
-call         = IDENT "(" [ arg { "," arg } ] ")" ;
-arg          = [ IDENT "=" ] value ;
-value        = NUMBER | STRING | "true" | "false" | IDENT | list | range | target | call ;
+layer_expr   = align_call | call | layer ;
+align_call   = "align" "(" layer_expr "->" layer_expr ")" ;
+call         = IDENT "(" [ arg { "," arg } ] ")" ;  (* IDENT other than "align" *)
+arg          = [ IDENT "=" ] value ;                 (* "IDENT =" is a keyword argument; keyword args come last, else E_BAD_ARG *)
+value        = number | STRING | boolean | list | range | target | align_call | call | IDENT ;
+number       = [ "-" ] ( INT | FLOAT ) ;
+boolean      = "true" | "false" ;
 list         = "[" [ value { "," value } ] "]" ;
-range        = "[" NUMBER ":" NUMBER ":" NUMBER "]" ;
+range        = "[" number ":" number ":" number "]" ;
 target       = "resid" | layer [ "." part ] ;
-layer        = "L" INTEGER | "L" "[" index "]" ;                 (* L3 and L[3] are the same *)
-index        = INTEGER | "mid" [ ( "+" | "-" ) INTEGER ] ;
-part         = "mlp" | "heads" | "H" INTEGER | "H" "[" INTEGER "]" ;
-layer_expr   = layer | call ;                                   (* calls allowed here: lerp, neg_writers, neg, align *)
-align_call   = "align" "(" layer_expr "->" layer_expr ")" ;     (* the only place where "->" may appear *)
+layer        = LNUM | "L" "[" index "]" ;           (* LNUM = an IDENT matching ^L[0-9]+$, e.g. L3 *)
+index        = INT | "mid" [ ( "+" | "-" ) INT ] ;
+part         = "mlp" | "heads" | HNUM | "H" "[" INT "]" ;   (* HNUM = an IDENT matching ^H[0-9]+$, e.g. H0 *)
 ```
 
-Notes:
+**How the parser decides** (at most two tokens of lookahead; lists and ranges scan ahead to the matching `]`):
 
-- `model_name`: `grid:` is lexed as one token followed by `taskNNN`, with no whitespace in between.
+1. **`value`**, in this order:
+   - `-`, `INT` or `FLOAT` starts a number;
+   - `STRING` is a string;
+   - `true` / `false` are booleans;
+   - `[` starts a range if a `:` occurs before the matching `]` at bracket depth 1, otherwise a list;
+   - `resid`, an `LNUM`, or `L` followed by `[` starts a target;
+   - `align` followed by `(` is an `align_call`;
+   - any other `IDENT` followed by `(` is a call;
+   - any other `IDENT` is a bare identifier.
+2. **`op`:** if the first token is an `LNUM`, or `L` followed by `[`, the op is an assignment; otherwise it is a call.
+3. **Number types:**
+   - `INT` gives a Python `int`, and `FLOAT` gives a `float`.
+   - Where §3.4 asks for an *integer* (layer indices in `layers=[…]`, `perm([…])` entries, `steps`, `seed`, `p`, `save`, the step in `at(…)`, `block` bounds, the step in `ckpt`), the value must be an `int`; a `float` gives `E_BAD_ARG`.
+   - Where it asks for a *number*, both are accepted and converted with `float()`.
+4. **Errors:** a token that fits no rule gives `E_SYNTAX`, with the line, the 1-based column and the expected tokens.
+   - At the end of a line, `col` = the length of the line (without its comment and trailing whitespace) + 1.
+   - The message wording is free.
+   - The parser then continues with the next line, so all syntax errors are reported. A line with a syntax error yields no statement.
+
+**What `parse` returns:** `parse(script) -> (statements, errors)`.
+
+- **Each statement carries:**
+  - `line`;
+  - `label` (a string, or `None` when absent; `line<N>` is only its display name);
+  - `claim`;
+  - `tol` (for `approx`);
+  - `ops`, the AST, each op with its 1-based `col`;
+  - the context in force: `model` (a string, or `None`) and `seed` (an int).
+- **Resolution.** For neox models, `parse` also resolves every layer index (`mid±k` → int) and head index, using `registry.SHAPES` (torch-free). Out-of-range values are kept as they are; `validate` reports them (`E_TARGET`).
+- **`errors`** holds the syntax errors and the directive errors, each `{"line", "col", "code", "message"}`.
+
+**Script-level rules:**
+
 - `claim`: `approx` without a number means `approx(0.05)`.
-- `layer`: the token `L3` must be lexed as layer 3, not as an identifier, wherever a target is expected. `L` followed by digits is reserved and cannot be a label.
 - `index`: `mid` = `n_layers // 2` (integer division) of the current model.
-- **Directives** take effect from their line to the next directive of the same kind:
-  - `model` is required before the first statement; otherwise every statement errors with `E_MODEL`.
+- **Directives** take effect from their line until the next directive of the same kind.
+  - Every statement **before the first `model` directive** gets `E_MODEL`. Later statements run normally.
   - `seed` defaults to 0.
-- **Labels** are optional and must be unique within a script (`E_LABEL`). Without a label, the statement is called `line<N>`.
-- **Range** `[a:b:s]`: `a, a+s, a+2s, …`. It includes `b` if a term is within `1e-9·max(1,|s|)` of `b`, and stops before passing `b`. `s` must not be 0 (`E_BAD_ARG`). Example: `[1:0.5:-0.1]` = `1, 0.9, 0.8, 0.7, 0.6, 0.5`.
+- **Labels** are optional and must be unique within a script; a duplicate gives `E_LABEL` on the second occurrence. A statement without a label is called `line<N>`, for example `line7`.
+- **Range** `[a:b:s]`: `a, a+s, a+2s, …`.
+  - It includes `b` if a term is within `1e-9·max(1,|s|)` of `b`.
+  - It stops before passing `b`.
+  - `s = 0` gives `E_BAD_ARG`.
+  - Example: `[1:0.5:-0.1]` = `1, 0.9, 0.8, 0.7, 0.6, 0.5`. Compute term `n` as `a + n·s`, not by repeated addition.
+- **One op only:** `train`, `path` and `solve` statements must contain exactly one op; otherwise `E_BAD_ARG`. Only `gauge`, `reparam`, `approx` and `edit` statements may chain ops with `;`.
 
 ### 3.3 Values that denote random group elements
 
@@ -209,7 +276,7 @@ These identifiers (or calls) are valid as arguments where §3.4 says *group elem
 | `orth1` | random orthogonal matrix with `R·1 = 1` (fixes the all-ones vector) | `rand_orth_fixing_ones(n, g)` |
 | `gl` | random well-conditioned invertible matrix | `rand_gl(n, g)` |
 | `randperm` | random permutation | `rand_perm(n, g)` |
-| `perm([i0, i1, …])` | explicit permutation; must be a permutation of `0..n-1` (`E_BAD_ARG`) | – |
+| `perm([i0, i1, …])` | explicit permutation: integers forming a permutation of `0..n-1` (otherwise `E_BAD_ARG`). As a tensor: `torch.tensor(list, dtype=torch.long)`. | – |
 | `uniform(lo, hi)` | random positive vector, entries in `[lo, hi)`; requires `0 < lo < hi` | `rand_uniform(n, lo, hi, g)` |
 
 **Determinism.** Each random value gets its own generator:
@@ -218,11 +285,50 @@ These identifiers (or calls) are valid as arguments where §3.4 says *group elem
 g = torch.Generator().manual_seed(script_seed * 1_000_003 + line_number * 1009 + k)
 ```
 
-Here `k` is the 0-based index of that random value among the random values of the same statement, counted in source order, left to right. The same script always produces the same numbers.
+Here `k` is the 0-based index of that random value among the random values of the same statement, counted in source order, left to right.
+
+- Only `orth`, `orth1`, `gl`, `randperm` and `uniform(…)` are random values and advance `k`. `perm([…])` uses no generator and does not advance `k`.
+- The same script always produces the same numbers for the neox and grid families. modadd training with more than one thread is not bitwise reproducible (§4.4).
 
 ### 3.4 Operation catalogue
 
-Each row names the WSL call, the models it is valid for, and the reference function it must call. `i` and `j` are resolved layer indices (§3.5), `h` is a head index. An op used with the wrong model family gives `E_MODEL`. Bad argument types or values give `E_BAD_ARG`.
+Each row names the WSL call and the reference function it must call. `i` and `j` are resolved layer indices (§3.5), and `h` is a head index.
+
+**Which ops a claim may use** (top-level ops):
+
+| Claim | Family | Top-level ops |
+|---|---|---|
+| `gauge`, `reparam`, `approx`, `edit` | neox | `fold_ln`, `center_writers`, `ln_to_rms`, `rotate`, `scale`, `permute`, `vo`, `qk`, `rope_pairs`, `delete`, `swap`, `gridop`, and assignments `L[i] := …` |
+| `train` | modadd | `modadd` |
+| `path` | modadd | `lerp`, `add`, `scale`, `cosine` |
+| `solve` | grid | `prim`, `chain`, `compile`, `golf` |
+
+**Helpers** appear only as arguments:
+
+- `block`, `perm`, `uniform`, `grokfast`, `at`, `ckpt`, `diff`;
+- the layer expressions `lerp`, `neg_writers`, `neg` and `align`;
+- `prim` inside `chain`, and `scale` inside `at`.
+
+The names `lerp`, `scale` and `prim` are both top-level ops and helpers; their position decides which.
+
+**Argument rules.**
+
+- In the signatures below, a parameter written `name=…` is keyword-only, also when it is required (`phis=`, `t=`, `c=`). Every other parameter is positional-only.
+- `E_BAD_ARG` is given for:
+  - a missing required argument;
+  - an extra positional argument;
+  - an unknown or repeated keyword;
+  - a positional argument after a keyword argument;
+  - an argument of the wrong type or value.
+- `chain` takes one or more positional `prim(…)` arguments.
+- A parameter shown with a value has that default. `phis`, `t` and `c` have no default.
+
+**Error code for a name.** A name is checked against the claim's top-level ops (or, for an argument, against what the parameter expects), in this order:
+
+1. It fits → OK.
+2. A helper or top-level op of the **same** family in the wrong place → `E_BAD_ARG`. Examples: `edit lerp(L[2], L[4], 0.5)` (a layer expression at top level), and `path modadd(run=A)`.
+3. A top-level op or helper of **another** family → `E_MODEL`.
+4. Anything else → `E_UNKNOWN_OP`.
 
 **Family `neox`** (models `neox-tiny`, `pythia-14m`). State = `(W, norm_kind)`; it starts as `(W0, 'ln')`.
 
@@ -238,12 +344,12 @@ Each row names the WSL call, the models it is valid for, and the reference funct
 | `rotate(L[i].mlp, Q)` | `Q` = `orth` of size `d_mlp` | `rotate_mlp(cfg, W, i, Q)` | depends |
 | `permute(L[i].heads, π)` | `π` of size `n_heads` | `perm_heads(cfg, W, i, list(π))` | depends |
 | `vo(L[i].H[h], N)` | `N` ∈ {`gl`, `orth`} of size `dh` | `vo_gauge(cfg, W, i, h, N)` | depends |
-| `qk(L[i].H[h], A, dims=pass)` | `dims` ∈ {`pass`, `all`}. `pass` = `torch.arange(rd, dh)` (the non-rotary dims), `all` = `torch.arange(0, dh)`. `A` ∈ {`gl`, `orth`} of size `len(dims)`. | `qk_gauge(cfg, W, i, h, A, dims)` | depends |
+| `qk(L[i].H[h], A, dims=pass)` | `dims` ∈ {`pass`, `all`}, default `pass`. `pass` = `torch.arange(rd, dh)` (the non-rotary dims), `all` = `torch.arange(0, dh)`. `A` ∈ {`gl`, `orth`} of size `len(dims)`. | `qk_gauge(cfg, W, i, h, A, dims)` | depends |
 | `rope_pairs(L[i].H[h], phis=[…], scale=1.0)` | `phis`: exactly `rd/2` numbers (radians) | `rope_pairs(cfg, W, i, h, phis, scale)` | depends |
 | `delete(L[i])` | – | `zero_writers(W, [i])` | edit |
 | `swap(L[i], L[j])` | – | `A, B = get_layer(W,i), get_layer(W,j); W = set_layer(set_layer(W, i, B), j, A)` | edit |
 | `L[i] := E` | `E` is a layer expression (below) | `W = set_layer(W, i, eval(E))` | depends |
-| `gridop(P, block("NAME", r0, r1, c0, c1))` | `P` = a primitive name from §6.3. `NAME` = an existing 2-D parameter. `0 ≤ r0 < r1 ≤ rows`, `0 ≤ c0 < c1 ≤ cols`. | `gridop_block(W, P, NAME, r0, r1, c0, c1, TORCH_PRIMITIVES[P])` | edit |
+| `gridop(P, block("NAME", r0, r1, c0, c1))` | `P` = a primitive name from §6.3. `NAME` = a 2-D parameter of the unedited model (§3.11). Integer bounds with `0 ≤ r0 < r1 ≤ rows` and `0 ≤ c0 < c1 ≤ cols`. | `gridop_block(W, P, NAME, r0, r1, c0, c1)` (uses `TORCH_PRIMITIVES[P]` from Appendix A) | edit |
 
 **Layer expressions** (evaluated on the **current** pipeline state, before the assignment):
 
@@ -257,26 +363,13 @@ Each row names the WSL call, the models it is valid for, and the reference funct
 
 `swap` exists because `L[2] := L[3]; L[3] := L[2]` sets both layers to the old layer 3: the second assignment reads the already updated state.
 
-`TORCH_PRIMITIVES` mirror §6.3 on 2-D torch tensors:
-
-| Name | Torch form |
-|---|---|
-| `identity` | `b` |
-| `rot90` | `torch.rot90(b, -1, (0, 1))` |
-| `rot180` | `torch.rot90(b, 2, (0, 1))` |
-| `rot270` | `torch.rot90(b, 1, (0, 1))` |
-| `hmirror` | `b.flip(0)` |
-| `vmirror` | `b.flip(1)` |
-| `dmirror` | `b.T` |
-| `cmirror` | `torch.rot90(b, 2, (0, 1)).T` |
-
-`rot90`, `rot270`, `dmirror` and `cmirror` need a square block; otherwise `E_SHAPE`.
+`TORCH_PRIMITIVES` and `SQUARE_ONLY` are defined in Appendix A, with the semantics of §6.3 on 2-D torch tensors. `rot90`, `rot270`, `dmirror` and `cmirror` (`SQUARE_ONLY`) need a square block. `validate` (§3.11) reports `E_SHAPE` before execution.
 
 **Family `modadd`** (model `modadd`). These statements create or read **runs** (§4.4).
 
 | WSL | Arguments | Effect |
 |---|---|---|
-| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | `filter` = `none` or `grokfast(alpha, lamb)`. `intervene` = list of `at(STEP, scale(C))`. `save` = list of steps. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**. |
+| `modadd(run=NAME, p=97, frac=0.5, steps=3000, seed=0, lr=0.001, wd=1.0, filter=none, save=[], intervene=[])` | All arguments are keyword arguments. Integers: `p`, `steps`, `seed`, every entry of `save`, every `STEP`. Numbers: `frac`, `lr`, `wd`, `alpha`, `lamb`, `C`. `filter` = the bare identifier `none`, or `grokfast(alpha, lamb)`. `intervene` = a list of `at(STEP, scale(C))`. `save` = a list of steps. `run` = a non-reserved identifier. | Only valid with claim `train`. Calls `train(p, frac, steps, seed, lr, wd, filt, interventions, save_steps, eval_every=50, threads=…)` from Appendix B, then stores the run. `filt` is `None` or `('grokfast', alpha, lamb)`; `interventions` = `[(STEP, 'scale', C), …]`. Checkpoints are saved for the `save` steps **and always for step 0 and the final step**: pass `save_steps = sorted(set(save) | {0, steps})`. Wire `on_eval` and `should_stop` to the callbacks of `run_script` (§5.5). |
 | `ckpt(NAME, STEP)` | – | A parameter dict (state_dict) of a stored run. Unknown run → `E_MISSING_RUN`; step not saved → `E_MISSING_RUN`. |
 | `diff(X, Y)` | `X`, `Y` are `ckpt(...)` | Per-key `X − Y`. |
 | `lerp(X, Y, t=RANGE)` | – | `path`: for each `t`, evaluate `(1−t)·X + t·Y`. |
@@ -284,7 +377,9 @@ Each row names the WSL call, the models it is valid for, and the reference funct
 | `scale(X, c=RANGE)` | `X` = `ckpt` | `path`: for each `c`, evaluate `c·X`. |
 | `cosine(A, B)` | `A`, `B` ∈ {`ckpt`, `diff`} | `path`: cosine of the two flattened parameter vectors (concatenated in sorted key order), plus both norms. |
 
-"Evaluate" means `eval_state(sd, p, frac)` from Appendix B. It uses the `p` and `frac` of the run named by the first `ckpt` in the expression.
+- "Evaluate" means `eval_state(sd, p, frac)` from Appendix B. It uses the `p` and `frac` of the run named by the first `ckpt` in the expression.
+- All modadd arithmetic (`diff`, `lerp`, `add`, `scale`, `cosine`) is done on the float32 checkpoint tensors, key by key, over the keys of the first checkpoint.
+- `cosine` concatenates the flattened tensors in sorted key order and reports Python floats.
 
 **Family `grid`** (model `grid:taskNNN`). Only valid with claim `solve`.
 
@@ -295,12 +390,15 @@ Each row names the WSL call, the models it is valid for, and the reference funct
 | `compile(NAME, size=fixed, from=all)` | Compile `NAME` into a permutation network (§6.5) and run the network on each input. `size` ∈ {`fixed`, `gated`}. `from` ∈ {`all`, `train`}: which examples' input sizes the compiler may see (`all` = train + test + arc-gen, `train` = the `train` split only). |
 | `golf()` | Run the task's Code Golf solution (§6.4). |
 
-### 3.5 Target resolution
+### 3.5 Target resolution (checked statically by `validate`, §3.11)
 
 - `L[i]` must satisfy `0 ≤ i < n_layers`; otherwise `E_TARGET`, for example `E_TARGET layer 7 out of range (pythia-14m has L0..L5)`.
 - `H[h]` must satisfy `0 ≤ h < n_heads` (`E_TARGET`).
 - `mid ± k` is computed first, then range-checked.
-- `block("NAME", …)`: an unknown `NAME` or a tensor that is not 2-D gives `E_TARGET`.
+- The entries of `layers=[…]` are range-checked like `L[i]` (`E_TARGET`).
+- `block` bounds: `r0 ≥ r1` or `c0 ≥ c1` gives `E_BAD_ARG`.
+- `block("NAME", …)`: a `NAME` that is not a parameter of the unedited model (§3.11 `param_shapes`), or a tensor that is not 2-D, gives `E_TARGET`. Bounds outside the tensor give `E_TARGET`.
+- **Layer identity.** Two layer references are the same layer if their resolved indices are equal. For pythia-14m, `L[mid]` and `L3` are the same layer.
 
 ### 3.6 Statement semantics
 
@@ -335,7 +433,9 @@ Any exception during a statement gives status `ERROR`, with `error = {"code": �
 
 ### 3.8 Static hints (editor support; run by `check`, by the parser endpoint, and before execution)
 
-Hints are **warnings**, never errors. They predict a likely `REFUTED` and say how to fix the statement. Implement exactly these rules for family `neox`. The models' activation is GELU, the norm is LayerNorm, and both have RoPE.
+Hints are **warnings**, never errors. They predict a likely `REFUTED` and say how to fix the statement. Implement exactly these rules, and apply them only to statements whose model is `neox-tiny` or `pythia-14m`. Both models use GELU, LayerNorm and RoPE.
+
+`hints(statements)` receives statements that already carry their model (from the directive in force) and resolved layer indices. So "different layers" means different resolved indices, and a `qk(...)` without `dims` counts as `dims=pass`.
 
 | Code | Condition (on the parsed statement) | Message |
 |---|---|---|
@@ -346,17 +446,23 @@ Hints are **warnings**, never errors. They predict a likely `REFUTED` and say ho
 | `H_RESID_PARTIAL` | claim `gauge`, `rotate(resid, …)` with `layers` not `all`, or `embed=false`, or `unembed=false` | `A residual rotation is a symmetry only if it is applied to every reader and writer, the embedding and the unembedding.` |
 | `H_ROPE_QK` | claim `gauge`, `qk(…, dims=all)` | `RoPE breaks GL symmetry on the rotary dims. Use dims=pass, or rope_pairs(...) for the rotary dims.` |
 | `H_RMS_ORDER` | `ln_to_rms()` appears in a pipeline without an earlier `center_writers()` | `ln_to_rms() is exact only after fold_ln(); center_writers().` |
-| `H_LERP_ALIGN` | `lerp(X, Y, t)` where `X` and `Y` are different layers and neither is wrapped in `align(...)` | `Mixing two layers without align() depends on the permutation gauge.` |
+| `H_LERP_ALIGN` | `lerp(X, Y, t)` where `X` and `Y` are both plain layer references (`L[i]` or `Li`) with different resolved indices | `Mixing two layers without align() depends on the permutation gauge.` |
 | `H_EDIT_GAUGE` | claim `edit` and every op in the pipeline is one of `permute(...)`, `vo(...)`, `qk(…, dims=pass)`, `rope_pairs(...)`, `fold_ln()`, `center_writers()` | `Every op here is a known symmetry: expect W_NOOP.` |
 
-Each hint is reported as `{"code", "line", "col", "message"}`, where `col` is the column of the op that triggered it (1-based).
+Each hint is reported as `{"code", "line", "col", "message"}`.
+
+- `col` is the 1-based column of the first op in the pipeline that matches the condition.
+- For `H_EDIT_GAUGE`, `col` is the column of the first op of the pipeline.
+- A statement can carry several hints; report them in the table order above.
+- `hints` skips statements that have a validation error.
+- In the messages, `L[i]` is replaced by the resolved layer, for example `Use permute(L[3].mlp, randperm), …`.
 
 ### 3.9 Error codes
 
 | Code | Raised when |
 |---|---|
 | `E_SYNTAX` | Lexer or parser error; give the line, the column and the expected token(s). |
-| `E_MODEL` | No `model` directive yet, an unknown model, or an op or claim not valid for the model family. |
+| `E_MODEL` | The statement comes before the first `model` directive, the model name is unknown, or an op or claim is not valid for the model family. |
 | `E_LABEL` | Duplicate label. |
 | `E_UNKNOWN_OP` | Unknown call name. |
 | `E_BAD_ARG` | Wrong number, type or value of arguments. |
@@ -370,14 +476,78 @@ The parser should recover at the next line and report all syntax errors, not onl
 
 ### 3.10 Printer
 
-`printer.py` turns an AST back into canonical text:
+`printer.py` has one function, `print_statement(stmt, with_label: bool) -> str`, that produces canonical text:
 
-- one space after commas and around `:=` and `->`;
-- `L[i]` with brackets;
-- `H[h]` with brackets;
-- numbers via `repr(float)`, or `str(int)` for integers.
+- `[LABEL: ]CLAIM OP; OP; …`, with `"; "` between ops. The label prefix appears only if `with_label` is true and the statement has a label.
+- `approx` is always printed with its tolerance: `approx(0.05)`.
+- **Calls** are printed as `name(a, b, k=v)`: `", "` between arguments, no spaces around `=`. Keyword arguments appear in source order. Arguments left at their default are not added.
+- Lists are printed as `[a, b]`. Ranges are printed as `[a:b:s]`, with no spaces.
+- **Numbers:** an `int` as `str(i)`, a `float` as `repr(f)`. So `2` stays `2`, `0.5` stays `0.5`, and `-1.1` stays `-1.1`.
+- Strings use double quotes, escaping `\` and `"`. Booleans are printed as `true` and `false`.
+- **Layers** are always printed with brackets: `L[3]`, `L[mid]`, `L[mid+1]`, `L[mid-1]`, with no spaces inside the brackets. Heads are printed as `.H[0]`.
+- Assignments are printed as `L[i] := EXPR`, and align as `align(X -> Y)`.
 
-`parse(print(parse(s)))` must equal `parse(s)` for every statement in Appendix D.
+A verdict's `source` (§5.1) is `print_statement(stmt, with_label=False)`.
+
+**Round trip.** For every statement in Appendix D, and in the parsable blocks of E.5 (not the deliberately broken reply), `parse(print_statement(stmt, with_label=True))` must give exactly one statement whose AST equals `stmt`.
+
+- The comparison covers the label (`None` when absent), claim, tolerance, ops and arguments.
+- It excludes source positions (`line`, `col`) and context (`model`, `seed`, resolved indices).
+
+### 3.11 Static validation (torch-free)
+
+`validate(statements) -> list[error]` checks a parsed script without loading any model. It uses only `registry.SHAPES` and `registry.param_shapes`. It runs:
+
+- in `wsbench check`;
+- in `/api/parse`;
+- in AT1.2;
+- before execution: a statement with a validation error is not executed, and gets status `ERROR` with that error.
+
+**At most one error per statement:** the first failing check, in this order.
+
+| Order | Check | Code |
+|---|---|---|
+| 1 | label is reserved | `E_BAD_ARG` |
+| 2 | label is a duplicate | `E_LABEL` |
+| 3 | no valid model in force | `E_MODEL` |
+| 4 | claim not valid for the family | `E_MODEL` |
+| 5 | `train`, `path` or `solve` with more than one op | `E_BAD_ARG` |
+| 6 | names, op by op from left to right (§3.4 "Error code for a name") | `E_BAD_ARG` / `E_MODEL` / `E_UNKNOWN_OP` |
+| 7 | arguments | `E_BAD_ARG` |
+| 8 | targets | `E_TARGET` |
+| 9 | shapes | `E_SHAPE` |
+
+Each error is `{"line", "col", "code", "message"}`, where `col` is:
+
+- for label errors, the column of the label;
+- for checks 3–5, the column of the claim;
+- otherwise, the column of the offending op or argument.
+
+`E_MISSING_RUN`, `E_DOWNLOAD` and `E_RUNTIME` can only occur during execution.
+
+```python
+SHAPES = {   # in wsbench/models/registry.py, no torch import
+    'neox-tiny':  dict(family='neox', n_layers=4, n_heads=2, d=16,  d_mlp=64,  dh=8,  rd=4, vocab=64),
+    'pythia-14m': dict(family='neox', n_layers=6, n_heads=4, d=128, d_mlp=512, dh=32, rd=8, vocab=50304),
+    'modadd':     dict(family='modadd'),
+}            # and every 'grid:taskNNN' (NNN = 001..400) has dict(family='grid')
+
+def param_shapes(S):   # parameter name -> shape of the unedited neox model (76 tensors for pythia-14m)
+    d, m, V = S['d'], S['d_mlp'], S['vocab']
+    out = {'gpt_neox.embed_in.weight': (V, d), 'embed_out.weight': (V, d),
+           'gpt_neox.final_layer_norm.weight': (d,), 'gpt_neox.final_layer_norm.bias': (d,)}
+    for i in range(S['n_layers']):
+        p = f'gpt_neox.layers.{i}.'
+        for ln in ('input_layernorm', 'post_attention_layernorm'):
+            out[p + ln + '.weight'] = (d,); out[p + ln + '.bias'] = (d,)
+        out[p + 'attention.query_key_value.weight'] = (3 * d, d); out[p + 'attention.query_key_value.bias'] = (3 * d,)
+        out[p + 'attention.dense.weight'] = (d, d);               out[p + 'attention.dense.bias'] = (d,)
+        out[p + 'mlp.dense_h_to_4h.weight'] = (m, d);             out[p + 'mlp.dense_h_to_4h.bias'] = (m,)
+        out[p + 'mlp.dense_4h_to_h.weight'] = (d, m);             out[p + 'mlp.dense_4h_to_h.bias'] = (d,)
+    return out
+```
+
+When a model is loaded, assert that its config agrees with `SHAPES` and that its tensor shapes equal `param_shapes`. This catches a wrong download early.
 
 ---
 
@@ -387,7 +557,7 @@ The parser should recover at the next line and report all syntax errors, not onl
 
 - Weights: `make_tiny(seed=0)` from Appendix A.
 - Config: `TINY_CFG`.
-- Probe ids: `TINY_IDS`.
+- Probe: `ids = torch.tensor([TINY_IDS])`, a LongTensor of shape `[1, 32]`.
 - No download.
 
 ### 4.2 `pythia-14m`
@@ -412,7 +582,8 @@ Loading:
 
 - `cfg = cfg_from_hf_config(json.load(config.json))`.
 - `W0 = {k: v.to(torch.float64) for k, v in safetensors.torch.load_file(model.safetensors).items()}`. There are 76 tensors, stored as fp16.
-- Probe: `ids = torch.tensor([Tokenizer.from_file(tokenizer.json).encode(PROBE_TEXT).ids])`, with `PROBE_TEXT` from Appendix D.1. That gives exactly 149 tokens.
+- Probe: `ids = torch.tensor([Tokenizer.from_file(tokenizer.json).encode(PROBE_TEXT).ids])`. That gives exactly 149 tokens.
+- `PROBE_TEXT` is the Python string literal of Appendix D.1, defined in `wsbench/models/registry.py`. Its `\n` escapes are real newline characters (the literal is copied as Python source).
 - Facts: d=128, 6 layers, 4 heads of 32, d_mlp 512, rotary dims per head `rd` = 8, vocab 50,304.
 
 ### 4.3 Caching
@@ -428,7 +599,7 @@ Loading:
   - `step{S}.pt`: one per saved checkpoint, written with `torch.save(state_dict)`.
 - Load checkpoints with `torch.load(path, map_location='cpu', weights_only=True)`.
 - **Run names are global.** Training a run whose name already exists overwrites it, with warning `W_OVERWRITE`.
-- **Threads:** `threads = max(1, os.cpu_count() - 1)`.
+- **Threads:** `threads = max(1, os.cpu_count() - 1)`. Appendix F.5 was measured with 2 threads. The thread count changes only the wall time and floating-point summation order, so step counts can differ slightly. With more than one thread, modadd training is not bitwise reproducible even between two runs on the same machine; only one thread is. The acceptance bands allow for this, and no test may assert modadd determinism.
 
 ---
 
@@ -438,7 +609,7 @@ Loading:
 
 ```json
 {
-  "line": 7,
+  "line": 4,
   "label": "R1",
   "source": "gauge fold_ln(); rotate(resid, orth1)",
   "model": "pythia-14m",
@@ -450,13 +621,29 @@ Loading:
   "hints": [],
   "warnings": [],
   "error": null,
-  "elapsed_ms": 142
+  "elapsed_ms": 142,
+  "predicted": null,
+  "agree": null
 }
 ```
 
 Fields:
 
-- `source`: the canonical printer output (§3.10).
+- `source`: `print_statement(stmt, with_label=False)` (§3.10); the label is in `label`.
+- `predicted`, `agree`: `null` except in runs created by the assist (§8.2).
+- `label`: the explicit label, else `"line<N>"`.
+- **Verdicts for lines without a statement.** A line with a syntax error, and a bad directive line, also get a verdict:
+
+  | Field | Value |
+  |---|---|
+  | `label` | the explicit label if the line starts with `IDENT :`, else `"line<N>"` |
+  | `claim`, `tol`, `measured` | `null` |
+  | `source` | the line without its comment, stripped |
+  | `model` | the model in force, or `null` |
+  | `metrics` | `{}` |
+  | `hints` | `[]` |
+  | `status` | `ERROR` |
+  | `error` | the line's first error |
 - `tol`: a number, only for `approx`.
 - `status`: one of `CONFIRMED`, `REFUTED`, `MEASURED`, `ERROR`, `PENDING`, `RUNNING`.
 - `measured`: `exact`, `near`, `edit`, or `null` when not applicable.
@@ -480,13 +667,15 @@ Fields:
 
 - `loss` is `next_token_loss(logits, ids)` from Appendix A.
 - `param_dist` = `sqrt(Σ_k ‖W1[k] − W0[k]‖²)` over keys present in both.
-- `changed_tensors`: every key whose tensor changed by any amount, with `rel_change = ‖W1[k] − W0[k]‖ / max(1e-12, ‖W0[k]‖)`, sorted by `rel_change` descending.
+- `changed_tensors`: every key whose tensor changed by any amount, with `rel_change = ‖W1[k] − W0[k]‖ / max(1e-12, ‖W0[k]‖)`, sorted by `rel_change` descending. Keys present only in W1 (for example `embed_out.bias` after `fold_ln`) come after all other keys, with `rel_change` = `null`.
 - `new_params` / `removed_params`: keys present in only one of the two states.
-- **`control` (only for claim `edit`, and only if `param_dist > 0`):**
-  - Let `mask[k]` = the entries where `W1[k] != W0[k]` (exact inequality), and `δ = W1 − W0`.
-  - Draw `ε[k] ~ N(0, 1)` with `torch.Generator().manual_seed(statement_seed + 999_983)`, iterating keys in **sorted** order. `statement_seed` = the seed formula of §3.3 with `k = 0`.
-  - `Wc[k] = W0[k] + mask[k] · ε[k] · (‖δ‖ / ‖mask·ε‖)`, where both norms are over all keys.
-  - Report `{"dloss": dloss_control, "max_abs_dlogits": …, "ratio": dloss / dloss_control}`. Set `ratio` to `null` if `|dloss_control| < 1e-12`.
+- **`control` (only for claim `edit`, and only if `param_dist > 0`)**: a random change of the same size in the same entries.
+  - **Keys:** `K = sorted(keys(W0) ∪ keys(W1))`. For a key missing from W0, use zeros of W1's shape. For a key missing from W1, use zeros of W0's shape. No Phase 1 op removes keys.
+  - **Mask and change:** `mask[k] = (W1[k] != W0[k])` (exact inequality), and `δ[k] = W1[k] − W0[k]`.
+  - **Noise:** create one generator, `g = torch.Generator().manual_seed(statement_seed + 999_983)`, where `statement_seed` is the formula of §3.3 with `k = 0`. Then draw `ε[k] = torch.randn(shape_k, generator=g, dtype=torch.float64)` for **every** key in `K`, in that order, masked or not.
+  - **Control state:** `Wc[k] = W0[k] + mask[k] · ε[k] · (‖δ‖ / ‖mask·ε‖)`, where both norms run over all keys together.
+  - **Evaluation:** run `Wc` with **W1's** `norm_kind`.
+  - **Report:** `{"dloss": dloss_control, "max_abs_dlogits": …, "ratio": dloss / dloss_control}`. Set `ratio` to `null` if `|dloss_control| < 1e-12`.
 
 ### 5.3 Metrics for family `modadd`
 
@@ -505,21 +694,48 @@ Fields:
 
 - `by_split` holds `[passed, total]` per split.
 - `got` may be `null` (not decodable) or an error string.
-- `compiled` is present only for `compile(...)`. `nnz` = the number of non-negative entries summed over all compiled tables.
+- `compiled` is present only for `compile(...)`. `nnz` = the number of entries `≥ 0` in the `src` arrays, summed over all compiled tables.
 - For `golf()`, add `"bytes_raw"` and `"bytes_submitted"` (§6.1).
+- `first_failure` is the first failing example in the order train, test, arc-gen. `index` is its 0-based position within its split: call `check()` (Appendix C) once per split. It is `null` if every example passes.
+- `compiled.sizes` lists the `[h, w]` input shapes in the key order of `CompiledNet.table`:
+  - for `gated`, the distinct input shapes of the chosen examples, in first-seen order;
+  - for `fixed`, the single shape of the first chosen example.
 
 ### 5.5 Script execution as a job
 
-- `POST /api/run` creates a **script run** with a new `run_id` (uuid4 hex).
-- It executes the statements sequentially in one background worker thread. A process-wide FIFO queue allows only one script at a time.
+- `POST /api/run` creates a **script run** with a new `run_id` (uuid4 hex). One background worker thread executes runs one at a time, from a process-wide FIFO queue.
 - `GET /api/runs/{run_id}` returns:
   ```json
-  {"run_id": "...", "status": "queued|running|done", "verdicts": [...], "current_line": 12}
+  {"run_id": "...", "status": "queued|running|done|cancelled", "verdicts": [...], "current_line": 12}
   ```
-  Statements not yet started are listed with status `PENDING`. A `train` statement in progress is `RUNNING`, and its `metrics.curves` grows after every evaluation (every 50 steps).
-- **Cancelling:** `POST /api/runs/{run_id}/cancel` sets a flag. `train` checks it through `should_stop`. A cancelled statement gets `ERROR` with code `E_RUNTIME` and message `cancelled`; later statements get `ERROR` / `cancelled` without running.
-- **Retention:** keep the last 50 script runs in memory. The worker must catch everything, so the server never dies on a bad script.
-- **Python API (keep stable, Phase 2 builds on it):** `wsbench.exec.executor.run_script(script: str, on_update=None, should_stop=None) -> list[dict]` runs a script synchronously and returns the verdicts (§5.1). It calls `on_update(verdicts_so_far)` after each statement and after each training evaluation. The server's worker thread is a thin wrapper around it. `wsbench.lang.parser.parse(script) -> (statements, errors)` and `wsbench.lang.hints.hints(statements) -> list` are likewise public.
+  `current_line` is the line of the verdict with status `RUNNING`, or `null` when the run is queued, done or cancelled.
+- **Python API (keep stable, Phase 2 builds on it):** `wsbench.exec.executor.run_script(script: str, on_update=None, should_stop=None, on_state=None, predictions=None) -> list[dict]` runs a script synchronously and returns the final verdict list.
+  - **Before executing anything**, it builds the full verdict list (§5.1), in line order: one entry per statement, per syntax-error line and per bad directive line.
+    - Statements with a validation error are `ERROR` at once.
+    - The others start as `PENDING`.
+  - **Execution:** each remaining statement in turn becomes `RUNNING` (in every family), and then gets its final status.
+  - `on_update(verdicts)` always receives the **full** list. It is called:
+    - once at the start;
+    - when a statement starts;
+    - after each training evaluation, every 50 steps (`metrics.curves` grows);
+    - when a statement ends.
+  - `should_stop()` is polled before each statement, and inside training at every step (`train`'s `should_stop`).
+  - `on_state(label, line, W1, norm_kind)` is called after each executed `neox` statement. The server uses it to keep the changed tensors for `/api/tensor` (§7.1).
+  - `predictions` is an optional dict `label → predict`, used only by the assist (§8.2).
+  - The server's worker thread is a thin wrapper around `run_script`.
+  - These are public too:
+    - `wsbench.lang.parser.parse(script) -> (statements, errors)`;
+    - `wsbench.lang.validate.validate(statements) -> list`;
+    - `wsbench.lang.hints.hints(statements) -> list`.
+- **Cancelling:** `POST /api/runs/{run_id}/cancel` makes `should_stop()` return true.
+  - The statement in progress gets `ERROR` with code `E_RUNTIME` and message `cancelled`.
+  - A cancelled `train` keeps its partial `metrics.curves`. It writes nothing to `WSB_HOME/runs/`, and an existing run with the same name stays untouched.
+  - Later statements get `ERROR` / `cancelled` without running.
+  - The run status becomes `cancelled`.
+  - On a queued run, cancelling marks every statement `ERROR` / `cancelled` before it starts.
+  - On a run that is already done or cancelled, cancelling has no effect.
+  - The answer is always `{"ok": true}`; an unknown `run_id` gives 404.
+- **Retention:** keep the last 50 script runs in memory. The worker must catch every exception, so the server never dies on a bad script.
 
 ---
 
@@ -540,6 +756,8 @@ Fields:
 4. Reject members whose normalised path is absolute or contains `..`.
 5. Verify the counts.
 
+The task directory is then `WSB_HOME/golf/google-code-golf-2025/`. If the environment variable `WSB_GOLF_DIR` is set, it replaces exactly that directory: a flat directory of `taskNNN.json` files. Solutions and `id_map.csv` are then treated as missing.
+
 The files:
 
 - **Task file:** `{"train": [...], "test": [...], "arc-gen": [...]}`. Each example is `{"input": grid, "output": grid}`, and a grid is a list of rows of ints 0–9. Example: task087 has 4 / 1 / 261 examples.
@@ -559,6 +777,13 @@ The files:
 - `bytes_raw` / `bytes_submitted` may be `null` if the file is missing.
 - `single_primitive` is the name of the first primitive in §6.3 table order (excluding `identity`) that solves **all** examples, otherwise `null`.
 - Compute the index once after the fetch and cache it in `WSB_HOME/golf/index.json`.
+- **With `WSB_GOLF_DIR` set:**
+  - the index is built in memory only (no cache file);
+  - it lists only the task files present;
+  - `original_id`, `bytes_raw`, `bytes_submitted` and `solution_raw` are `null`;
+  - `golf()` gives `E_DOWNLOAD`.
+- **With no ARC data at all**, every `/api/arc/*` endpoint returns HTTP 400 `{"error": {"code": "E_DOWNLOAD", "message": "run: wsbench fetch arc"}}`, and `solve` statements give `E_DOWNLOAD`.
+- `original_id` may be `null`.
 - Expected: exactly 7 tasks have a single primitive (Appendix F.4).
 
 ### 6.3 Grid primitives
@@ -634,21 +859,36 @@ The implementation is in Appendix C.
 `GET /api/tensor?run_id=…&line=…&name=…&which=before|after|diff&max=256`
 
 - `before` = W0, `after` = W1, `diff` = W1 − W0.
-- **1-D tensors** are shown as a `1 × n` strip.
+- **1-D tensors** are shown as a `1 × n` strip: `shape` is the true shape `[n]`, and `shown` is `[1, n']`.
+- **Keys present only in W1** (e.g. `embed_out.bias`): `before` is zeros of W1's shape, and `diff` = W1.
 - **Downsampling:** if a dimension is larger than `max`, average non-overlapping blocks of `ceil(dim / max)` along that dimension. A partial last block averages what it has.
 - **Response:**
   ```json
   {"name": ..., "shape": [r, c], "shown": [r', c'], "block": [br, bc], "scale": s, "data": [[...]]}
   ```
   - `scale` = `max|before|` for `before` and `after` (the same scale for both), and `max|diff|` for `diff`.
+  - If that maximum is 0, use `max|after|`; if that is also 0, use 1.0.
   - `data` holds floats rounded to 6 significant digits.
 - **Colour:** diverging around 0. `v/scale` is clamped to `[−1, 1]`; −1 → `#2166ac`, 0 → `#f7f7f7`, +1 → `#b2182b`, with linear RGB interpolation in between. Show `scale` and the block size under the image.
-- **Store state:** the executor must keep `W1` for every `neox` statement of the last 5 script runs (memory: pythia-14m is about 110 MB in float64 per state). For older runs, return `410` with `{"error": "state expired; re-run the script"}`.
+- **Store state.** For every `neox` statement of the last 5 script runs, the server keeps only:
+  - the tensors listed in its `changed_tensors` (new keys included);
+  - its `norm_kind`.
+
+  Unchanged keys are served from W0. (A full float64 copy of pythia-14m is 112.5 MB, so full copies of a 28-statement run would need about 3 GB.)
+- **Errors** (all with the body `{"error": {"code", "message"}}`):
+
+  | Case | HTTP | Code |
+  |---|---|---|
+  | `run_id` not among the last 50 runs | 404 | `E_NOT_FOUND` |
+  | run among the last 50 but not the last 5 | 410 | `E_EXPIRED`, message `state expired; re-run the script` |
+  | `line` without a stored neox state, or `name` not a key of W0 or W1 | 404 | `E_NOT_FOUND` |
+  | invalid block bounds, a block over 30×30 for `view=arc`, or `view=arc` on a tensor that is not 2-D | 400 | `E_BAD_REQUEST` |
 
 ### 7.2 ARC view of a weight block
 
 For any 2-D block of at most 30×30 entries, the UI can switch to "ARC view". `GET /api/tensor?...&view=arc&r0=&r1=&c0=&c1=` returns `{"grid": [[0..9]], "quantiles": [q10, ..., q90]}`.
 
+- `quantiles` = `numpy.quantile(block_as_float64, [0.1, 0.2, …, 0.9])`, with numpy's default (linear) method.
 - The colour index is the **decile bin** of each value within the block: index `= #{q ∈ quantiles : value > q}`.
 - Render the grid with §6.6.
 - Show this legend text verbatim: `ARC view: colour = decile of the value inside this block (0 = lowest tenth, 9 = highest). Colours are bins, not categories.`
@@ -678,9 +918,13 @@ They are used for:
   - `Authorization: Bearer ${OPENROUTER_API_KEY}`
   - `Content-Type: application/json`
   - `X-Title: wsbench`
+- **Python signature:** `chat(role: str, model_id: str, system: str, messages: list[dict]) -> dict`.
+  - `role` is `translate`, `critic` or `alternatives`.
+  - `messages` holds the non-system turns (`user` / `assistant`), in order.
+  - The request's message list is `[{"role": "system", "content": system}] + messages`.
 - Body:
   ```json
-  {"model": MODEL_ID, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": USER}],
+  {"model": MODEL_ID, "messages": [{"role": "system", "content": SYSTEM}, ...messages],
    "max_tokens": 6000, "reasoning": {"effort": "low", "exclude": true}, "usage": {"include": true}}
   ```
   Send **no** `temperature`: none of the three models honours it.
@@ -691,7 +935,7 @@ They are used for:
    "prompt_tokens": int, "completion_tokens": int, "cost_usd": float, "error": str|null,
    "finish_reason": choices[0].finish_reason}
   ```
-  - `cost_usd` = `usage.cost` if present; otherwise `prompt_tokens · in + completion_tokens · out`, using the price table below.
+  - `cost_usd` = `usage.cost` if present; otherwise `(prompt_tokens · in + completion_tokens · out) / 1_000_000`, with `in` and `out` from the price table below (USD per 1M tokens).
   - HTTP ≠ 200, an empty text, or `finish_reason == "content_filter"` → `ok = false`, and `error` holds the reason (include the HTTP body, first 500 chars).
 
 **Models and roles** (defaults; the user can change them in the UI):
@@ -702,9 +946,9 @@ They are used for:
 | `critic` | `openai/gpt-6.2-sol` | 2 / 10 | Fastest (about 1 s to the first token); cheap. |
 | `alternatives` | `google/gemini-4-neon` | 3 / 15 | A third, independent view. |
 
-**Fable restriction.** The provider's input filter for `anthropic/claude-fable-5.2` has refused prompts that ask it to continue or rework other models' outputs. So never send Fable another model's output:
+**Fable restriction.** The provider's input filter for `anthropic/claude-fable-5.2` has refused prompts that ask it to continue or rework other models' outputs. The default roles therefore never send Fable another model's output. If the user assigns Fable to `critic` or `alternatives`:
 
-- if the user assigns Fable to `critic` or `alternatives`, show the warning `Fable may refuse prompts that contain other models' output.`;
+- show the warning `Fable may refuse prompts that contain other models' output.`;
 - send the request anyway;
 - report a refusal as `ok = false`.
 
@@ -727,36 +971,52 @@ They are used for:
    - User prompt = `Source text:\n<<<\n{text}\n>>>`.
    - From the reply, extract the first fenced block that starts with three backticks followed by `wsl` and ends with three backticks.
    - Remove every `model` directive from the block and prepend `model {MODEL}`. The user's choice of target model always wins.
-2. **Repair (at most once).** Parse the block. If there are errors, call the same model again with the same system prompt. The messages are:
-   - user = the original user prompt;
-   - assistant = its previous reply;
-   - user = `Your WSL did not parse. Errors:\n{one line per error: line N col C CODE message}\nReturn the corrected wsl block only.`
-
-   Parse again, then drop lines that still fail and keep their errors for display.
+2. **Check and repair (at most once).**
+   - Run `parse` and then `validate` on the script `model {MODEL}` + the block. Line numbers refer to this script.
+   - If there are errors, call the same model again with the same system prompt. The messages are:
+     - user = the original user prompt;
+     - assistant = its previous reply;
+     - user = `Your WSL did not parse. Errors:\n{one line per error: line N col C CODE message}\nReturn the corrected wsl block only.`
+   - Process the new reply as in step 1, check it again, and drop the statements and lines that still have errors.
+   - Every remaining error goes into `parse_errors` as `{"role", "line", "col", "code", "message"}`.
+   - "Valid" in steps 3 and 4 means: no parse error and no validation error under `model {MODEL}`.
 3. **Critic.**
    - System prompt = `CRITIC_SYSTEM` (Appendix E.3).
    - User prompt = `Model: {MODEL}\nStatements:\n` followed by the valid statements, numbered `1. …`, `2. …` in canonical form.
-   - Extract the first block fenced as json. Parse it as a list of objects `{"n": int, "predict": str, "reason": str, "fix": str}`. Accept the `predict` values `exact`, `near`, `edit`, `pass`, `fail`, `unknown`.
-   - If `fix` is non-empty and parses as a single valid statement, add it as an extra statement labelled `fix<n>`.
+   - Extract the first block fenced as json. Parse it as a list of objects `{"n": int, "predict": str, "reason": str, "fix": str}`. Accept the `predict` values `exact`, `near`, `edit`, `pass`, `fail` and `unknown`. Ignore entries with any other value or with an `n` out of range.
+   - A missing or malformed block gives no predictions and no fixes. Record it as one `parse_errors` entry: `{"role": "critic", "line": null, "col": null, "code": "E_SYNTAX", "message": …}`.
+   - A non-empty `fix` is checked as the script `model {MODEL}` + `fix`. If that gives exactly one valid statement, add it as an extra statement labelled `fix<n>`; otherwise record a `parse_errors` entry.
 4. **Alternatives.**
    - System prompt = `ALT_SYSTEM` (Appendix E.4).
    - User prompt = `Source text:\n<<<\n{text}\n>>>\nModel: {MODEL}\nStatements already proposed:\n{numbered statements}`.
-   - Extract the wsl block and keep at most 3 valid statements, labelled `alt1..alt3`.
+   - Extract the first wsl block, remove its `model` directives, and check it as `model {MODEL}` + the block.
+   - Keep at most 3 valid statements, labelled `alt1..alt3`.
 5. **Execute** (if `execute`). Build one script from:
    - the model directive;
    - the translator statements, labelled `t1..tN` (overwriting any labels the model gave);
    - the fixes;
    - the alternatives.
 
-   Run it as in §5.5.
+   Run it as in §5.5, with `predictions = {"t1": …, …}` (the critic's values for `t1..tN`).
 
-**Response:**
+**Response** (always HTTP 200, also when a role fails):
 
 ```json
 {"run_id": "...", "script": "...",
  "roles": {"translate": {...client result...}, "critic": {...}, "alternatives": {...}},
  "predictions": {"t1": "exact", ...}, "parse_errors": [...], "cost_usd": 0.0123}
 ```
+
+- `roles.translate` is the last translate call (the repair, if there was one).
+- `cost_usd` is the sum over all calls.
+- **Failure cases:**
+  - `execute=false`: `run_id` is `null`, and the script is not run.
+  - If translate fails (`ok = false`, for example `no-key` or a refusal), or its reply has no wsl block:
+    - `script` is just `model {MODEL}`;
+    - `roles.critic` and `roles.alternatives` are `null`;
+    - `run_id` is `null`;
+    - the reason is added to `parse_errors` with role `translate`.
+  - If the critic or the alternatives call fails, that role's result shows `ok = false`, and the pipeline continues without it.
 
 The UI then polls `/api/runs/{run_id}`.
 
@@ -765,9 +1025,15 @@ The UI then polls `/api/runs/{run_id}`.
 - for neox, `measured`;
 - for grid, `pass` if `CONFIRMED`, else `fail`.
 
-Mark it `agree`, `disagree` or `n/a`. This is the visible "synergy": the models predict, the machine measures, and the disagreements are where something is learned.
+The assist passes `predictions = {label: predict}` to `run_script`. The executor then writes two fields into each verdict of that run as soon as the statement has finished: `predicted` (the critic's value, or `null`) and `agree`. `agree` is:
 
-**Mock mode.** If the environment has `WSB_LLM=mock`, `openrouter.py` returns the canned replies of Appendix E.5 instead of calling the network, keyed by role. Cost is 0. All assist tests use mock mode, with target model `neox-tiny` so that they run offline. If the source text contains the marker `[[mock-syntax-error]]`, the first translate reply is the broken reply of E.5, and the repair call gets the normal translate reply.
+- `"n/a"` if there is no prediction, the prediction is `unknown`, the status is `ERROR`, or the family is `modadd`;
+- otherwise `"agree"` if the prediction equals the outcome above;
+- otherwise `"disagree"`.
+
+The UI reads these fields from `/api/runs/{run_id}`. This is the visible "synergy": the models predict, the machine measures, and the disagreements are where something is learned.
+
+**Mock mode.** If the environment has `WSB_LLM=mock`, `chat()` returns the canned replies of Appendix E.5 instead of calling the network, chosen by `role`. The broken translate reply is returned only if all of these hold: `role == "translate"`, `len(messages) == 1`, and `messages[0]["content"]` contains the marker below. Cost is 0. All assist tests except AT7.3 use mock mode, with target model `neox-tiny` so that they run offline. If the source text contains the marker `[[mock-syntax-error]]`, the first translate reply is the broken reply of E.5, and the repair call gets the normal translate reply.
 
 ---
 
@@ -784,11 +1050,16 @@ Mark it `agree`, `disagree` or `n/a`. This is the visible "synergy": the models 
 | `GET /api/tensor` | query, §7 | §7 |
 | `GET /api/arc/tasks` | – | §6.2 list |
 | `GET /api/arc/task/{task}` | – | `{"task", "original_id", "train", "test", "arc_gen_first20", "n_arcgen", "solution_raw": str or null, "bytes_raw", "bytes_submitted"}` |
-| `GET /api/arc/compiled` | `task`, `prim`, `size`, `from`, `shape` (e.g. `4x4`) | `{"src_grid": 30×30 list (the source cell index per output cell, −1 if empty), "P_preview": 300×300 floats (block mean of the dense P)}` |
+| `GET /api/arc/compiled` | `task`, `prim`, `size`, `from`, and optional `shape` (e.g. `4x4`) | Builds `CompiledNet(prim, chosen examples, size)` and returns `{"sizes": [[h, w], …], "shape": [h, w], "src_grid": 30×30 list (the source cell index per output cell, −1 if empty), "P_preview": 300×300 floats (block means of the dense P)}`. For `fixed`, `shape` is ignored and the one table is returned. For `gated`, the table for `shape` is returned (default: the first in `sizes`); a `shape` that is not a key gives 400 `E_BAD_REQUEST`. |
 | `POST /api/assist` | §8.2 | §8.2 |
 | `GET /` | – | `index.html` |
 
-Errors: HTTP 400 with `{"error": {"code", "message"}}` for bad requests, and 404 for an unknown run or task.
+**Errors:** every 4xx response has the body `{"error": {"code", "message"}}`.
+
+- 400 for bad requests. This includes FastAPI's request-validation errors: register a handler that maps `RequestValidationError` to 400 with code `E_BAD_REQUEST` instead of the default 422.
+- 404 with code `E_NOT_FOUND` for an unknown run or task.
+- 410 only as in §7.1.
+- §6.2 gives the 400 for missing ARC data.
 
 ---
 
@@ -843,7 +1114,7 @@ Errors: HTTP 400 with `{"error": {"code", "message"}}` for bad requests, and 404
   - `compile ▾` (primitive + size fixed/gated + from all/train).
 
   Each button runs a one-line script `model grid:taskNNN` / `solve …` and shows the verdict.
-- For `compile`, a panel shows `src_grid` as a 30×30 grid of numbers (small font), and `P_preview` as a heatmap.
+- For `compile`, a panel shows `src_grid` as a 30×30 grid of numbers (small font), and `P_preview` as a heatmap. For `gated`, a shape selector filled from `sizes` chooses the table.
 - A button `Open in editor` copies the generated script into Tab 1.
 
 ### Tab 3 "Assist"
@@ -879,8 +1150,8 @@ Run `pytest -q`. Network and live tests are opt-in: `pytest -m network` and `pyt
 
 ### M1 Language (no torch needed in these tests)
 
-- **AT1.1** Every statement in Appendix D parses without errors. `parse(print(parse(s))) == parse(s)` holds for each (compare ASTs).
-- **AT1.2** These inputs give exactly these error codes (line 1 is `model pythia-14m`, the statement is line 2):
+- **AT1.1** Every script in Appendix D parses with `errors == []`. For every statement `st` in `parse(s)[0]`, the round trip of §3.10 holds: `parse(print_statement(st, with_label=True))[0]` has exactly one statement, equal to `st` under the §3.10 comparison.
+- **AT1.2** For each row, `statements, errors = parse(script)` and `codes = [e.code for e in errors] + [e.code for e in validate(statements)]`. `codes` must equal the one-element list in the table. No download and no torch are needed (§3.11). Line 1 is `model pythia-14m`; the statement is line 2.
 
   | Input (line 2) | Code |
   |---|---|
@@ -901,16 +1172,16 @@ Run `pytest -q`. Network and live tests are opt-in: `pytest -m network` and `pyt
 ### M2 Executor on `neox-tiny` (offline)
 
 - **AT2.1** Base loss of `neox-tiny` = **5.9561** (±1e-4).
-- **AT2.2** Run the script of Appendix D.6 on `neox-tiny`. The statuses and measured classes must match Appendix F.1, column "tiny".
+- **AT2.2** Run the script of Appendix D.6 on `neox-tiny`. The statuses and measured classes must match Appendix F.3, and so must its deterministic numbers: `rel` within 0.1 % relative, `dloss` within ±0.0005.
 - **AT2.3** Determinism: running the same script twice gives identical `max_abs_dlogits` (bitwise).
 - **AT2.4** `W0` is unchanged after any run: compare a hash of every tensor before and after.
-- **AT2.5** An `edit` statement has a `control` object. A `gauge` statement has `control = null`.
+- **AT2.5** The `edit` statements of D.6 (T5, T18, T19; all with `param_dist > 0`) have a `control` object. The `gauge` statements have `control = null`.
 
 ### M3 `pythia-14m` (mark `network`; the download is 28 MB)
 
 - **AT3.1** `wsbench fetch pythia-14m` verifies the SHA-256 values. The probe has 149 tokens.
 - **AT3.2** Base loss **4.3177** (±1e-4); `max|ℓ0|` = 25.85 (±0.01).
-- **AT3.3** Run Appendix D.1 + D.2 + the `gridop` line of D.4. The results must match Appendix F.1/F.2 column "pythia-14m":
+- **AT3.3** Run Appendix D.1 + D.2 + the `gridop` line of D.4. The results must match Appendix F.1 and F.2 (including row `W1`):
   - statuses and classes exactly;
   - the deterministic `dloss` values within ±0.0005;
   - for `exact` rows, `rel ≤ 1e-9`.
@@ -924,11 +1195,11 @@ Run Appendix D.3. The checks:
   - `first["train_acc>=0.99"] ≤ 300`;
   - `800 ≤ first["test_acc>=0.9"] ≤ 2500`;
   - final test_acc ≥ 0.99.
-  - Reference: 150 / 1200; spike 150 / 1250.
-- **AT4.2 (run F, Grokfast):** `first["test_acc>=0.9"]` exists and is ≤ 2500. Report the speed-up `first_A / first_F` in the verdict; the reference is about 1.25×. Do **not** assert that F is faster: the effect is small and depends on the machine.
+  - Reference values on the reference machine: 150 / 1200 (Appendix F.5).
+- **AT4.2 (run F, Grokfast):** `first["test_acc>=0.9"]` exists and is ≤ 2500. The test prints the speed-up `first_A["test_acc>=0.9"] / first_F["test_acc>=0.9"]` and records it in `NOTES.md`; the reference is 1200 / 1000 = 1.2×. Do **not** assert that F is faster: the effect is small and depends on the machine.
 - **AT4.3 (path P1, lerp A@200 → A@2000):**
   - test_acc at t = 1.0 is ≥ 0.99;
-  - train_acc at t = 0.25 is < 0.95 (a barrier on the straight line; reference 0.81);
+  - train_acc at t = 0.25 is < 0.95 (a barrier on the straight line; reference 0.80);
   - test_acc at t = 0.0 is in [0.40, 0.60] (memorised; reference 0.49).
 - **AT4.4 (path P2, transplant):** test_acc at t = 1.0 is < 0.2 (reference 0.02).
 - **AT4.5 (cosine C1):** |cosine| < 0.05 (reference −0.001).
@@ -953,7 +1224,12 @@ Run Appendix D.3. The checks:
 
 ### M6 UI
 
-- **AT6.1** `test_api.py` covers every endpoint of §9 with FastAPI's `TestClient`: shapes of the responses, plus a 404 for an unknown run.
+- **AT6.1** `test_api.py` covers every endpoint of §9 with FastAPI's `TestClient`, offline:
+  - the response shapes;
+  - a 404 for an unknown run;
+  - the `/api/arc/*` endpoints with `WSB_GOLF_DIR` set to the D.5 fixtures (§6.2), and once with no ARC data (400 `E_DOWNLOAD`);
+  - `/api/tensor` with `neox-tiny`;
+  - `/api/assist` in mock mode.
 - **AT6.2** A manual checklist; record the results in `NOTES.md`:
   1. Load each example and run it.
   2. Open a heatmap triple for `R11` (the MLP rotation), and the ARC view of a 16×16 block.
@@ -968,9 +1244,9 @@ Run Appendix D.3. The checks:
   - `POST /api/assist` with `WSB_LLM=mock` returns the three role results;
   - a script with the statements `t1, t2, t3`, `fix2` and `alt1`;
   - `predictions` for `t1..t3`;
-  - after the run finishes, `agree` values exactly as in Appendix E.5.
+  - after the run finishes, `GET /api/runs/{run_id}` shows `predicted` and `agree` exactly as in Appendix E.5.
 - **AT7.2 (mock):** A translate reply with a syntax error triggers exactly one repair call. The canned repair reply then parses.
-- **AT7.3 (live, opt-in; costs about $0.05):** One call per default model with the text from Appendix E.5. Each returns `ok = true` or an explicit refusal. Record the costs in `NOTES.md`.
+- **AT7.3 (live, opt-in; costs about $0.05):** For each default model, one call `chat("translate", model_id, TRANSLATE_SYSTEM with MODEL = pythia-14m, [{"role": "user", "content": <the step-1 user prompt for the E.5 source text>}])`. Each must return `ok = true` or an explicit refusal (`ok = false` with a reason). Record the costs in `NOTES.md`.
 
 ---
 
@@ -1006,7 +1282,7 @@ Do **not** build these. They are listed so that the Phase 1 design leaves room f
 
 ## Appendix A: `wsbench/models/neox.py` (verified reference, copy verbatim)
 
-Float64 GPT-NeoX forward pass, random group elements and all weight-space operators. Tested against the pythia-14m numbers in Appendix F. The `forward` matches an independent implementation to 1.8e-11 in logits.
+Float64 GPT-NeoX forward pass, random group elements, all weight-space operators, and `TORCH_PRIMITIVES`. Tested against the pythia-14m numbers in Appendix F. The `forward` matches an independent implementation to 1.8e-11 in logits.
 
 ```python
 """Reference: GPT-NeoX forward pass and weight-space operators, float64, plain torch.
@@ -1398,12 +1674,29 @@ def align_layer(cfg, X, Y):
     return get_layer(Wx, 0)
 
 
-def gridop_block(W, name, key, r0, r1, c0, c1, grid_fn):
-    """Apply a grid primitive (function on a 2-D tensor) to the block W[key][r0:r1, c0:c1] in place of the block."""
+# ARC grid primitives on 2-D torch tensors (same semantics as PRIMITIVES in arc/grid.py; rot90 is clockwise).
+TORCH_PRIMITIVES = {
+    'identity': lambda b: b,
+    'rot90':    lambda b: torch.rot90(b, -1, (0, 1)),
+    'rot180':   lambda b: torch.rot90(b, 2, (0, 1)),
+    'rot270':   lambda b: torch.rot90(b, 1, (0, 1)),
+    'hmirror':  lambda b: b.flip(0),
+    'vmirror':  lambda b: b.flip(1),
+    'dmirror':  lambda b: b.T,
+    'cmirror':  lambda b: torch.rot90(b, 2, (0, 1)).T,
+}
+SQUARE_ONLY = ('rot90', 'rot270', 'dmirror', 'cmirror')
+
+
+def gridop_block(W, name, key, r0, r1, c0, c1, grid_fn=None):
+    """Replace the block W[key][r0:r1, c0:c1] by grid_fn(block). The block is cloned before and after the
+    primitive, so views such as .T never alias the tensor that is written to."""
+    grid_fn = TORCH_PRIMITIVES[name] if grid_fn is None else grid_fn
     W = cp(W)
-    blk = W[key][r0:r1, c0:c1]
-    out = grid_fn(blk)
-    assert out.shape == blk.shape, f'{name} changes the block shape {tuple(blk.shape)} -> {tuple(out.shape)}'
+    blk = W[key][r0:r1, c0:c1].clone()
+    out = grid_fn(blk).clone()
+    if out.shape != blk.shape:
+        raise ValueError(f'E_SHAPE {name} changes the block shape {tuple(blk.shape)} -> {tuple(out.shape)}')
     W[key][r0:r1, c0:c1] = out
     return W
 ```
@@ -1412,7 +1705,7 @@ def gridop_block(W, name, key, r0, r1, c0, c1, grid_fn):
 
 ## Appendix B: `wsbench/models/modadd.py` (verified reference, copy verbatim)
 
-The modular-addition grokking model (Nanda et al. 2023: one layer, no LayerNorm, ReLU MLP, full-batch AdamW with weight decay 1), the trainer with Grokfast-EMA and scale interventions, and evaluation.
+The modular-addition grokking model (Nanda et al. 2023: one layer, no LayerNorm, ReLU MLP, full-batch AdamW with weight decay 1), the trainer with Grokfast-EMA and scale interventions, and evaluation. It runs in float32.
 
 ```python
 """Reference: modular-addition grokking model (Nanda et al. 2023, 1-layer, no LayerNorm), trainer, Grokfast-EMA filter."""
@@ -1696,7 +1989,7 @@ R8: gauge qk(L[mid].H[0], gl, dims=all)
 R9: gauge rope_pairs(L[mid].H[0], phis=[0.3, -1.1, 2.0, 0.7], scale=1.7)
 R10: gauge permute(L[mid].mlp, randperm)
 R11: gauge rotate(L[mid].mlp, orth)
-R12: gauge permute(L[mid].heads, randperm)
+R12: gauge permute(L[mid].heads, perm([1, 0, 3, 2]))
 R13: gauge scale(L[mid].mlp, uniform(0.5, 2))
 R14: reparam fold_ln()
 R15: reparam fold_ln(); center_writers(); ln_to_rms()
@@ -1704,7 +1997,7 @@ R16: gauge scale(resid, 2)
 R17: approx(0.05) scale(resid, 2)
 ```
 
-`PROBE_TEXT` for pythia-14m is the following Python string, exactly. It contains literal `\n` newlines and the four-space indentation shown.
+`PROBE_TEXT` for pythia-14m is the following Python string literal. Copy it as Python source into `wsbench/models/registry.py`. The `\n` escapes then become real newline characters, and the four spaces before `return` are part of the text. The tokenizer turns it into exactly 149 tokens.
 
 ```python
 PROBE_TEXT = ("The river leaves the mountains in late spring, when the snow begins to melt and the water turns "
@@ -2003,7 +2296,7 @@ The test asserts the statuses, classes and `agree` values below. It does not ass
 
 ## Appendix F: expected results (measured on 2026-11-25, 4-core x86 CPU, torch 2.15 CPU, float64)
 
-**Statuses and classes must match exactly.** The `dloss` values below come from deterministic statements, which use no random group elements. They must match within ±0.0005. Statements with random group elements have no fixed number; only their class is fixed.
+**Statuses and classes must match exactly.** The numbers below come from deterministic statements, which use no random group elements. `dloss` values must match within ±0.0005, and `rel` values within 0.1 % relative. Statements with random group elements have no fixed number; only their class is fixed.
 
 ### F.1 `rotate_middle_layer.wsl` on pythia-14m (base loss 4.3177, max |logit| 25.85, probe of 149 tokens)
 
@@ -2013,7 +2306,7 @@ The test asserts the statuses, classes and `agree` values below. It does not ass
 | R2 | REFUTED | edit | `H_RESID_NOFOLD` | |
 | R3 | REFUTED | edit | `H_RESID_ONES` | |
 | R4 | CONFIRMED | exact | – | `norm_kind` = `rms`, `new_params` = `["embed_out.bias"]` |
-| R5 | MEASURED | edit | – | dloss large and positive (reference draws: +6.4 to +7.1) |
+| R5 | MEASURED | edit | – | dloss large and positive: +6.25 with the §3.3 seeds on the reference machine. A random row: only the class is asserted. |
 | R6 | CONFIRMED | exact | – | |
 | R7 | CONFIRMED | exact | – | |
 | R8 | REFUTED | edit | `H_ROPE_QK` | |
@@ -2053,27 +2346,27 @@ How to read it:
 
 ### F.3 `tiny_battery.wsl` on neox-tiny (base loss 5.9561)
 
-| Label | Status | Measured | Notes |
-|---|---|---|---|
-| T1 | CONFIRMED | exact | |
-| T2 | REFUTED | edit | |
-| T3 | REFUTED | edit | |
-| T4 | CONFIRMED | exact | |
-| T5 | MEASURED | edit | |
-| T6 | CONFIRMED | exact | |
-| T7 | CONFIRMED | exact | |
-| T8 | REFUTED | edit | |
-| T9 | CONFIRMED | exact | |
-| T10 | CONFIRMED | exact | |
-| T11 | REFUTED | edit | |
-| T12 | CONFIRMED | exact | |
-| T13 | REFUTED | edit | |
-| T14 | CONFIRMED | exact | |
-| T15 | CONFIRMED | near | deterministic rel 7.16e-6 |
-| T16 | REFUTED | near | deterministic rel 7.16e-6 |
-| T17 | CONFIRMED | exact | |
-| T18 | MEASURED | exact | warning `W_NOOP`; hint `H_EDIT_GAUGE` |
-| T19 | MEASURED | edit | deterministic dloss −0.3300 (random tiny model: a negative dloss is fine) |
+| Label | Status | Measured | Hint expected | Notes |
+|---|---|---|---|---|
+| T1 | CONFIRMED | exact | – | |
+| T2 | REFUTED | edit | `H_RESID_NOFOLD` | |
+| T3 | REFUTED | edit | `H_RESID_ONES` | |
+| T4 | CONFIRMED | exact | – | |
+| T5 | MEASURED | edit | – | |
+| T6 | CONFIRMED | exact | – | |
+| T7 | CONFIRMED | exact | – | |
+| T8 | REFUTED | edit | `H_ROPE_QK` | |
+| T9 | CONFIRMED | exact | – | |
+| T10 | CONFIRMED | exact | – | |
+| T11 | REFUTED | edit | `H_MLP_ROTATE` | |
+| T12 | CONFIRMED | exact | – | |
+| T13 | REFUTED | edit | `H_GELU_SCALE` | |
+| T14 | CONFIRMED | exact | – | |
+| T15 | CONFIRMED | near | – | deterministic rel 7.1558e-6 |
+| T16 | REFUTED | near | – | deterministic rel 7.1558e-6 |
+| T17 | CONFIRMED | exact | – | |
+| T18 | MEASURED | exact | `H_EDIT_GAUGE` | warning `W_NOOP` |
+| T19 | MEASURED | edit | `H_LERP_ALIGN` | deterministic dloss −0.3300 (a random tiny model, so a negative dloss is fine) |
 
 ### F.4 ARC: the 7 tasks solved by a single primitive (all examples = train + test + arc-gen)
 

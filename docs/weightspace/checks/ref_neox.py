@@ -387,11 +387,28 @@ def align_layer(cfg, X, Y):
     return get_layer(Wx, 0)
 
 
-def gridop_block(W, name, key, r0, r1, c0, c1, grid_fn):
-    """Apply a grid primitive (function on a 2-D tensor) to the block W[key][r0:r1, c0:c1] in place of the block."""
+# ARC grid primitives on 2-D torch tensors (same semantics as PRIMITIVES in arc/grid.py; rot90 is clockwise).
+TORCH_PRIMITIVES = {
+    'identity': lambda b: b,
+    'rot90':    lambda b: torch.rot90(b, -1, (0, 1)),
+    'rot180':   lambda b: torch.rot90(b, 2, (0, 1)),
+    'rot270':   lambda b: torch.rot90(b, 1, (0, 1)),
+    'hmirror':  lambda b: b.flip(0),
+    'vmirror':  lambda b: b.flip(1),
+    'dmirror':  lambda b: b.T,
+    'cmirror':  lambda b: torch.rot90(b, 2, (0, 1)).T,
+}
+SQUARE_ONLY = ('rot90', 'rot270', 'dmirror', 'cmirror')
+
+
+def gridop_block(W, name, key, r0, r1, c0, c1, grid_fn=None):
+    """Replace the block W[key][r0:r1, c0:c1] by grid_fn(block). The block is cloned before and after the
+    primitive, so views such as .T never alias the tensor that is written to."""
+    grid_fn = TORCH_PRIMITIVES[name] if grid_fn is None else grid_fn
     W = cp(W)
-    blk = W[key][r0:r1, c0:c1]
-    out = grid_fn(blk)
-    assert out.shape == blk.shape, f'{name} changes the block shape {tuple(blk.shape)} -> {tuple(out.shape)}'
+    blk = W[key][r0:r1, c0:c1].clone()
+    out = grid_fn(blk).clone()
+    if out.shape != blk.shape:
+        raise ValueError(f'E_SHAPE {name} changes the block shape {tuple(blk.shape)} -> {tuple(out.shape)}')
     W[key][r0:r1, c0:c1] = out
     return W
