@@ -1,0 +1,10 @@
+base {'first': {'train_acc>=0.99': 150, 'test_acc>=0.5': 550, 'test_acc>=0.9': 1200, 'test_acc>=0.99': 1400}, 'wall': 152.2, 'final_test': 1.0}
+grokfast {'first': {'train_acc>=0.99': 200, 'test_acc>=0.5': 200, 'test_acc>=0.9': 1000, 'test_acc>=0.99': 1200}, 'wall': 149.5, 'final_test': 0.9995748996734619}
+seed1 {'train_acc>=0.99': 150, 'test_acc>=0.5': 250, 'test_acc>=0.9': 650, 'test_acc>=0.99': 800}
+t=+0.00 P1 test 0.488 train 1.000 | P2 transplant test 0.488
+t=+0.25 P1 test 0.363 train 0.798 | P2 transplant test 0.258
+t=+0.50 P1 test 0.543 train 0.822 | P2 transplant test 0.095
+t=+0.75 P1 test 0.979 train 0.999 | P2 transplant test 0.045
+t=+1.00 P1 test 1.000 train 1.000 | P2 transplant test 0.024
+t=+1.25 P1 test 1.000 train 1.000 | P2 transplant test 0.018
+cos(dirA,dirB) -0.001405427698045969
