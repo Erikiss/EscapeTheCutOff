@@ -1,0 +1,22 @@
+# cutoffmix `rally` preset (DESIGN_rally.md): two or three models hand one record to each other in a fixed ring. Each
+# note confirms, corrects or extends the previous one with what the writer knows that is newer or different, and ends
+# with the newest month the writer really knows about. The exchange ends when a full revolution adds nothing, or at
+# rally.max_turns; one answer call then writes the answer, marking statements that only one model made.
+#
+# Loaded with `cutoffmix run --preset rally` / `cutoffmix serve --preset rally` / load_config(preset="rally"):
+# deep-merged over data/default.yaml BEFORE a user --config file and overrides. Not combinable with the explore
+# preset. Hand-over order is the ring, not the router; the router still picks the answer model among the ring.
+# Add the third model with `--ring claude-fable-5.2,gemini-4-neon,gpt-6.2-sol`.
+
+relay:
+  segment_tokens: 160
+  hard_cut_chars: 1200            # a note is a few labelled lines; 160 tokens of German run to ~900-1100 characters
+  max_segments: 12                # relay ceiling; rally.max_turns ends the exchange earlier
+  answer_mode: routed
+
+rally:
+  enabled: true
+  ring: [claude-fable-5.2, gemini-4-neon]
+  max_turns: 8                    # think notes (min_turns and quiet_turns default to 2x and 1x the ring size)
+  answer_basis: true              # the answer ends with 'Basis:' and 'Not resolved:'
+  answer_from_ring: true

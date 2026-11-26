@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from cutoffmix.lenses import Field, draw_lens
 from cutoffmix.prompts import (
     LABELS,
+    answer_system_prompt_rally,
     WWS_ITEM,
     answer_system_prompt_explore,
     check_text,
@@ -72,10 +73,13 @@ from cutoffmix.prompts import (
     parse_labels,
     parse_vs_menu,
     pick_vs_direction,
+    rally_directive,
     record_status_text,
     relay_system_prompt,
     relay_system_prompt_explore,
+    relay_system_prompt_rally,
     relay_tail,
+    relay_tail_rally,
     split_final,
     strip_preamble,
     trim_overlap,
@@ -84,6 +88,7 @@ from cutoffmix.prompts import (
     vs_menu_messages,
     word3gram_jaccard,
 )
+from cutoffmix.rally import RallyState
 from cutoffmix.taxonomy import argmax_topic
 from cutoffmix.types import (
     Backend,
@@ -113,6 +118,7 @@ __all__ = [
     "VS_MENU_MODEL",
     "WWS_WAIVER_NOTES",
     "ExploreTrace",
+    "RallyTrace",
     "Relay",
     "RelayRuntime",
     "mock_truth_index",
@@ -508,6 +514,17 @@ class ExploreTrace(RelayTrace):
 
 
 @dataclass
+class RallyTrace(RelayTrace):
+    """The trace of a rally run: ``rally`` holds the DESIGN_rally.md section 6 metrics once the run has ended, and
+    ``to_dict()`` includes them under ``"rally"`` (so ``done.data["rally"]`` is the same object)."""
+
+    rally: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return super().to_dict() | {"rally": self.rally}
+
+
+@dataclass
 class _Plan:
     """What the tail of a think segment asks for (DESIGN.md §7.6), decided before its routing decision.
 
@@ -765,6 +782,7 @@ class _RunState:
     first_delta_s: float | None = None
     error: str | None = None
     explore: _ExploreState | None = None  # set when the explore preset is enabled
+    rally: RallyState | None = None  # set when the rally preset is enabled
 
     def available(self, excluded: set[str] | frozenset[str] = frozenset()) -> list[str]:
         return [k for k in self.keys if k not in self.disabled and k not in excluded]
@@ -891,9 +909,14 @@ class Relay:
         today = self.cfg.today_str() if self.cfg.relay.inject_date else None
         question = question.strip()
         ex = self.cfg.explore
-        trace: RelayTrace = ExploreTrace(question=question) if ex.enabled else RelayTrace(question=question)
+        ra = self.cfg.rally
+        trace: RelayTrace = (ExploreTrace(question=question) if ex.enabled else
+                             RallyTrace(question=question) if ra.enabled else RelayTrace(question=question))
         st = _RunState(question=question, run_id=run_id or _new_run_id(), today=today,
                        keys=[m.key for m in self.models], trace=trace)
+        if ra.enabled:
+            ring = [k for k in self.cfg.rally_ring() if k in st.keys]
+            st.rally = RallyState(ra, ring, self.cfg.today_str())
         if ex.enabled:
             if ex.seed is not None:
                 seed, source = ex.seed, "explore"
@@ -919,11 +942,19 @@ class Relay:
                     yield event
             if out.attempt is None:
                 if st.notes and out.outcomes and all(o == "empty" for o in out.outcomes.values()):
+                    if st.rally is not None:
+                        st.rally.stop_reason = "empty"
                     break  # no model has anything to add: the notes are concluded, answer from them
                 st.error = out.error or f"segment {index} failed"
             elif out.attempt.answer is not None:
                 final = out.attempt
                 break
+            elif st.rally is not None:
+                partners = sum(1 for m in st.rally.ring if m in st.available())
+                reason = st.rally.should_stop(partners)
+                if reason is not None:
+                    st.rally.stop_reason = reason
+                    break
         if st.error is None:
             if st.explore is not None and not st.explore.gate_open():
                 st.explore.gate_missing_at_final = st.explore.record_missing()
@@ -937,6 +968,10 @@ class Relay:
             yield RelayEvent(type="error", text=st.error, data={"dropped": st.dropped[-10:]})
         if st.explore is not None and isinstance(st.trace, ExploreTrace):
             st.trace.explore = st.explore.metrics()
+        if st.rally is not None and isinstance(st.trace, RallyTrace):
+            if st.rally.stop_reason is None:
+                st.rally.stop_reason = "error" if st.error is not None else "max_segments"
+            st.trace.rally = st.rally.metrics(preset=self.cfg.preset)
         st.trace.ended_at = time.time()
         yield RelayEvent(type="done", data=st.done_data("error" if st.error is not None else "ok"))
 
@@ -946,7 +981,7 @@ class Relay:
         rc = self.cfg.relay
         decision: RouteDecision | None = None
         update = True
-        if rc.strategy == "speculative" and self.cfg.router.policy in _DRAFT_POLICIES:
+        if rc.strategy == "speculative" and self.cfg.router.policy in _DRAFT_POLICIES and st.rally is None:
             plan = await self._plan(st, index) if st.explore is not None else None
             avail = st.available() if plan is None else _without(st.available(), plan.exclude)
             if len(avail) > 1:
@@ -997,6 +1032,9 @@ class Relay:
         attempt_no = 0
         while True:
             avail = st.available(excluded)
+            if st.rally is not None:  # the rally writes in ring order; its answer comes from a ring model if one is left
+                in_ring = [m for m in st.rally.ring if m in avail]
+                avail = in_ring if phase == "think" or (self.cfg.rally.answer_from_ring and in_ring) else avail
             if not avail:
                 detail = "; ".join(f"{m}: {r}" for m, r in reasons.items()) or "all models are disabled"
                 out.error = f"no model left for {'the answer' if phase == 'answer' else f'segment {index}'} ({detail})"
@@ -1008,6 +1046,10 @@ class Relay:
             if decision is None or decision.model not in avail:
                 decision = self.router.decide(window, current=st.current, available=avail,
                                               update=update and (plan is None or plan.kind != "lens"))
+            if st.rally is not None and phase == "think":  # hand-over: the router only reports topic and scores
+                nxt = st.rally.next_model(avail)
+                if nxt is not None and (decision.model != nxt or decision.decision != "forced"):
+                    decision = dataclasses.replace(decision, model=nxt, decision="forced", probs={nxt: 1.0})
             update = False
             d, decision = decision, None
             spec = self._spec[d.model]
@@ -1022,6 +1064,8 @@ class Relay:
                                          "attempt": att.attempt, "strategy": "sequential", "available": avail}
                 if plan is not None:
                     start["explore"] = plan.badge()
+                if st.rally is not None and phase == "think":
+                    start["rally"] = {"kind": st.rally.kind(), "turn": st.rally.turns + 1, "ring": list(st.rally.ring)}
                 yield RelayEvent(
                     type="segment_start" if phase == "think" else "phase", segment=index, model=spec.key, phase=phase,
                     decision=d.decision, topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3),
@@ -1033,6 +1077,8 @@ class Relay:
                 if plan is not None:
                     self._strip_final(st, att)
                     self._resolve_final(st, att, plan)
+                if st.rally is not None and phase == "think" and att.answer is not None:
+                    att.premature, att.premature_answer, att.answer = True, att.answer, None  # the moderator ends the exchange
                 result = att.outcome
                 if result == "ok":
                     extra = {"probs": _rounded(d.probs, 4), "r": round(float(d.r), 4)}
@@ -1133,6 +1179,18 @@ class Relay:
             target_tokens=rc.answer_max_tokens if phase == "answer" else rc.segment_tokens, max_tokens=max_tokens,
             today=st.today, sentinel=rc.sentinel, final_marker=rc.final_marker, hard_cut_chars=rc.hard_cut_chars,
             run_id=st.run_id, metadata={"segment": index, "phase": phase})
+        ra = st.rally
+        if ra is not None:  # rally preset: its own system prompt, and a tail that names the previous writer
+            if phase == "think":
+                turn = ra.turns + 1
+                prev = ra.previous()
+                writer = self._spec[prev["model"]].label() if prev is not None and prev["model"] in self._spec else None
+                req.system_override = relay_system_prompt_rally(rc.segment_tokens, st.today, rc.sentinel)
+                req.tail = relay_tail_rally(turn, rally_directive(turn, writer, prev["newest"] if prev else None))
+                req.metadata["kind"] = ra.kind()
+            else:
+                req.system_override = answer_system_prompt_rally(st.today, answer_basis=self.cfg.rally.answer_basis)
+            return req
         ex = st.explore
         if ex is None:
             return req
@@ -1383,6 +1441,8 @@ class Relay:
                       note=att.finish or "")
         flags = self._explore_commit(st, att, plan) if plan is not None and att.phase == "think" else None
         seg.explore = flags
+        if st.rally is not None and att.phase == "think":
+            seg.rally = st.rally.add_note(att.index, att.model, att.text)
         st.trace.segments.append(seg)
         if flags is not None and st.explore is not None:
             st.explore.note_committed(seg.index)  # the waiver streak is judged with this note in the record
@@ -1401,6 +1461,10 @@ class Relay:
             data["final"] = att.answer is not None
         if flags is not None:
             data["explore"] = flags.to_dict()
+            if att.premature:
+                data["premature_final"] = True
+        if seg.rally is not None:
+            data["rally"] = seg.rally
             if att.premature:
                 data["premature_final"] = True
         return RelayEvent(type="segment_end", segment=att.index, model=att.model, phase=att.phase, text=att.text,

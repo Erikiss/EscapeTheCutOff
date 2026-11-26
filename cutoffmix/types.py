@@ -197,9 +197,13 @@ class Segment:
     usage: dict[str, Any] | None = None
     note: str = ""
     explore: ExploreFlags | None = None  # set by the relay when the explore preset is enabled
+    rally: dict[str, Any] | None = None  # set by the relay when the rally preset is enabled (cutoffmix.rally note record)
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        d = dataclasses.asdict(self)
+        if d["rally"] is None:  # absent outside the rally preset, so that every other run's payload stays unchanged
+            del d["rally"]
+        return d
 
 
 @dataclass

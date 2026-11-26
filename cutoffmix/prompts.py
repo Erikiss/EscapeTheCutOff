@@ -370,6 +370,77 @@ def answer_user_blocks(question: str, segments: list[str]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------------------
+# Rally preset (DESIGN_rally.md): models hand one record back and forth, each adding what it knows that is newer
+# --------------------------------------------------------------------------------------
+
+RELAY_SYSTEM_TEMPLATE_RALLY = (
+    "Several analysts, each trained on different material, hand one set of working notes to each other. The "
+    "problem and the notes so far are in the user message. Every analyst knows some recent facts the others do "
+    "not, and none knows everything: your job is to add what you know that the notes lack or get wrong, and to "
+    "say honestly where you know nothing more. Write the next note in about {K} tokens, as short labelled lines "
+    "(labels in English, everything else in the language of the problem): 'Known:' (first note only), 'Confirm:', "
+    "'Update:', 'Newer:', 'Unverified:', 'Nothing newer:'. Every claim carries the month and year it refers to. "
+    "Never invent a date, number or event to have something to add: 'Nothing newer:' is a valuable answer. Do not "
+    "agree to be polite and do not repeat earlier lines. End every note with 'Newest I know:' and the latest "
+    "month and year relevant to the problem that you genuinely know about (not today's date). Do not write a final "
+    "answer; the moderator ends the exchange. Output only the note, then {sentinel}."
+)
+ANSWER_RALLY_SENTENCE = (
+    " The notes are an exchange between analysts with different knowledge. State plainly what a second analyst "
+    "confirmed or corrected; mark a statement that only one analyst made with '(single source)'; where they "
+    "disagreed, say so and give the better supported side; name the newest date the record supports."
+)
+RELAY_TAIL_RALLY = "END OF THE SHARED NOTES. Write note {k}. {directive}"
+RALLY_OPEN_TEXT = (
+    "This is the first note. List what you know about the problem as three to six 'Known:' items, each with the "
+    "date or period it refers to, and mark the one you are least sure of. Then give 'Newest I know:'."
+)
+RALLY_REPLY_TEXT = (
+    "The previous note was written by {writer}, an analyst whose knowledge differs from yours; their newest "
+    "knowledge on this problem is {newest}. Go through its dated claims. Use 'Confirm:' for what you can confirm, "
+    "'Update:' for what is outdated or wrong (say what you know instead and when), 'Newer:' for developments after "
+    "{newest} that you know, including ones the previous note reminded you of, 'Unverified:' for claims you doubt "
+    "but cannot refute, and 'Nothing newer:' if you know nothing newer than {newest}. Then 'Newest I know:'."
+)
+RALLY_NEWEST_UNKNOWN = "not stated"
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+                "November", "December")
+
+
+def relay_system_prompt_rally(target_tokens: int, today: str | None, sentinel: str) -> str:
+    """The static system prompt for rally think notes; the date sentence is omitted when ``today`` is None."""
+    return RELAY_SYSTEM_TEMPLATE_RALLY.format(K=target_tokens, sentinel=sentinel) + (
+        DATE_SENTENCE.format(today=today) if today else "")
+
+
+def answer_system_prompt_rally(today: str | None, *, answer_basis: bool = True) -> str:
+    """The system prompt for the rally's answer call (default answer prompt, the exchange sentence, optionally the
+    explore preset's 'Basis:' / 'Not resolved:' sentence)."""
+    return (ANSWER_SYSTEM_TEMPLATE + ANSWER_RALLY_SENTENCE + (ANSWER_BASIS_SENTENCE if answer_basis else "")
+            + (DATE_SENTENCE.format(today=today) if today else ""))
+
+
+def month_display(month: str | None) -> str:
+    """``'2026-03'`` -> ``'March 2026'``; None or anything else -> :data:`RALLY_NEWEST_UNKNOWN`."""
+    if month and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+        return f"{_MONTH_NAMES[int(month[5:7]) - 1]} {month[:4]}"
+    return RALLY_NEWEST_UNKNOWN
+
+
+def rally_directive(turn: int, writer: str | None = None, newest: str | None = None) -> str:
+    """The tail directive of rally note ``turn`` (1-based): the opening text for note 1, else the reply text naming the
+    previous writer and the month (``YYYY-MM`` or None) of its newest knowledge."""
+    if turn <= 1:
+        return RALLY_OPEN_TEXT
+    return RALLY_REPLY_TEXT.format(writer=writer or "another analyst", newest=month_display(newest))
+
+
+def relay_tail_rally(k: int, directive: str) -> str:
+    """The rally tail block for note ``k`` (1-based): the only block that varies between segments."""
+    return RELAY_TAIL_RALLY.format(k=k, directive=directive.strip()).rstrip()
+
+
+# --------------------------------------------------------------------------------------
 # Post-processing
 # --------------------------------------------------------------------------------------
 

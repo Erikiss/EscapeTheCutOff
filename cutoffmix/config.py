@@ -218,6 +218,35 @@ class ExploreConfig:
 
 
 @dataclass
+class RallyConfig:
+    """The opt-in rally preset (DESIGN_rally.md): models hand one record to each other in a fixed ring, each adding
+    what it knows that is newer or different, until a full revolution adds nothing or ``max_turns`` is reached.
+
+    ``enabled`` is False in the packaged default; ``load_config(preset="rally")`` turns it on with the values of
+    ``cutoffmix/data/presets/rally.yaml``. The relay ignores every other field while ``enabled`` is False.
+    """
+
+    enabled: bool = False
+    ring: tuple[str, ...] = ()  # model keys in hand-over order; () = all configured models in config order
+    min_turns: int | None = None  # None -> 2 * len(ring): no stop before this many think notes
+    max_turns: int = 8  # hard stop of the exchange (think notes), then the answer phase
+    quiet_turns: int | None = None  # None -> len(ring): consecutive quiet notes that end the exchange
+    answer_basis: bool = True  # the answer ends with 'Basis:' and 'Not resolved:'
+    answer_from_ring: bool = True  # the answer model is chosen by the router among the ring's models only
+
+    def __post_init__(self) -> None:
+        self.ring = tuple(self.ring)
+        for i, key in enumerate(self.ring):
+            _require(isinstance(key, str) and bool(key.strip()), f"rally.ring[{i}] must be a model key, got {key!r}")
+        _require(len(set(self.ring)) == len(self.ring), "rally.ring must not repeat a model")
+        _require(self.max_turns >= 2, f"rally.max_turns must be >= 2, got {self.max_turns}")
+        _require(self.min_turns is None or 1 <= self.min_turns <= self.max_turns,
+                 f"rally.min_turns must be between 1 and rally.max_turns ({self.max_turns}), got {self.min_turns}")
+        _require(self.quiet_turns is None or self.quiet_turns >= 1,
+                 f"rally.quiet_turns must be >= 1, got {self.quiet_turns}")
+
+
+@dataclass
 class AppConfig:
     """Complete runtime configuration: the relay models plus relay, router, explore and gateway settings."""
 
@@ -225,6 +254,7 @@ class AppConfig:
     relay: RelayConfig = field(default_factory=RelayConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
     explore: ExploreConfig = field(default_factory=ExploreConfig)
+    rally: RallyConfig = field(default_factory=RallyConfig)
     today: str | None = None  # ISO date; None -> date.today()
     base_url: str = "https://openrouter.ai/api/v1"
     api_key_env: str = "OPENROUTER_API_KEY"
@@ -236,6 +266,7 @@ class AppConfig:
     def __post_init__(self) -> None:
         _require(bool(self.models), "config needs at least one model")
         _require(isinstance(self.explore, ExploreConfig), "config.explore must be a mapping")
+        _require(isinstance(self.rally, RallyConfig), "config.rally must be a mapping")
         _require(self.preset is None or bool(_PRESET_NAME.match(self.preset)),
                  f"preset must be a packaged preset name (lowercase letters, digits, _ or -), got {self.preset!r}")
         keys = [m.key for m in self.models]
@@ -246,6 +277,11 @@ class AppConfig:
         fixed = self.router.fixed_model
         _require(fixed is None or fixed in keys,
                  f"router.policy {self.router.policy!r} names an unknown model; known: {', '.join(keys)}")
+        unknown = [k for k in self.rally.ring if k not in keys]
+        _require(not unknown, f"rally.ring names unknown model(s) {', '.join(unknown)}; known: {', '.join(keys)}")
+        if self.rally.enabled:
+            _require(len(self.rally_ring()) >= 2, "the rally needs at least two models in its ring")
+            _require(not self.explore.enabled, "the rally and explore presets are mutually exclusive")
         if self.today is not None:
             try:
                 _dt.date.fromisoformat(self.today)
@@ -263,6 +299,10 @@ class AppConfig:
         """Model keys in configuration order."""
         return [m.key for m in self.models]
 
+    def rally_ring(self) -> list[str]:
+        """The rally's hand-over order: ``rally.ring``, or all configured models in configuration order."""
+        return list(self.rally.ring) or self.model_keys()
+
     def today_str(self) -> str:
         """The configured date, or today's date, as ``YYYY-MM-DD``."""
         return self.today or _dt.date.today().isoformat()
@@ -275,6 +315,7 @@ class AppConfig:
         d["explore"]["cues"] = list(self.explore.cues)
         d["explore"]["light_schema_models"] = list(self.explore.light_schema_models)
         d["explore"]["lens"]["tiers"] = dict(self.explore.lens.tiers)
+        d["rally"]["ring"] = list(self.rally.ring)
         return d
 
 
@@ -416,7 +457,7 @@ def config_from_dict(data: Mapping[str, Any]) -> AppConfig:
     """Build a validated :class:`AppConfig` from a complete plain mapping (the YAML structure)."""
     if isinstance(data.get("today"), _dt.date):  # YAML reads an unquoted ISO date as a date
         data = {**data, "today": data["today"].isoformat()}
-    top = _build(AppConfig, data, "config", skip=("models", "relay", "router", "explore"))
+    top = _build(AppConfig, data, "config", skip=("models", "relay", "router", "explore", "rally"))
     raw_models = data.get("models")
     if not isinstance(raw_models, list) or not raw_models:
         raise ConfigError("config.models must be a non-empty list")
@@ -424,7 +465,8 @@ def config_from_dict(data: Mapping[str, Any]) -> AppConfig:
     relay = RelayConfig(**_build(RelayConfig, data.get("relay") or {}, "relay"))
     router = RouterConfig(**_build(RouterConfig, data.get("router") or {}, "router"))
     explore = _explore_from_dict(data.get("explore") or {})
-    return AppConfig(models=models, relay=relay, router=router, explore=explore, **top)
+    rally = RallyConfig(**_build(RallyConfig, data.get("rally") or {}, "rally"))
+    return AppConfig(models=models, relay=relay, router=router, explore=explore, rally=rally, **top)
 
 
 def _explore_from_dict(data: Any) -> ExploreConfig:
