@@ -379,11 +379,12 @@ RELAY_SYSTEM_TEMPLATE_RALLY = (
     "not, and none knows everything: your job is to add what you know that the notes lack or get wrong, and to "
     "say honestly where you know nothing more. Write the next note in about {K} tokens, as short labelled lines "
     "(labels in English, everything else in the language of the problem): 'Known:' (first note only), 'Confirm:', "
-    "'Update:', 'Newer:', 'Unverified:', 'Nothing newer:'. Every claim carries the month and year it refers to. "
-    "Never invent a date, number or event to have something to add: 'Nothing newer:' is a valuable answer. Do not "
-    "agree to be polite and do not repeat earlier lines. End every note with 'Newest I know:' and the latest "
-    "month and year relevant to the problem that you genuinely know about (not today's date). Do not write a final "
-    "answer; the moderator ends the exchange. Output only the note, then {sentinel}."
+    "'Update:', 'Newer:', 'Unverified:', 'Nothing newer:'. Write each label exactly as given, directly followed by "
+    "a colon, and put dates after the colon. Every claim carries the month and year it refers to. Never invent a "
+    "date, number or event to have something to add: 'Nothing newer:' is a valuable answer, followed by what you "
+    "checked. Do not agree to be polite and do not repeat earlier lines. End every note with 'Newest I know:' and "
+    "the latest month and year relevant to the problem that you genuinely know about (not today's date). Do not "
+    "write a final answer; the moderator ends the exchange. Output only the note, then {sentinel}."
 )
 ANSWER_RALLY_SENTENCE = (
     " The notes are an exchange between analysts with different knowledge. State plainly what a second analyst "
@@ -399,8 +400,40 @@ RALLY_REPLY_TEXT = (
     "The previous note was written by {writer}, an analyst whose knowledge differs from yours; their newest "
     "knowledge on this problem is {newest}. Go through its dated claims. Use 'Confirm:' for what you can confirm, "
     "'Update:' for what is outdated or wrong (say what you know instead and when), 'Newer:' for developments after "
-    "{newest} that you know, including ones the previous note reminded you of, 'Unverified:' for claims you doubt "
-    "but cannot refute, and 'Nothing newer:' if you know nothing newer than {newest}. Then 'Newest I know:'."
+    "{newest} that you know and the notes do not yet contain, including ones the previous note reminded you of, "
+    "'Unverified:' for claims you doubt but cannot refute, and 'Nothing newer:' if you know nothing newer than "
+    "{newest} that the notes lack. Then 'Newest I know:'."
+)
+RALLY_SELF_TEXT = (
+    "The other analyst could not take its turn, so the previous note is your own. Do not confirm your own claims. "
+    "Add with 'Update:' or 'Newer:' only what you know and the notes do not yet contain, with its date; otherwise "
+    "write 'Nothing newer:' and what you checked. Then 'Newest I know:'."
+)
+# The light notes (RallyConfig.light_schema_models): the default system prompt and a prose tail with few quoted markers
+RALLY_LIGHT_OPEN_TEXT = (
+    "List what you know about the problem, each item with its month and year, and end with a line "
+    "'Newest I know: <Month YYYY>'."
+)
+RALLY_LIGHT_REPLY_TEXT = (
+    "Another analyst wrote the notes above; the newest thing they say they know is {newest}. Add what you know that "
+    "is more recent and not yet in the notes, each item with month and year, or say plainly that you know nothing "
+    "more recent. Correct anything that is wrong, starting with 'Correction:'. End with a line "
+    "'Newest I know: <Month YYYY>'."
+)
+RALLY_LIGHT_SELF_TEXT = (
+    "The other analyst could not take its turn, so the notes above end with your own note. Add only what you know "
+    "that is more recent and not yet in the notes, each item with month and year, or say plainly that you know "
+    "nothing more recent. End with a line 'Newest I know: <Month YYYY>'."
+)
+RALLY_ANSWER_SELF_SENTENCE = (
+    " Note {n} (counting the notes from 1 in the order given) was written by the same analyst as the note before it, "
+    "because the other analyst could not take its turn: do not count its 'Confirm:' lines as confirmation by a "
+    "second analyst."
+)
+RALLY_ANSWER_SELF_SENTENCE_MANY = (
+    " Notes {n} (counting the notes from 1 in the order given) were written by the same analyst as the note before "
+    "them, because the other analyst could not take its turn: do not count their 'Confirm:' lines as confirmation "
+    "by a second analyst."
 )
 RALLY_NEWEST_UNKNOWN = "not stated"
 _MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
@@ -413,26 +446,55 @@ def relay_system_prompt_rally(target_tokens: int, today: str | None, sentinel: s
         DATE_SENTENCE.format(today=today) if today else "")
 
 
-def answer_system_prompt_rally(today: str | None, *, answer_basis: bool = True) -> str:
-    """The system prompt for the rally's answer call (default answer prompt, the exchange sentence, optionally the
+def _ordinals(numbers: Sequence[int]) -> str:
+    items = [str(n) for n in numbers]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def answer_system_prompt_rally(today: str | None, *, answer_basis: bool = True,
+                               self_reply_notes: Sequence[int] = ()) -> str:
+    """The system prompt for the rally's answer call (default answer prompt, the exchange sentence, a warning about
+    notes the same analyst wrote twice in a row (``self_reply_notes``: their 1-based positions), optionally the
     explore preset's 'Basis:' / 'Not resolved:' sentence)."""
-    return (ANSWER_SYSTEM_TEMPLATE + ANSWER_RALLY_SENTENCE + (ANSWER_BASIS_SENTENCE if answer_basis else "")
+    warning = ((RALLY_ANSWER_SELF_SENTENCE_MANY if len(self_reply_notes) > 1 else RALLY_ANSWER_SELF_SENTENCE)
+               .format(n=_ordinals(self_reply_notes)) if self_reply_notes else "")
+    return (ANSWER_SYSTEM_TEMPLATE + ANSWER_RALLY_SENTENCE + warning + (ANSWER_BASIS_SENTENCE if answer_basis else "")
             + (DATE_SENTENCE.format(today=today) if today else ""))
 
 
-def month_display(month: str | None) -> str:
-    """``'2026-03'`` -> ``'March 2026'``; None or anything else -> :data:`RALLY_NEWEST_UNKNOWN`."""
+def month_display(month: str | None, *, raw: str | None = None, approx: bool = False) -> str:
+    """``'2026-03'`` -> ``'March 2026'``; None or anything else -> :data:`RALLY_NEWEST_UNKNOWN`. An approximate date
+    (a bare year, a quarter, a season) quotes the writer's own words when ``raw`` is given: the parsed month would
+    claim more precision, and an earlier date, than the writer gave."""
+    if approx and raw and raw.strip():
+        words = " ".join(raw.replace('"', "'").split())
+        return '"' + (words if len(words) <= 60 else words[:57].rstrip() + "...") + '"'
     if month and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
         return f"{_MONTH_NAMES[int(month[5:7]) - 1]} {month[:4]}"
     return RALLY_NEWEST_UNKNOWN
 
 
-def rally_directive(turn: int, writer: str | None = None, newest: str | None = None) -> str:
+def rally_directive(turn: int, writer: str | None = None, newest: str | None = None, *, newest_raw: str | None = None,
+                    approx: bool = False, self_reply: bool = False, light: bool = False) -> str:
     """The tail directive of rally note ``turn`` (1-based): the opening text for note 1, else the reply text naming the
-    previous writer and the month (``YYYY-MM`` or None) of its newest knowledge."""
+    previous writer and the month (``YYYY-MM`` or None; ``newest_raw`` and ``approx`` say how the writer put it) of
+    its newest knowledge. ``self_reply``: the writer is the author of the previous note (its partner could not take
+    the turn). ``light``: the prose variant for the models in ``RallyConfig.light_schema_models`` (no writer name)."""
     if turn <= 1:
-        return RALLY_OPEN_TEXT
-    return RALLY_REPLY_TEXT.format(writer=writer or "another analyst", newest=month_display(newest))
+        return RALLY_LIGHT_OPEN_TEXT if light else RALLY_OPEN_TEXT
+    when = month_display(newest, raw=newest_raw, approx=approx)
+    if self_reply:
+        return RALLY_LIGHT_SELF_TEXT if light else RALLY_SELF_TEXT
+    if light:
+        return RALLY_LIGHT_REPLY_TEXT.format(newest=when)
+    return RALLY_REPLY_TEXT.format(writer=writer or "another analyst", newest=when)
+
+
+def relay_tail_rally_light(k: int, directive: str, final_marker: str = "FINAL ANSWER:") -> str:
+    """The tail of a light rally note: the note number, the one-sentence ban on a conclusion that was verified to pass
+    Fable's input filter in the explore preset (DESIGN.md 7.8), and the prose directive."""
+    return RELAY_TAIL_RALLY.format(
+        k=k, directive=RECORD_CLOSED_NO_ITEMS_TEXT.format(final_marker=final_marker) + " " + directive.strip()).rstrip()
 
 
 def relay_tail_rally(k: int, directive: str) -> str:

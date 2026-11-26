@@ -233,9 +233,19 @@ class RallyConfig:
     quiet_turns: int | None = None  # None -> len(ring): consecutive quiet notes that end the exchange
     answer_basis: bool = True  # the answer ends with 'Basis:' and 'Not resolved:'
     answer_from_ring: bool = True  # the answer model is chosen by the router among the ring's models only
+    partner_failures: int = 2  # consecutive failed hand-overs (errors, not refusals) that take a ring model out of the run
+    # Models that get the LIGHT notes (the default system prompt, a prose tail with at most one quoted marker and no
+    # label list): the explore preset's finding was that Anthropic's input filter blocks schema-heavy prompts for
+    # Fable 5.2 (DESIGN.md 7.8). Their notes are read without labels (see cutoffmix.rally).
+    light_schema_models: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         self.ring = tuple(self.ring)
+        self.light_schema_models = tuple(self.light_schema_models)
+        for i, key in enumerate(self.light_schema_models):
+            _require(isinstance(key, str) and bool(key.strip()),
+                     f"rally.light_schema_models[{i}] must be a non-empty model key, got {key!r}")
+        _require(self.partner_failures >= 1, f"rally.partner_failures must be >= 1, got {self.partner_failures}")
         for i, key in enumerate(self.ring):
             _require(isinstance(key, str) and bool(key.strip()), f"rally.ring[{i}] must be a model key, got {key!r}")
         _require(len(set(self.ring)) == len(self.ring), "rally.ring must not repeat a model")
@@ -277,8 +287,9 @@ class AppConfig:
         fixed = self.router.fixed_model
         _require(fixed is None or fixed in keys,
                  f"router.policy {self.router.policy!r} names an unknown model; known: {', '.join(keys)}")
-        unknown = [k for k in self.rally.ring if k not in keys]
-        _require(not unknown, f"rally.ring names unknown model(s) {', '.join(unknown)}; known: {', '.join(keys)}")
+        unknown = [k for k in (*self.rally.ring, *self.rally.light_schema_models) if k not in keys]
+        _require(not unknown, f"rally.ring / rally.light_schema_models name unknown model(s) {', '.join(unknown)}; "
+                              f"known: {', '.join(keys)}")
         if self.rally.enabled:
             _require(len(self.rally_ring()) >= 2, "the rally needs at least two models in its ring")
             _require(not self.explore.enabled, "the rally and explore presets are mutually exclusive")
@@ -316,6 +327,7 @@ class AppConfig:
         d["explore"]["light_schema_models"] = list(self.explore.light_schema_models)
         d["explore"]["lens"]["tiers"] = dict(self.explore.lens.tiers)
         d["rally"]["ring"] = list(self.rally.ring)
+        d["rally"]["light_schema_models"] = list(self.rally.light_schema_models)
         return d
 
 

@@ -369,6 +369,8 @@ function rallyTag(r) {
     if (l.confirm) parts.push(l.confirm + " confirm");
     if (l.unverified) parts.push(l.unverified + " unverified");
     if (l.nothing_newer) parts.push("nothing newer");
+    if (r.self_reply) parts.push("self-reply");
+    if (r.cut) parts.push("cut");
     parts.push(r.newest ? "newest " + r.newest : "newest not stated");
   } else if (r.turn) parts.push("note " + r.turn);
   return { text: parts.join(" · "), quiet: !!r.quiet };
@@ -423,9 +425,14 @@ function renderRally(r) {
   if (!r || typeof r !== "object") { $("rally").hidden = true; return; }
   const f = r.frontier && typeof r.frontier === "object" ? r.frontier : {};
   const gain = typeof f.gain_months === "number" ? f.gain_months : null;
+  const rough = gain == null && typeof f.gain_months_approx === "number" ? f.gain_months_approx : null;
+  const skipped = Array.isArray(r.skipped_hand_overs) ? r.skipped_hand_overs : [];
   const bits = [r.stop_reason ? "stopped: " + String(r.stop_reason).replace(/_/g, " ") : null,
     r.turns != null ? r.turns + " notes" : null, r.hand_overs != null ? r.hand_overs + " hand-overs" : null,
     gain != null ? "frontier gain " + (gain > 0 ? "+" : "") + gain + " month" + (Math.abs(gain) === 1 ? "" : "s") : null,
+    rough != null ? "frontier gain about " + (rough > 0 ? "+" : "") + rough + " (approximate or missing dates)" : null,
+    r.self_replies ? r.self_replies + " self-repl" + (r.self_replies === 1 ? "y" : "ies") + " (partner could not take the turn; not counted as confirmation)" : null,
+    skipped.length ? "skipped: " + skipped.map((x) => modelName(x.model) + " (" + x.reason + ")").join(", ") : null,
     r.preset ? "preset " + r.preset : null].filter(Boolean);
   $("r-hint").textContent = bits.join(" · ");
   $("r-chart").replaceChildren(rallyChart(r));

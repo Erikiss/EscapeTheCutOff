@@ -354,6 +354,10 @@ def rally_note_tag(note: Mapping[str, Any]) -> str:
             parts.append(word if name == "nothing_newer" else f"{labels[name]} {word}")
     if note.get("kind") == "reply" and note.get("quiet"):
         parts.append("quiet")
+    if note.get("self_reply"):
+        parts.append("self-reply")
+    if note.get("cut"):
+        parts.append("cut")
     newest = note.get("newest")
     parts.append(f"newest {newest}" if newest else "newest not stated")
     return " · ".join(parts)
@@ -372,11 +376,22 @@ def rally_summary(rally: Mapping[str, Any], models: Mapping[str, ModelSpec] | No
     frontier = rally.get("frontier") if isinstance(rally.get("frontier"), Mapping) else {}
     curve = " → ".join(m or "?" for m in frontier.get("by_turn") or [])
     gain = frontier.get("gain_months")
+    rough = frontier.get("gain_months_approx")
     lines = [head]
     if curve:
         lines.append(f"  frontier (self-reported, newest month declared per note): {curve}"
                      + (f" · gain {gain:+d} month{'' if abs(gain) == 1 else 's'} beyond the best opening note"
-                        if isinstance(gain, int) and not isinstance(gain, bool) else ""))
+                        if isinstance(gain, int) and not isinstance(gain, bool) else
+                        f" · gain about {rough:+d} month{'' if abs(rough) == 1 else 's'} (approximate or missing dates)"
+                        if isinstance(rough, int) and not isinstance(rough, bool) else ""))
+    replies = rally.get("self_replies")
+    if isinstance(replies, int) and replies:
+        lines.append(f"  {replies} note{'' if replies == 1 else 's'} written by the model that wrote the note before "
+                     "(its partner could not take the turn); not counted as confirmation")
+    skipped = rally.get("skipped_hand_overs")
+    if isinstance(skipped, list) and skipped:
+        lines.append("  skipped hand-overs: " + ", ".join(
+            f"{name(str(row.get('model')))} ({row.get('reason')})" for row in skipped if isinstance(row, Mapping)))
     adds = rally.get("adds_by_model") if isinstance(rally.get("adds_by_model"), Mapping) else {}
     for key, row in adds.items():
         if isinstance(row, Mapping):
