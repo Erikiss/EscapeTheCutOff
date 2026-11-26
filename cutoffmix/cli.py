@@ -3,8 +3,9 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-                             [--preset NAME]
+                             [--preset NAME] [--ring KEY,KEY[,KEY]]
     cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...] [--preset NAME]
+                    [--ring KEY,KEY[,KEY]]
     cutoffmix index show [--path FILE] [--probe P] [--config FILE]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
@@ -26,7 +27,10 @@ are imported only by the subcommands that need them. ``bench grade`` re-grades a
 (never in place; ``usage`` and ``latency_s`` are kept): offline with the rule grader alone, with ``--judges`` for
 the rows the rules cannot decide; it prints the grade counts per model and probe before and after. ``--preset explore`` (``run`` and ``serve``) merges the packaged
 explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
-and the summary line adds the exploration metrics of the ``done`` event.
+and the summary line adds the exploration metrics of the ``done`` event. ``--preset rally`` merges the rally preset
+(DESIGN_rally.md): two or three models hand one record to each other in a fixed ring; the segment headers show the kind
+and the label counts of each note, and a summary after the run lists the turns, the stop reason and the (self-reported)
+frontier. ``--ring KEY,KEY[,KEY]`` sets the ring (and switches the rally on when no preset is given).
 """
 
 from __future__ import annotations
@@ -54,7 +58,8 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "use_color"]
+__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "rally_note_tag",
+           "rally_summary", "use_color"]
 
 PROBE_CHOICES = ("current", "current_d", "recall", "mcq")
 _ANY_ADDRESS = ("0.0.0.0", "::", "")  # --host values that bind every interface (no host name to allow)
@@ -156,8 +161,23 @@ class TerminalPrinter:
             return f"continue: '{cue}'" if cue else "continue"
         return ""
 
-    def _header(self, ev: RelayEvent) -> tuple[str, str]:
-        """``(styled header, visible header)`` for a segment or answer start."""
+    @staticmethod
+    def rally_tag(data: Mapping[str, Any], end: Mapping[str, Any] | None = None) -> str:
+        """The rally tag of a segment: ``rally: reply`` from the ``segment_start`` (``data["rally"]`` with ``kind``,
+        ``turn``, ``ring``), extended with the label counts and the declared newest month once the ``segment_end``
+        data carries the note record (``end["rally"]``, see :func:`rally_note_tag`)."""
+        note = (end or {}).get("rally")
+        if isinstance(note, Mapping):
+            return "rally: " + rally_note_tag(note)
+        nested = data.get("rally")
+        if isinstance(nested, Mapping) and nested.get("kind"):
+            turn = nested.get("turn")
+            return f"rally: {nested['kind']}" + (f" (note {turn})" if turn else "")
+        return ""
+
+    def _header(self, ev: RelayEvent, end: RelayEvent | None = None) -> tuple[str, str]:
+        """``(styled header, visible header)`` for a segment or answer start; ``end`` (the matching ``segment_end``)
+        adds what is only known once the note is written (the rally's label counts)."""
         data = ev.data or {}
         bits = [str(ev.decision or "")]
         if "r" in data:
@@ -168,7 +188,7 @@ class TerminalPrinter:
         if ev.phase == "answer":
             bits.insert(0, "answer")
         meta = " · ".join(b for b in bits if b)
-        tag = self.explore_tag(data)
+        tag = self.explore_tag(data) or self.rally_tag(data, end.data if end is not None else None)
         chip = self._chip(ev.model)
         plain_chip = f" {self.models[ev.model].label()} " if self.color and ev.model in self.models else chip
         styled = f"{chip} {self._sgr(meta, '2')}" + (f" {self._sgr(f'[{tag}]', '1')}" if tag else "")
@@ -204,11 +224,13 @@ class TerminalPrinter:
                 if rows < height:  # erase the block; taller blocks cannot be reached any more
                     self._write("\r" + (f"\033[{rows - 1}A" if rows > 1 else "") + "\033[J")
                     if not dropped:
-                        self._write(self._header(start)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
+                        self._write(self._header(start, ev)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
                 elif not dropped:
                     self._write("\n" + self._sgr("(committed) ", "2") + self._sgr(ev.text, *self._fg(ev.model)))
+            elif not dropped and isinstance(data.get("rally"), Mapping):  # streamed as it is: the counts come last
+                self._write("\n" + self._sgr("  ↳ " + rally_note_tag(data["rally"]), "2"))
         elif not dropped:
-            self._write(self._header(start)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
+            self._write(self._header(start, ev)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
         if dropped:
             reason = data.get("reason", "failed")
             detail = f": {data['error']}" if data.get("error") else ""
@@ -234,6 +256,9 @@ class TerminalPrinter:
             self.err.flush()
         elif ev.type == "done":
             self._write(self._sgr(self.summary(ev.data or {}), "2") + "\n")
+            rally = (ev.data or {}).get("rally")
+            if isinstance(rally, Mapping):
+                self._write(self._sgr("\n".join(rally_summary(rally, self.models)), "2") + "\n")
 
     def summary(self, data: Mapping[str, Any]) -> str:
         """One-line run statistics from the ``done`` data."""
@@ -314,14 +339,79 @@ def explore_summary(explore: Mapping[str, Any]) -> list[str]:
     return parts
 
 
+def rally_note_tag(note: Mapping[str, Any]) -> str:
+    """``reply · +1 update · +2 newer · 1 confirm · newest 2026-03`` for one rally note record
+    (``segment_end.data["rally"]``, DESIGN_rally.md section 6); every key is optional."""
+    labels = note.get("labels") if isinstance(note.get("labels"), Mapping) else {}
+    parts = [str(note.get("kind") or "note")]
+    if labels.get("known"):
+        parts.append(f"{labels['known']} known")
+    for name in ("update", "newer"):
+        if labels.get(name):
+            parts.append(f"+{labels[name]} {name}")
+    for name, word in (("confirm", "confirm"), ("unverified", "unverified"), ("nothing_newer", "nothing newer")):
+        if labels.get(name):
+            parts.append(word if name == "nothing_newer" else f"{labels[name]} {word}")
+    if note.get("kind") == "reply" and note.get("quiet"):
+        parts.append("quiet")
+    newest = note.get("newest")
+    parts.append(f"newest {newest}" if newest else "newest not stated")
+    return " · ".join(parts)
+
+
+def rally_summary(rally: Mapping[str, Any], models: Mapping[str, ModelSpec] | None = None) -> list[str]:
+    """The lines printed after a rally run (DESIGN_rally.md section 6): turns and stop reason, the frontier curve
+    (the newest month each note declared, a running maximum; **self-reported**) and what each model added."""
+    def name(key: str) -> str:
+        spec = (models or {}).get(key)
+        return spec.label() if spec is not None else key
+
+    ring = " → ".join(name(k) for k in rally.get("ring") or [])
+    head = f"rally · {rally.get('turns', 0)} notes · {rally.get('stop_reason') or 'ended'}"
+    head += f" · ring {ring}" if ring else ""
+    frontier = rally.get("frontier") if isinstance(rally.get("frontier"), Mapping) else {}
+    curve = " → ".join(m or "?" for m in frontier.get("by_turn") or [])
+    gain = frontier.get("gain_months")
+    lines = [head]
+    if curve:
+        lines.append(f"  frontier (self-reported, newest month declared per note): {curve}"
+                     + (f" · gain {gain:+d} month{'' if abs(gain) == 1 else 's'} beyond the best opening note"
+                        if isinstance(gain, int) and not isinstance(gain, bool) else ""))
+    adds = rally.get("adds_by_model") if isinstance(rally.get("adds_by_model"), Mapping) else {}
+    for key, row in adds.items():
+        if isinstance(row, Mapping):
+            words = (("update", "update"), ("newer", "newer"), ("confirm", "confirm"), ("unverified", "unverified"),
+                     ("nothing_newer", "nothing newer"))
+            bits = [f"{row[label]} {word}" for label, word in words if row.get(label)]
+            lines.append(f"  {name(key)}: " + (", ".join(bits) or "no labelled lines"))
+    return lines
+
+
 # --------------------------------------------------------------------------------------
 # Shared helpers
 # --------------------------------------------------------------------------------------
 
 
+def _ring_overrides(args: argparse.Namespace, overrides: dict[str, Any]) -> dict[str, Any]:
+    """Apply ``--ring KEY,KEY[,KEY]``: it implies ``--preset rally`` when no preset is given and is refused with any
+    other preset; the models themselves are validated by the configuration (known keys, at least two, no repeats)."""
+    raw = getattr(args, "ring", None)
+    if raw is None:
+        return overrides
+    ring = [part.strip() for part in raw.split(",")]
+    if len(ring) < 2 or not all(ring):
+        raise CLIError(f"--ring expects two or three model keys separated by commas, got {raw!r}")
+    preset = getattr(args, "preset", None)
+    if preset not in (None, "rally"):
+        raise CLIError(f"--ring belongs to the rally preset and cannot be combined with --preset {preset}")
+    args.preset = "rally"
+    return {**overrides, "rally": {**overrides.get("rally", {}), "ring": ring, "enabled": True}}
+
+
 def _load_cfg(args: argparse.Namespace, overrides: dict[str, Any] | None = None) -> AppConfig:
     from cutoffmix.config import load_config
 
+    overrides = _ring_overrides(args, dict(overrides or {}))
     try:
         return load_config(getattr(args, "config", None), overrides or None, preset=getattr(args, "preset", None))
     except (ValueError, OSError) as e:
@@ -827,7 +917,10 @@ def _add_config(p: argparse.ArgumentParser) -> None:
 def _add_preset(p: argparse.ArgumentParser) -> None:
     p.add_argument("--preset", metavar="NAME",
                    help="packaged preset merged before --config: 'explore' (structured notes, cross-field lenses, a "
-                        "record gate before the answer; DESIGN.md section 7)")
+                        "record gate before the answer; DESIGN.md section 7) or 'rally' (two or three models hand "
+                        "the record back and forth, each adding what it knows that is newer; DESIGN_rally.md)")
+    p.add_argument("--ring", metavar="KEY,KEY[,KEY]",
+                   help="rally hand-over order, e.g. claude-fable-5.2,gemini-4-neon; implies --preset rally")
 
 
 def build_parser() -> argparse.ArgumentParser:

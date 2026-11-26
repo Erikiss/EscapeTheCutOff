@@ -14,6 +14,10 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
 
 `docs/DESIGN.md` ist der vollständige Entwurf, inklusive der gegen die Live-Endpunkt-Metadaten geprüften API-Fakten.
 
+Zwei Presets verändern den Ablauf (beide optional, mit `--preset`): **`explore`** schreibt strukturierte Notizen mit
+fachfremden Blickwinkeln, und **`rally`** lässt zwei oder drei Modelle die Notizen im Ring weiterreichen, damit jedes
+ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
+
 ## Ehrlicher Stand
 
 - **Mit simulierten Modellen (`--mock`) läuft alles:** Relay, Router, Web-UI, OpenAI-kompatible API, Benchmark-Pipeline,
@@ -38,6 +42,10 @@ mit der Methodik des [Knowledge-Cutoff-Bench](https://apoorvumang.github.io/know
     löst die Sperre fast immer aus, mit vorhandenen Notizen seltener. Welches Wort genau, ließ sich nicht isolieren;
     es wirkt wie ein Schwellenwert-Klassifikator, den die Schema-Anweisung überschreitet. Deshalb bekommt Fable im
     Explore-Modus eine abgeschwächte Vorgabe (siehe unten).
+- **Rally-Preset (Schaukel zwischen den Modellen): nur offline geprüft.** Ablauf, Ring-Reihenfolge, Abbruchregel,
+  Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle; mit den echten drei Modellen wurde das Preset
+  **noch nicht** gelaufen (kein Schlüssel in der Entwicklungsumgebung). Offen sind vor allem, ob Fables Eingangsfilter
+  die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -226,10 +234,12 @@ cutoffmix serve
 - `cutoffmix`: das Relay;
 - `cutoffmix-speculative`: das Relay mit parallelen Entwürfen;
 - `cutoffmix-fixed-<key>`: nur ein Modell, als Vergleich;
-- `cutoffmix-explore`: das Relay mit dem Explore-Preset (siehe unten).
+- `cutoffmix-explore`: das Relay mit dem Explore-Preset (siehe unten);
+- `cutoffmix-rally`: das Relay mit dem Rally-Preset (siehe unten).
 
 Die Notizen kommen als `delta.reasoning` (dort, wo OpenAI-kompatible Clients Thinking anzeigen), die Antwort als
-`delta.content`. Pro Anfrage lassen sich `policy`, `strategy`, `segment_tokens` und `preset` im Request-Body setzen.
+`delta.content`. Pro Anfrage lassen sich `policy`, `strategy`, `segment_tokens`, `preset` und `ring` (nur Rally) im
+Request-Body setzen.
 
 Konfiguration: `--config datei.yaml` wird über `cutoffmix/data/default.yaml` gemischt. Beispiel für einen neu
 gemessenen Index:
@@ -284,6 +294,53 @@ Das Preset setzt deshalb auf Protokoll statt Sampling:
 **Grenzen:** Mit dem Prior-Index schreibt auch hier meist Sol, Querverbindungen wechseln also das Modell nicht
 (`--policy round_robin` zeigt alle drei). Das Preset verbessert Antworten nicht, es macht sie nachvollziehbarer und
 breiter. Kosten: etwa das 1,5- bis 2,5-Fache eines Standardlaufs, ca. 100–140 s mit `round_robin`.
+
+## Rally-Preset: Schaukel zwischen den Modellen
+
+```bash
+cutoffmix run --preset rally "Was ist der aktuelle Stand bei KI-Modellen?"
+cutoffmix run --ring claude-fable-5.2,gemini-4-neon,gpt-6.2-sol "…"   # drei Modelle im Ring (--ring schaltet das Preset ein)
+cutoffmix serve --preset rally          # UI-Auswahl „Preset“ = rally; API-Modell-ID cutoffmix-rally
+curl … -d '{"question": "…", "ring": ["claude-fable-5.2", "gemini-4-neon"]}' http://127.0.0.1:8000/api/relay
+```
+
+**Idee.** Das normale Relay lässt den Router pro Abschnitt *ein* Modell wählen, meist das frischeste. Die Rally macht
+das Gegenteil mit Absicht: Zwei oder drei Modelle mit **verschiedenen Trainingsdaten** reichen die Notizen im festen
+Ring weiter (Standard: Fable, Neon, Fable, Neon, …).
+
+1. Modell A schreibt, was es weiß, jeden Punkt mit Datum (`Known:`), und den neuesten Monat, den es wirklich kennt
+   (`Newest I know:`).
+2. Modell B bekommt As Notiz und die Anweisung: bestätigen (`Confirm:`), Überholtes oder Falsches korrigieren
+   (`Update:`, mit Datum), Neueres nach As letztem Datum nennen (`Newer:`), Zweifel markieren (`Unverified:`) oder
+   ehrlich sagen, dass nichts Neueres bekannt ist (`Nothing newer:`). Erfinden ist ausdrücklich verboten.
+3. Modell A liest Bs Notiz. Bs Neueres ist für A Stichwort und Prüfstein: A erinnert sich vielleicht an Zusammenhängendes,
+   das es von allein nicht geschrieben hätte. Und so weiter.
+4. Ende: wenn ein voller Umlauf nichts Neueres bringt (`min_turns` = 2 × Ringgröße, danach `quiet_turns` = Ringgröße
+   ruhige Notizen in Folge) oder bei `max_turns` (Standard 8). Dann schreibt ein Aufruf die Antwort aus den Notizen:
+   was ein zweites Modell bestätigt hat, steht ohne Einschränkung, was nur eines gesagt hat, trägt `(single source)`.
+
+Das Preset ändert nur den Ablauf. Die Reihenfolge bestimmt der Ring, nicht der Router. Der Router wählt weiterhin das
+Antwortmodell unter den Ring-Modellen und meldet Thema und Scores wie immer. Mit `rally.answer_from_ring: false`
+darf auch ein Modell außerhalb des Rings antworten. Nicht kombinierbar mit `--preset explore`.
+
+**Kennzahlen** stehen in `done.rally` (CLI-Zusammenfassung und UI-Streifen „Rally“): Notizen und Stopp-Grund
+(`converged`, `max_turns`, `no_partner`, `max_segments`, `empty`, `error`), pro Notiz die Label-Zahlen und der
+angegebene neueste Monat, die **Frontier-Kurve** (laufendes Maximum dieser Monate) mit `gain_months` (wie weit sie über
+den besten ersten Eintrag hinausgeht) und pro Modell, wie viel es korrigiert (`update`), Neues gebracht (`newer`)
+und bestätigt hat.
+
+**Grenzen, ehrlich:**
+
+- **Die Monatsangaben sind Selbstauskünfte der Modelle.** Das Projekt zählt Selbstauskünfte sonst nicht. Die Kurve
+  zeigt, was der Austausch getan hat, nicht, dass er hilft.
+- **Unbewiesen ist, dass die Rally den effektiven Cutoff über das beste Einzelmodell hinaushebt.** Das ist eine
+  Hypothese. Gegenrisiko: Modelle können Fehler voneinander übernehmen oder etwas „Neueres“ erfinden, um zu gefallen.
+  Die Prompts verbieten das, die Antwort markiert Einzelquellen, mehr ist offline nicht prüfbar.
+- **Gemessen wird das später mit dem Benchmark:** dieselben Aktuell-Fragen nach den Cutoffs der Modelle, drei Arme
+  (jedes Modell allein, Router-Relay, Rally), Trefferquote nach Ereignismonat (`docs/DESIGN_rally.md`, Abschnitt 9).
+  Das ist noch nicht gebaut und kostet echtes Geld, also nur mit Freigabe.
+- **Mit echten Modellen nicht gelaufen** (siehe „Ehrlicher Stand“). Die simulierten Modelle konvergieren, weil sie so
+  gebaut sind. Das sagt nichts darüber, wie die echten schreiben.
 
 ## Den Index neu messen (themenstratifiziert)
 

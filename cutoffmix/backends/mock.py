@@ -335,6 +335,8 @@ class MockBackend:
     def _segment_topics(self, req: ContinuationRequest) -> list[str]:
         """``[topic of this segment]``, or every question topic for the answer and the concluding segment."""
         asked = self.question_topics(req.question)
+        if req.metadata.get("kind") in ("open", "reply"):  # rally: the exchange stays on the question's main topic
+            return asked[:1]
         concluding = req.phase == "answer" or len(req.segments) >= self.segments_to_answer
         if len(asked) > 1:
             return asked if concluding else [asked[(len(req.segments) // _SEGMENTS_PER_TOPIC) % len(asked)]]
