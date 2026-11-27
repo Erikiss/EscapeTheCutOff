@@ -226,6 +226,8 @@ def test_the_adoption_judge_decides_reported_speech(tmp_path, reported, vote, ad
     ([J1, J2, J3], {"j1": "ENDORSE", "j2": "REPORT", "j3": "REPORT"}, False, "judge:j2+j3"),
     ([J1, J2, J3], {"j1": "ENDORSE", "j2": "REPORT", "j3": "REJECT"}, None, "judge:j1+j2+j3"),
     ([J1], {"j1": "I am not sure."}, None, "judge:j1"),                          # unparseable
+    ([J1], {"j1": "The answer does not endorse the candidate."}, None, "judge:j1"),   # a negation is no ENDORSE
+    ([J1, J2], {"j1": "Not ENDORSE.", "j2": "ENDORSE"}, None, "judge:j1+j2"),   # one vote is no majority of two
     ([J1], {"j1": RuntimeError("judge down")}, None, "judge:j1"),                # a failed judge is no vote
 ])
 def test_the_adoption_majority(tmp_path, reported, judges, votes, adopted, grader):
@@ -256,11 +258,31 @@ def test_reported_rows_are_judged_again_later(tmp_path, reported):
     ("ENDORSE", "ENDORSE"),
     ("report", "REPORT"),
     ("**REJECT**", "REJECT"),
+    ("Endorsed.", "ENDORSE"),
     ('{"label": "REPORT"}', "REPORT"),
+    ('```json\n{"label": "REJECT"}\n```', "REJECT"),
+    ('{"verdict": "ENDORSE", "why": "it does not just report the note"}', "ENDORSE"),   # the field, not the prose
     ("REPORT. The answer does not endorse the name.", "REPORT"),               # the first word decides
-    ("The answer endorses the candidate.", "ENDORSE"),                         # the only label it names
-    ("It rejected the note's name.", "REJECT"),
+    ("REPORT: the answer only repeats the note's claim.", "REPORT"),
+    ("Verdict: ENDORSE", "ENDORSE"),
+    ("**Final answer:** report.", "REPORT"),
+    ("Answer - REJECT", "REJECT"),
+    ("The answer only reports the note's claim, so: REPORT", "REPORT"),       # the label right after a colon
+    ("It is not a rejection: ENDORSE", "ENDORSE"),
+    ("The answer cites the note and adds nothing.\n\nREJECT", "REJECT"),       # a closing line that is only a label
+    # prose names a label in passing, mostly through a negation: no vote (it was read as that label before)
+    ("The answer does not endorse the candidate.", None),
+    ("It does not endorse X.", None),
+    ("Not ENDORSE.", None),
+    ("I would not say it rejects the name.", None),
+    ("The answer neither endorses nor rejects the candidate; it reports the note's claim.", None),
+    ("The answer endorses the candidate.", None),
+    ("It rejected the note's name.", None),
+    ("The verdict is clear: not ENDORSE", None),                               # a word between colon and label
+    ("It is not self-endorsed", None),                                         # a hyphen is no separator
     ("Not ENDORSE but REPORT", None),
+    ("REPORT\n\nVerdict: ENDORSE", None),                                      # two verdicts
+    ("ENDORSE: the answer gives X.\nREPORT: it reports X.\nREJECT: it rejects X.", None),   # the instructions
     ("I cannot tell.", None),
     ("", None),
     ("Mock reply from gemini-4-neon: this request has no scripted answer.", None),

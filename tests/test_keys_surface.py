@@ -354,7 +354,8 @@ def test_run_errors_are_one_line_without_a_traceback(tmp_path, capsys, keys, bac
     write_jsonl(plan, [*rows, rows[0]])                                          # a repeated id
     assert _run(plan, tmp_path / "keys_results_mock.jsonl", "--mock") == 2
     err = capsys.readouterr().err
-    assert _one_line(err) and err.startswith("cutoffmix: the plan repeats 1 id") and backends.mock.calls == []
+    assert _one_line(err) and err.startswith(f"cutoffmix: --plan {plan}: the plan repeats 1 id")
+    assert backends.mock is None                                                # refused before a backend is made
     assert _run(tmp_path / "missing_plan.jsonl", tmp_path / "x.jsonl", "--mock") == 2
     assert _one_line(capsys.readouterr().err)
 
@@ -396,3 +397,125 @@ def test_plan_does_not_replace_a_plan_with_other_messages_without_force(tmp_path
     assert main([*argv[:8], str(stored), "--pairs", PAIR, "--today", "2026-11-27"]) == 2
     err = capsys.readouterr().err
     assert _one_line(err) and "is not a plan" in err and stored.read_bytes() == copy_before
+
+
+# ---- CLI: files of the wrong kind, an --out the run cannot use, answers whose grading failed ------------------------
+
+
+def test_plan_force_never_replaces_a_file_that_is_not_a_plan(tmp_path, capsys, keys):
+    results = tmp_path / "papers_probes_copy.jsonl"                             # the stored probe results (paid)
+    shutil.copy(RESULTS, results)
+    events = tmp_path / "events_copy.jsonl"
+    shutil.copy(EVENTS, events)
+    plain = tmp_path / "other_results.jsonl"
+    shutil.copy(RESULTS, plain)
+    folder = tmp_path / "plans"
+    folder.mkdir()
+    before = {p: p.read_bytes() for p in (results, events, plain)}
+
+    def plan(out, *extra):
+        return main(["bench", "keys", "plan", "--events", str(events), "--results", str(results), "--out", str(out),
+                     "--pairs", PAIR, "--today", "2026-11-27", *extra])
+    for out, needle in ((results, "is the --results file"), (events, "is the --events file"),
+                        (plain, "is not a plan (row 1 has no id or messages)"), (folder, "is not a regular file")):
+        for extra in ([], ["--force"]):
+            assert plan(out, *extra) == 2
+            err = capsys.readouterr().err
+            assert _one_line(err) and needle in err, (out, extra, err)
+    assert all(p.read_bytes() == data for p, data in before.items()) and list(folder.iterdir()) == []
+    new = tmp_path / "plan.jsonl"
+    assert plan(new) == 0 and plan(new, "--seed", "1", "--force") == 0          # an earlier plan: --force replaces it
+    capsys.readouterr()
+
+
+def test_plan_refuses_a_plan_whose_donor_answers_differ_without_force(tmp_path, capsys, keys):
+    plan, _ = _plan(tmp_path, capsys, "--pairs", PAIR)
+    rows = read_jsonl(plan)
+    i = next(n for n, r in enumerate(rows) if r["set"] == "donor_wrong")
+    original = rows[i]["donor_answer"]
+    rows[i] = {**rows[i], "donor_answer": "Some Other Name"}                    # an earlier name rule, same messages
+    write_jsonl(plan, rows)
+    before = plan.read_bytes()
+    argv = ["bench", "keys", "plan", "--events", str(EVENTS), "--results", str(RESULTS), "--out", str(plan),
+            "--pairs", PAIR, "--today", "2026-11-27"]
+    assert main(argv) == 2
+    err = capsys.readouterr().err
+    assert _one_line(err) and f"1 of its {len(rows)} ids carry other messages or another donor answer (1 only the " \
+        "donor answer" in err and "--force" in err and plan.read_bytes() == before
+    assert main([*argv, "--force"]) == 0
+    capsys.readouterr()
+    assert read_jsonl(plan)[i]["donor_answer"] == original
+
+
+def test_a_wrong_or_missing_input_file_is_a_one_line_error(tmp_path, capsys, keys, backends):
+    plan, _ = _plan(tmp_path, capsys, "--pairs", PAIR)
+    new_plan = tmp_path / "p.jsonl"
+
+    def keys_plan(events, results):
+        return ["bench", "keys", "plan", "--events", str(events), "--results", str(results), "--out", str(new_plan),
+                "--pairs", PAIR, "--today", "2026-11-27"]
+
+    def keys_run(plan_file, events):
+        return ["bench", "keys", "run", "--plan", str(plan_file), "--events", str(events), "--out",
+                str(tmp_path / "keys_results_mock.jsonl"), "--mock"]
+    missing = tmp_path / "missing.jsonl"
+    cases = [
+        (keys_plan(EVENTS, missing), f"--results {missing}: no such file"),
+        (keys_plan(EVENTS, EVENTS), f"--results {EVENTS} is not a probe results file (TypeError: "),
+        (keys_plan(RESULTS, RESULTS), f"--events {RESULTS} is not an events file (TypeError: "),
+        (keys_plan(missing, RESULTS), f"--events {missing}: no such file"),
+        (keys_run(plan, plan), f"--events {plan} is not an events file (TypeError: "),
+        (keys_run(plan, RESULTS), f"--events {RESULTS} is not an events file"),
+        (keys_run(EVENTS, EVENTS), f"--plan {EVENTS}: plan row 1 has no set, donor, recipient, event_id, arm, "
+                                   "messages"),
+        (keys_run(RESULTS, EVENTS), f"--plan {RESULTS}: plan row 1 has no id, set, donor, recipient, arm, messages"),
+        (keys_run(missing, EVENTS), f"--plan {missing}: no such file"),
+    ]
+    for argv, needle in cases:
+        assert main(argv) == 2, argv
+        err = capsys.readouterr().err
+        assert _one_line(err) and needle in err, (argv, err)
+    assert backends.mock is None and not new_plan.exists() and not (tmp_path / "keys_results_mock.jsonl").exists()
+
+
+def test_run_with_an_out_it_cannot_write_sends_nothing(tmp_path, capsys, keys, backends):
+    plan, _ = _plan(tmp_path, capsys, "--pairs", PAIR)
+    folder = tmp_path / "keys_results.jsonl"
+    folder.mkdir()                                                              # e.g. --out runs
+    code = _run(plan, folder, "--max-cost", "1")
+    captured = capsys.readouterr()
+    assert code == 2 and _one_line(captured.err) and "cannot write --out" in captured.err
+    assert "not a regular file" in captured.err and "planned calls:" not in captured.out
+    under_a_file = plan / "keys_results.jsonl"                                  # its folder is a file: an OSError
+    code = _run(plan, under_a_file, "--max-cost", "1")
+    captured = capsys.readouterr()
+    assert code == 2 and _one_line(captured.err) and "Traceback" not in captured.err
+    assert backends.gateway.calls == []
+
+
+def test_run_says_which_answers_could_not_be_graded(tmp_path, capsys, keys, backends, monkeypatch):
+    from cutoffmix.bench.keys import text as text_mod
+
+    plan, _ = _plan(tmp_path, capsys, "--pairs", PAIR)
+    rows = read_jsonl(plan)
+    adoption = sum(1 for r in rows if r["set"] in ("donor_wrong", "control"))
+    real = text_mod.adoption_label
+
+    def broken(response, name, event):
+        raise ValueError("labelling broke")
+    monkeypatch.setattr(text_mod, "adoption_label", broken)
+    results = tmp_path / "keys_results_mock.jsonl"
+    assert _run(plan, results, "--mock") == 0                                   # the run goes on: nothing is lost
+    captured = capsys.readouterr()
+    assert len(backends.mock.calls) == len(rows) and adoption > 0
+    assert captured.err.endswith(f"\n{adoption} answers could not be graded (ValueError: labelling broke); they are "
+                                 "kept and counted in the cost, and the next run grades them again from the stored "
+                                 "responses, without a new call\n")
+    monkeypatch.setattr(text_mod, "adoption_label", real)
+    assert _run(plan, results, "--mock") == 0
+    captured = capsys.readouterr()
+    assert backends.mock.calls == [] and "could not be graded" not in captured.err
+    assert f"{len(rows)} planned calls: {len(rows)} already answered, 0 without a current answer; sending 0 now; " \
+           f"grading {adoption} stored answers again first, without a new call ({adoption} whose grading failed)" \
+           in captured.out
+    assert f"sent 0 calls, graded {adoption} stored answers again" in captured.out

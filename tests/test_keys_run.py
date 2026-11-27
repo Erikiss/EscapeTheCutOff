@@ -24,7 +24,7 @@ from cutoffmix.bench.keys import (
     run_plan,
 )
 from cutoffmix.bench.keys.run import _backend_name, _locked
-from cutoffmix.types import ChatResult, ModelSpec
+from cutoffmix.types import ChatRequest, ChatResult, ModelSpec
 
 # ---- helpers ------------------------------------------------------------------------------------------------------
 
@@ -195,7 +195,7 @@ def test_every_row_records_its_provenance(tmp_path):
 def test_request_sha_covers_the_messages_the_budget_and_the_model_settings():
     messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}]
     spec = ModelSpec(key="b", provider_id="x/b", reasoning={"effort": "low"}, provider_routing={"only": ["p"]},
-                     extra_body={"verbosity": "low"})
+                     extra_body={"verbosity": "low"}, supports_temperature=True)   # a model that takes a temperature
     base = request_sha(messages, max_tokens=4096, temperature=0.0, model=spec)
     assert base == request_sha([dict(m) for m in messages], max_tokens=4096, temperature=0.0, model=spec)
     assert len(base) == 40
@@ -214,6 +214,33 @@ def test_request_sha_covers_the_messages_the_budget_and_the_model_settings():
     same = request_sha(messages, max_tokens=4096, temperature=0.0, model=dataclasses.replace(spec, key="other",
                                                                                               color="#000"))
     assert same == base                                                         # display settings do not count
+
+
+def test_request_sha_hashes_the_temperature_as_the_gateway_sends_it():
+    """A temperature reaches the provider only for a model with ``supports_temperature`` (build_chat_body), so the
+    hash follows the body: flipping the setting changes it, a temperature that is never sent does not."""
+    messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}]
+    off = ModelSpec(key="b", provider_id="x/b")                                 # as configured for the three models
+    on = dataclasses.replace(off, supports_temperature=True)
+    req = ChatRequest(messages=messages, max_tokens=4096, temperature=0.0)
+    gateway = OpenRouterBackend()                                               # builds bodies offline, never calls
+    assert "temperature" not in gateway.build_chat_body(off, req)
+    assert gateway.build_chat_body(on, req)["temperature"] == 0
+    sha = {(model.supports_temperature, t): request_sha(messages, max_tokens=4096, temperature=t, model=model)
+           for model in (off, on) for t in (0.0, None)}
+    assert sha[(False, 0.0)] == sha[(False, None)] == sha[(True, None)]       # no temperature in the body
+    assert sha[(True, 0.0)] != sha[(False, 0.0)]
+
+
+def test_a_model_that_starts_taking_a_temperature_makes_its_rows_stale(tmp_path):
+    events, rows = fixture_plan()
+    out = tmp_path / "keys.jsonl"
+    run(ScriptedBackend(), rows, out, events)
+    sampled = [MODELS[0], dataclasses.replace(MODELS[1], supports_temperature=True)]   # e.g. a config override
+    refused(ScriptedBackend(), rows, out, events, f"{len(rows)} of the {len(rows)} planned calls were answered under "
+            "another request", models=sampled)
+    backend = ScriptedBackend()
+    assert run(backend, rows, out, events, models=sampled, resend_stale=True).sent == len(rows) == len(backend.calls)
 
 
 def test_the_default_backend_name_comes_from_the_backend():
@@ -354,6 +381,69 @@ def test_a_second_run_on_the_same_out_is_refused(tmp_path):
     ids = [r["id"] for r in read_jsonl(out)]
     assert len(ids) == len(set(ids)) == len(rows)                               # every call sent once
     assert run(ScriptedBackend(), rows, out, events).sent == 0                  # the lock ends with the run
+
+
+def test_a_symlink_to_the_results_file_shares_its_lock(tmp_path):
+    events, rows = fixture_plan()
+    real = tmp_path / "keys_results.jsonl"
+    real.touch()
+    link = tmp_path / "results_link.jsonl"
+    link.symlink_to(real)
+    (tmp_path / "sub").mkdir()
+    spellings = [link, tmp_path / "sub" / ".." / "keys_results.jsonl"]          # one file, three names
+
+    async def both(other):
+        gate = asyncio.Event()
+        first = ScriptedBackend()
+
+        async def slow_chat(model, req):
+            await gate.wait()
+            return await ScriptedBackend.chat(first, model, req)
+        first.chat = slow_chat
+        task = asyncio.create_task(run_plan(first, MODELS, rows, real, events=events, concurrency=2))
+        await asyncio.sleep(0)                                                  # the first run holds the lock now
+        second = ScriptedBackend()
+        with pytest.raises(ValueError, match="another run is writing"):
+            await run_plan(second, MODELS, rows, other, events=events)
+        gate.set()
+        return second, await task
+    second, outcome = asyncio.run(both(link))
+    assert second.calls == [] and outcome.sent == len(rows)
+    ids = [r["id"] for r in read_jsonl(real)]
+    assert len(ids) == len(set(ids)) == len(rows)                               # every call sent once
+    for other in spellings:
+        with _locked(real):
+            refused(ScriptedBackend(), rows, other, events, "another run is writing")
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.endswith(".lock")) == ["keys_results.jsonl.lock"]
+
+
+def test_an_out_that_cannot_take_rows_is_refused_before_any_call(tmp_path, monkeypatch):
+    events, rows = fixture_plan()
+    folder = tmp_path / "keys_results.jsonl"
+    folder.mkdir()                                                              # --out naming a directory
+    backend = ScriptedBackend()
+    with pytest.raises(ValueError, match=r"cannot write --out .*keys_results.jsonl: it exists and is not a regular"):
+        run(backend, rows, folder, events)
+    assert backend.calls == [] and list(folder.iterdir()) == [] and not list(tmp_path.glob("*.lock"))
+    binary = tmp_path / "image.png"
+    binary.write_bytes(bytes(range(256)) * 4)
+    refused(ScriptedBackend(), rows, binary, events, r"image.png is not a text file")
+    stored = tmp_path / "stored.jsonl"                                          # an earlier results file ...
+    run(ScriptedBackend(), rows[:2], stored, events)
+    empty = tmp_path / "empty.jsonl"
+    empty.touch()
+    new = tmp_path / "new.jsonl"
+    locked_out = {stored, empty, new}
+    real_open = type(stored).open
+
+    def read_only(self, mode="r", *args, **kwargs):                             # ... that this user may not write
+        if self in locked_out and any(c in mode for c in "aw+"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_open(self, mode, *args, **kwargs)
+    monkeypatch.setattr(type(stored), "open", read_only)
+    for out in (stored, empty, new):
+        refused(ScriptedBackend(), rows, out, events, rf"cannot write --out .*{out.name} \(Permission denied\)")
+    assert not new.exists()
 
 
 # ---- cost ---------------------------------------------------------------------------------------------------------
