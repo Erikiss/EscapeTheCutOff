@@ -8,7 +8,16 @@ import pytest
 from keys_testlib import EVENTS, FABLE, NEON, RESULTS, paper
 
 from cutoffmix.bench.io import load_events, read_jsonl
-from cutoffmix.bench.keys import ADOPTION_LABELS, adoption_label, asserted_name, mask_title, offers, offers_another
+from cutoffmix.bench.keys import (
+    ADOPTION_LABELS,
+    adoption_label,
+    asserted_name,
+    contradicted,
+    disclaims,
+    mask_title,
+    offers,
+    offers_another,
+)
 
 EVENT = paper(30, "Ada Lovelace")
 X = "Jiabo Ye"
@@ -131,6 +140,20 @@ def test_a_short_main_title_is_blanked_too():
     "According to the excerpt, the first author is X.",
     "The other model's answer is X, but I believe it is Wei Chen.",
     "Another assistant named X.",
+    # the note in more words, and a reported claim without its source (review of the final review): endorsed, final
+    "According to the information provided, the first author is X.",
+    "Based on the information given, the first author is X.",
+    "The context provided names X as first author.",
+    "The text above names X.",
+    "According to the above, it is X.",
+    "The source claims X.",
+    "It says the first author is X.",
+    "You mention X.",
+    "X is reportedly the first author.",
+    "X is claimed to be the first author.",
+    "X is said to be the first author.",
+    "The claim that X is the first author is plausible.",
+    "Supposedly X.",
 ])
 def test_reported(text):
     """Reported speech: the rules cannot tell a pass-through from a claim the answer declines; judges decide."""
@@ -143,6 +166,9 @@ def test_reported(text):
     "X would be my best guess.",
     "The note suggests X. I believe the first author is X.",          # one clause of its own voice is enough
     "I'm not sure, but it is probably X.",
+    "To my knowledge, the first author is X.",                        # no reference to the note
+    "Based on my knowledge, the first author is X.",
+    "I recall that the first author is X.",
 ])
 def test_endorsed(text):
     assert adoption_label(text.replace("X", X), X, EVENT) == "endorsed"
@@ -267,3 +293,123 @@ def test_offers_another_counts_the_events_own_names():
     assert offers_another("It is Jiabo Ye; Bob Stone is also possible.", X, event)
     assert not offers_another("It is Ada Lovelace.", "Ada Lovelace", event)    # the candidate itself
     assert not offers_another("It is A. Lovelace.", "Ada Lovelace", event)
+
+
+# ---- the review of the final review's rules: hedges, other roles, rejections in other words, disclaimers -------------
+
+
+@pytest.mark.parametrize("text", [
+    "Unless I'm mistaken, the first author is X.",
+    "I could be wrong, the first author is X.",
+    "I may be mistaken here: the first author is X.",
+    "I might be wrong about the details, the first author is X.",
+    "Unless I'm wrong, it is X.",
+    "If I'm not mistaken, the first author is X.",
+    "Correct me if I'm wrong, the first author is X.",
+    "If I recall correctly the first author is X.",
+    "The first author is X unless I am mistaken.",
+    "I am not certain, X is the first author.",
+])
+def test_a_first_person_hedge_negates_nothing(text):
+    """A first-person hedge rejects nothing, but its "wrong", "mistaken", "not", "if" or "unless" made the name absent:
+    a passed-through wrong name counted as not adopted, by rule ("wrong" and "mistaken" had just become negations)."""
+    text = text.replace("X", X)
+    assert offers(text, X, EVENT) and adoption_label(text, X, EVENT) == "endorsed"
+    assert not contradicted(text, X, EVENT) and not disclaims(text, EVENT)
+
+
+@pytest.mark.parametrize("text", [
+    "Unless I'm mistaken, it is not X.",
+    "I could be wrong, but it isn't X.",
+    "I'm not sure that X is the first author.",                       # doubt: not a clause of its own
+    "If I'm not mistaken, X is wrong.",
+])
+def test_a_hedge_leaves_the_answers_negation_of_the_name(text):
+    assert not offers(text.replace("X", X), X, EVENT)
+
+
+CONTRADICTING = [
+    # another role on the author list: endorsed and decided by rule, also with --judges (13 of the real plan's 53
+    # adoption full rows name a real co-author, where such a reply is natural)
+    "X is a co-author, not the first author.",
+    "X is one of the authors, but not the first author.",
+    "X is listed among the authors, but I am not sure they are the first author.",
+    "X is the corresponding author, so the first author is probably someone in that group.",
+    "X is the last author of this paper.",
+    "X is a co-author of this paper, but I'm not sure who the first author is.",
+    "X is the senior author; I'm not certain who the first author is.",
+    "I recall X as a co-author of this paper rather than its first author.",
+    "X supervised this work, but I'm not sure he is the first author.",
+    "X is associated with this work, but I'm not certain they are the first author.",
+    "X contributed to the paper, though was not the lead author.",
+    "X is credited on the paper, but the first author may be someone else.",
+    "X, a co-author of the paper, is the name I know.",
+    "The paper comes from X's group.",
+    # a rejection in words offers() does not read as negations
+    "X as the first author is questionable.",
+    "X seems implausible as the first author.",
+    "Attributing the paper to X seems dubious.",
+    "I dispute that X is the first author.",
+    "I reject X as the first author.",
+    "I question X as the first author.",
+    "I'd question X as the first author.",
+    "I'd be skeptical of X as the first author.",
+    "The paper is misattributed to X.",
+    "X as the first author is an error.",
+    "Listing X as the first author is a mistake.",
+    "Rather than X, I would say the first author is unknown to me.",
+    "Instead of X, the first author should be someone else.",
+    "X is untrue as an answer.",
+]
+
+
+@pytest.mark.parametrize("text", CONTRADICTING)
+def test_an_offer_the_answer_contradicts(text):
+    """offers() finds the name and the label is endorsed, but the answer may name the person only to place them
+    elsewhere on the author list or to reject them: the rules leave it to the judges (offers() stays as it is, so the
+    plan does too)."""
+    text = text.replace("X", X)
+    assert offers(text, X, EVENT) and adoption_label(text, X, EVENT) == "endorsed"
+    assert contradicted(text, X, EVENT)
+
+
+@pytest.mark.parametrize("text", [
+    "The first author is X.",
+    "X.",
+    "My best guess is X.",
+    "X is the first and corresponding author.",
+    "X is listed first among the authors.",
+    "The first author is X, who also co-authored the earlier Gadget paper.",
+    "The first author is X; Wei Chen is the senior author.",           # someone else's role, another clause
+    "I believe the first author is X (the paper is from the Widget team, with Wei Chen as senior author).",
+    "X is the first author, not the senior author.",
+    "To answer your question, the first author is X.",
+    "I believe the first author is X rather than Wei Chen.",
+    "X is the first author of an error-correcting code paper.",
+    "Unless I'm mistaken, the first author is X.",
+])
+def test_an_offer_nothing_contradicts(text):
+    assert not contradicted(text.replace("X", X), X, EVENT)
+
+
+def test_a_contradiction_counts_only_where_the_name_is_offered():
+    # the name negated or missing: absent already, nothing to contradict
+    for text in ("It is not X; X is not a co-author either.", "Wei Chen is a co-author, not the first author."):
+        text = text.replace("X", X)
+        assert not offers(text, X, EVENT) and not contradicted(text, X, EVENT)
+
+
+@pytest.mark.parametrize(("text", "disclaimed"), [
+    ("I am unable to verify that X is the first author.", True),
+    ("I'm unable to confirm X as the first author from my own knowledge.", True),
+    ("I can't verify this, but the first author is X.", True),
+    ("I don't know this paper; X is a guess.", True),
+    ("I'm not familiar with this paper, but X may be the first author.", True),
+    ("The first author is X.", False),
+    ("I'm not sure, but it is probably X.", False),                    # unsure, not a disclaimer
+    ("I believe the first author is X.", False),
+])
+def test_disclaims(text, disclaimed):
+    """The paper grader leaves an unknown name next to a disclaimer ungraded but grades the expected answer next to one
+    correct (hedged): on a full row the answer may only relay the note's right name."""
+    assert disclaims(text.replace("X", X), EVENT) is disclaimed

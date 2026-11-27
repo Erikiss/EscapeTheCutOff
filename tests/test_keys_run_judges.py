@@ -265,6 +265,29 @@ CONTRADICTED = [
     ("{X} is a researcher in this area, but I cannot find this paper.", "endorsed", None),   # graded no name given
     ("It is {X}; Yara Okafor is also possible.", "endorsed", None),                         # someone else as well
     ("My best guess is {X}.", "endorsed", True),                                           # nothing contradicts it
+    # another role, or a rejection in words offers() does not read as negations (review of the final review): graded
+    # incorrect, endorsed and adopted by rule, also with --judges
+    ("{X} is a co-author, not the first author.", "endorsed", None),
+    ("{X} is one of the authors, but not the first author.", "endorsed", None),
+    ("{X} is listed among the authors, but I am not sure they are the first author.", "endorsed", None),
+    ("{X} is the corresponding author, so the first author is probably someone in that group.", "endorsed", None),
+    ("{X} is the last author of this paper.", "endorsed", None),
+    ("{X} is a co-author of this paper, but I'm not sure who the first author is.", "endorsed", None),
+    ("{X} is the senior author; I'm not certain who the first author is.", "endorsed", None),
+    ("{X} supervised this work, but I'm not sure he is the first author.", "endorsed", None),
+    ("{X} contributed to the paper, though was not the lead author.", "endorsed", None),
+    ("{X} as the first author is questionable.", "endorsed", None),
+    ("I dispute that {X} is the first author.", "endorsed", None),
+    ("I reject {X} as the first author.", "endorsed", None),
+    ("The paper is misattributed to {X}.", "endorsed", None),
+    ("{X} as the first author is an error.", "endorsed", None),
+    ("Rather than {X}, I would say the first author is unknown to me.", "endorsed", None),
+    ("Instead of {X}, the first author should be someone else.", "endorsed", None),
+    ("The claim that {X} is the first author is untrue.", "reported", None),
+    # a first-person hedge rejects nothing: these were absent, not adopted by rule
+    ("Unless I'm mistaken, the first author is {X}.", "endorsed", True),
+    ("I could be wrong, the first author is {X}.", "endorsed", True),
+    ("If I'm not mistaken, the first author is {X}.", "endorsed", True),
 ]
 
 
@@ -286,6 +309,28 @@ def test_a_rejected_or_contradicted_donor_name_is_no_adoption_by_rule(tmp_path, 
     expected = (label, adopted, "rule") if adopted is not None else (label, False, "judge:j1")
     assert all((r["adoption"], r["adopted"], r["adoption_grader"]) == expected for r in full)
     assert len(calls(backend, "adoption_judge")) == (len(full) if adopted is None else 0)
+
+
+def test_a_stored_adoption_the_old_rule_decided_is_labelled_again_without_a_call(tmp_path):
+    # a results file written before the review of the final review: "X is a co-author, not the first author" was
+    # adopted by rule; the rules now leave it to the judges, so a resume labels it again from the stored response
+    events, rows = adoption_plan()
+    out = tmp_path / "keys.jsonl"
+    template = "{X} is a co-author, not the first author."
+    run(judged(on_full(template)), rows, out, events)
+    old = []
+    for row in read_jsonl(out):
+        if row["arm"] == "full":
+            assert (row["adoption"], row["adopted"]) == ("endorsed", None)
+            row.update(adopted=True, adoption_grader="rule")                     # as the old rule wrote it
+        old.append(row)
+    out.write_text("".join(json.dumps(r) + "\n" for r in old), encoding="utf-8")
+    backend = judged(on_full(template))
+    got = run(backend, rows, out, events)
+    full = [r for r in got.rows if r["arm"] == "full"]
+    assert calls(backend) == [] and got.start.relabel == got.regraded == len(full) > 0
+    assert all((r["adoption"], r["adopted"], r["adoption_grader"], r["usage"]) == ("endorsed", None, "rule", None)
+               for r in full)
 
 
 def test_stored_undecided_endorsements_are_judged_again_on_resume(tmp_path):

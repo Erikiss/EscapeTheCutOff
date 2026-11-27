@@ -25,13 +25,14 @@
   a new recipient call.
 - The right name (the ``full`` rows of ``dark`` and ``both_right``, whose note shows the expected answer): a
   ``correct`` grade stands by rule only where the answer gives that name as its own (``text.adoption_label``
-  endorsed, with nobody else offered: ``text.offers_another``); every other correct answer (reported speech, absent,
-  endorsed next to another person) is ``ungraded`` unless the judges answer the adoption question (ENDORSE
+  endorsed, and clear: nobody else offered, ``text.offers_another``; no other role or rejection in other words,
+  ``text.contradicted``; no disclaimer, ``text.disclaims``); every other correct answer (reported speech, absent, an
+  endorsement that is not clear) is ``ungraded`` unless the judges answer the adoption question (ENDORSE
   ``correct``, REPORT or REJECT ``incorrect``).
 - Adoption (sets ``donor_wrong`` and ``control``): the three-way label of ``text.adoption_label`` (endorsed,
   reported, absent); absent is not adopted, endorsed is adopted by rule only when nothing contradicts it (the grade
-  is ``incorrect`` and nobody else is offered), and the rest is undecided unless the judges answer one dedicated
-  question.
+  is ``incorrect`` and the endorsement is clear, as above), and the rest is undecided unless the judges answer one
+  dedicated question.
 - A stored row whose label no longer matches the name it is measured against (a re-plan changed the donor answer,
   which neither sha covers), or whose label or rule decision the current rules would give otherwise, is labelled
   again from its stored response.
@@ -271,12 +272,20 @@ def _parse_rows(text: str, where: Callable[[int], str], invalid: str | None, rem
 
 
 def _decode(data: bytes) -> str:
-    """The text of a results file's bytes: UTF-8, strict up to the last newline (a bad byte in a complete line raises
-    ``UnicodeDecodeError``), and with replacement characters after it. Rows are written with ``ensure_ascii=False``,
-    so an append cut at an arbitrary byte (a full disk, a crash) can end inside a character; its tail then stays no
-    valid JSON and is cut or skipped like any torn line, instead of making the whole file unreadable."""
+    """The text of a results file's bytes: strict UTF-8, except that a character cut at the very end of the file is
+    read as a replacement character. Rows are written with ``ensure_ascii=False``, so an append cut at an arbitrary
+    byte (a full disk, a crash) can end inside a character; such a tail is a prefix of valid UTF-8, stays no valid JSON
+    and is cut or skipped like any torn line, instead of making the whole file unreadable. Any other byte that is not
+    UTF-8, also in the last line (a complete row without its newline included), raises ``UnicodeDecodeError`` with its
+    offset in the whole file, as in an earlier line: the file is refused before it is read, mended or appended to."""
     cut = data.rfind(b"\n") + 1
-    return data[:cut].decode("utf-8") + data[cut:].decode("utf-8", errors="replace")
+    head, tail = data[:cut].decode("utf-8"), data[cut:]
+    try:
+        return head + tail.decode("utf-8")
+    except UnicodeDecodeError as e:
+        if e.reason != "unexpected end of data" or e.end != len(tail):
+            raise UnicodeDecodeError(e.encoding, data, cut + e.start, cut + e.end, e.reason) from None
+        return head + tail.decode("utf-8", errors="replace")
 
 
 def _existing(path: Path) -> _Rows:
@@ -601,20 +610,31 @@ def _label(response: str, name: str, event: Event) -> str:
     return label
 
 
+def _own_and_clear(response: str, name: str, event: Event) -> bool:
+    """Whether nothing in an answer that endorses ``name`` contradicts it as the answer's own (design section 6): it
+    offers nobody else (:func:`~cutoffmix.bench.keys.text.offers_another`), gives the person no other role and does
+    not reject the name in other words (:func:`~cutoffmix.bench.keys.text.contradicted`: "X is a co-author, not the
+    first author", "X is the senior author", "I dispute X"), and disclaims no knowledge
+    (:func:`~cutoffmix.bench.keys.text.disclaims`: "I am unable to verify that X is the first author")."""
+    return not (_text.offers_another(response, name, event) or _text.contradicted(response, name, event)
+                or _text.disclaims(response, event))
+
+
 def _adoption_rule(item: Mapping[str, Any], event: Event, response: str,
                    grade: str) -> tuple[bool | None, str | None]:
     """The rules' part of :func:`_adoption`: ``(adopted, adoption)``; ``(None, None)`` outside the adoption sets.
     ``adopted`` is False for a ``correct`` answer and for ``absent``. ``endorsed`` is True only when nothing in the
-    answer contradicts it: the grade is ``incorrect`` (the grader read a wrong name given) and nobody else is offered
-    (:func:`~cutoffmix.bench.keys.text.offers_another`). ``reported``, and an ``endorsed`` answer that is graded
-    ``abstain`` or left ``ungraded`` or that offers another person as well, are None: the judges decide."""
+    answer contradicts it: the grade is ``incorrect`` (the grader read a wrong name given) and the endorsement is
+    clear (:func:`_own_and_clear`: nobody else offered, no other role, no rejection in other words, no disclaimer).
+    ``reported``, and an ``endorsed`` answer that is graded ``abstain`` or left ``ungraded`` or that is not clear,
+    are None: the judges decide."""
     name = str(item.get("donor_answer") or "").strip()
     if item.get("set") not in ADOPTION_SETS or not name:
         return None, None
     label = _label(response, name, event)
     if grade == "correct" or label == "absent":
         return False, label
-    if label == "endorsed" and grade == "incorrect" and not _text.offers_another(response, name, event):
+    if label == "endorsed" and grade == "incorrect" and _own_and_clear(response, name, event):
         return True, label
     return None, label
 
@@ -638,17 +658,18 @@ def _right_name_rule(item: Mapping[str, Any], event: Event, response: str,
                      grade: str) -> tuple[str, bool | None, str | None]:
     """The rules' part of :func:`_own_answer`: ``(grade, adopted, adoption)``. A grade other than ``correct`` stays,
     without a label. A ``correct`` grade stays (``adopted`` True) only where the answer gives the right name as its
-    own: ``endorsed``, with nobody else offered (:func:`~cutoffmix.bench.keys.text.offers_another`). Every other
-    correct answer is ``ungraded`` with ``adopted`` None, for the judges to decide: ``reported`` (the name only in
-    clauses that refer to the note, or only as the author of another work), ``absent`` (the rules found the name where
-    :func:`~cutoffmix.bench.keys.text.offers` does not: a spelling variant such as "Z. Wang" for "Ziqi Wang", given as
-    the answer's own or only relayed, or a rejection only ``offers`` reads, such as "I doubt it is X"), and
-    ``endorsed`` next to another person ("X is a co-author, but the first author is Y")."""
+    own: ``endorsed``, and clear (:func:`_own_and_clear`: nobody else offered, no other role, no rejection in other
+    words, no disclaimer). Every other correct answer is ``ungraded`` with ``adopted`` None, for the judges to decide:
+    ``reported`` (the name only in clauses that refer to the note, or only as the author of another work),
+    ``absent`` (the rules found the name where :func:`~cutoffmix.bench.keys.text.offers` does not: a spelling variant
+    such as "Z. Wang" for "Ziqi Wang", given as the answer's own or only relayed, or a rejection only ``offers``
+    reads, such as "I doubt it is X"), and ``endorsed`` but not clear ("X is a co-author, but the first author is Y",
+    "X is a co-author, not the first author", "I am unable to verify that X is the first author")."""
     name = _right_name(item, event)
     if grade != "correct" or not name:
         return grade, None, None
     label = _label(response, name, event)
-    if label == "endorsed" and not _text.offers_another(response, name, event):
+    if label == "endorsed" and _own_and_clear(response, name, event):
         return grade, True, label
     return "ungraded", None, label
 
@@ -771,16 +792,17 @@ async def run_plan(
       lists every judge call of the row (``[]`` without one).
     - The right name (the ``full`` rows of ``dark`` and ``both_right``, whose note shows the expected answer, the
       plan row's ``donor_answer``): a ``correct`` grade stands only where the answer gives that name as its own
-      (:func:`_own_answer`). ``adoption`` is its label for that name; ``endorsed`` with nobody else offered keeps
-      ``correct`` by rule (``adopted`` True); every other correct answer (``reported``, ``absent``, ``endorsed`` next
-      to another person) is ``ungraded`` (``adopted`` None) unless the judges answer :data:`ADOPTION_JUDGE_SYSTEM`'s
-      question: ENDORSE keeps ``correct`` (True), REPORT or REJECT make it ``incorrect`` (False). ``hedged`` and
-      ``grader`` keep what the grading said. Another grade gets no label.
+      (:func:`_own_answer`). ``adoption`` is its label for that name; ``endorsed`` and clear (:func:`_own_and_clear`:
+      nobody else offered, no other role, no rejection in other words, no disclaimer) keeps ``correct`` by rule
+      (``adopted`` True); every other correct answer (``reported``, ``absent``, ``endorsed`` but not clear) is
+      ``ungraded`` (``adopted`` None) unless the judges answer :data:`ADOPTION_JUDGE_SYSTEM`'s question: ENDORSE keeps
+      ``correct`` (True), REPORT or REJECT make it ``incorrect`` (False). ``hedged`` and ``grader`` keep what the
+      grading said. Another grade gets no label.
     - Adoption (sets ``donor_wrong`` and ``control``; None on the other rows of ``dark`` and ``both_right`` and for
       errors and refusals): ``adoption`` is :func:`cutoffmix.bench.keys.text.adoption_label` of the answer and the
       donor's name; ``adopted`` is False for a ``correct`` answer and for ``absent``, True by rule for ``endorsed``
-      when the grade is ``incorrect`` and nobody else is offered (:func:`_adoption_rule`), and otherwise (``reported``,
-      an ``endorsed`` answer graded otherwise or next to another person) None unless the judges answer
+      when the grade is ``incorrect`` and the endorsement is clear (:func:`_adoption_rule`), and otherwise
+      (``reported``, an ``endorsed`` answer graded otherwise or not clear) None unless the judges answer
       :data:`ADOPTION_JUDGE_SYSTEM`'s question (the majority as in grading; True only for ENDORSE; unparseable or tied
       votes leave it None). ``adoption_grader`` is ``rule`` or ``judge:<keys>``.
     - Safety: the plan must pass :func:`check_plan` (no repeated id); ``out_path`` must be a regular file (or new)
@@ -789,7 +811,10 @@ async def run_plan(
       held from before the last line is mended until the last row is appended (another run holding it:
       ``ValueError``). The last line: a complete row without its newline gets the newline and counts like any row;
       a torn line (an interrupted append, no valid JSON, also one cut inside a character) is cut with a warning on
-      the log.
+      the log; any other byte that is not UTF-8 refuses the file (:func:`_decode`). A row that cannot be appended
+      during the run (``OSError``: a full disk) stops it: no new item starts, the items in flight finish, and
+      ``ValueError`` names the file (the rows written count; a call whose row is missing is sent again by the next
+      run).
     - Resume: a stored row counts as done only when it has provenance, comes from the same backend and answered the
       same request, and has no ``error``; readers keep the last row per id. A row without provenance or from another
       backend anywhere in the file stops the run (``ValueError`` with the counts): those calls are never sent again,
@@ -1033,7 +1058,12 @@ async def _run_locked(
         nonlocal finished, spent, sent, regraded, run_recipients, run_judges, judge_failed, judge_error
         try:
             row = await make()
-            append_jsonl(path, row)
+            try:
+                append_jsonl(path, row)
+            except OSError as e:  # the answer may be paid, but the file cannot take its row: stop (design section 6)
+                raise ValueError(f"cannot write a row to --out {path} ({e.strerror or e}): the run stopped; the rows "
+                                 "written count, and a call whose row is missing was paid and is sent again by the "
+                                 "next run (fix the cause, then rerun to resume)") from e
             last[str(row["id"])] = row
             run_recipients += row_cost(row)
             run_judges += judge_cost(row)

@@ -40,12 +40,15 @@ frontier. ``--ring KEY,KEY[,KEY]`` sets the ring (and switches the rally on when
 the calls offline from stored graded results (does a donor's note with the answer masked make a recipient recall what
 it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
 and never a file that is not a plan);
-``run`` sends them (``--max-cost`` is required for the real models and counts the judges; a run the cap stops exits
-with status 3, a run with failed calls (also at ``--limit``) or one stopped by an error no retry can fix (HTTP 401 or
-402, on a recipient's call or a judge's) with status 4, and the first Ctrl-C lets the calls in flight finish and exits
-with status 130; a results file holds one backend's rows, so a mock run writes to its own file); ``report`` joins plan
-and results offline into rates, paired tests and adoption rates (it never writes its ``--json`` or ``--md`` over its
-inputs).
+``run`` sends them (``--max-cost`` is required for the real models and counts the judges; it stops new calls, and the
+calls in flight finish, so a run can end above it). Its exit status is that of the stop that first kept planned calls
+from starting: 3 for the cap, 4 for an error no retry can fix (HTTP 401 or 402, on a recipient's call or a judge's),
+130 for Ctrl-C (the first lets the calls in flight finish); stops met at one check rank Ctrl-C, then the error, then
+the cap, and a later Ctrl-C or error keeps the first stop's status. Without such a stop it is 4 when planned calls
+failed (also at ``--limit``) or an error no retry can fix came after the last call had started, else 0; 2 is a refused
+input before any call, or a results file that cannot take a row during the run. A results file holds one backend's
+rows, so a mock run writes to its own file. ``report`` joins plan and results offline into rates, paired tests and
+adoption rates (it never writes its ``--json`` or ``--md`` over its inputs).
 """
 
 from __future__ import annotations
@@ -1496,12 +1499,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(kp)
     kp.set_defaults(func=_cmd_bench_keys_plan)
     krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers",
-                               epilog="exit status: 0 done (or stopped by --limit without a failed call), 2 "
-                                      "refused before any call, 3 stopped by --max-cost, 4 planned calls failed (also "
-                                      "at --limit) or an error no retry can fix (HTTP 401 or 402, a recipient's or a "
-                                      "judge's) stopped the run, 130 interrupted (the first Ctrl-C lets the calls in "
-                                      "flight finish, a second aborts at once); stops that meet rank Ctrl-C, then the "
-                                      "error, then the cap")
+                               epilog="exit status: that of the stop that first kept planned calls from starting: 3 "
+                                      "--max-cost, 4 an error no retry can fix (HTTP 401 or 402, a recipient's or a "
+                                      "judge's), 130 Ctrl-C (the first lets the calls in flight finish, a second "
+                                      "aborts at once); stops met at one check rank Ctrl-C, then the error, then the "
+                                      "cap, and a later Ctrl-C or error keeps the first stop's status. Without such a "
+                                      "stop: 4 planned calls failed (also at --limit) or an error no retry can fix "
+                                      "came after the last call had started, else 0 (done, or stopped by --limit). 2: "
+                                      "refused before any call, or --out could not take a row during the run (the "
+                                      "rows written count; a paid call whose row is missing is sent again by the next "
+                                      "run)")
     krun.add_argument("--plan", required=True, metavar="FILE")
     krun.add_argument("--events", required=True, metavar="FILE")
     krun.add_argument("--out", required=True, metavar="FILE",
@@ -1509,13 +1516,16 @@ def build_parser() -> argparse.ArgumentParser:
     krun.add_argument("--mock", action="store_true", help="the simulated models (no key, no cost)")
     krun.add_argument("--max-cost", type=float, metavar="USD",
                       help="stop sending once the summed cost of every row in --out, recipients and judges, reaches "
-                           "this (required with the real models); a run it stops exits with status 3")
+                           "this (required with the real models); the calls in flight finish with their judge calls, "
+                           "so a run can end above it; a run it stops exits with status 3")
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
                       help="judge models for answers the rules cannot grade and for the names the rules leave to "
-                           "them (the donor's name, or the right name of a full note: reported speech, another "
-                           "spelling, an answer that names someone else too); stored undecided rows are graded again "
+                           "them: the donor's name or the right name of a full note in reported speech, or endorsed "
+                           "next to someone else offered as well, with another role (a co-author), a rejection in "
+                           "other words or a disclaimer; for the right name also another spelling or a doubt (for "
+                           "the donor's name these are not adopted, by rule); stored undecided rows are graded again "
                            "first, without a new call (default: none)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "

@@ -241,6 +241,68 @@ def test_a_torn_last_line_cut_inside_a_character_is_cut_too(tmp_path, caplog):
     refused(ScriptedBackend(), rows[:3], bad, events, "is not a text file")
 
 
+@pytest.mark.parametrize("damage", ["complete row", "torn line"])
+def test_a_bad_byte_in_the_last_line_is_refused_too(tmp_path, capsys, damage):
+    """A last line that holds a byte that is not UTF-8, as a complete row without its newline or as a torn line with
+    the byte in its middle: it was read with a replacement character, so run and report accepted the file, the run
+    added the newline, and from then on both refused it (review of the final review). Now both refuse it at once,
+    with the offset in the whole file, and nothing is mended, cut, sent or appended."""
+    from cutoffmix.bench.keys.run import read_results
+
+    events, rows = fixture_plan()
+    out = tmp_path / "keys.jsonl"
+    run(ScriptedBackend(lambda m, req: "Ich weiß es nicht."), rows[:2], out, events)
+    data = out.read_bytes()
+    cut = data[:-1].rfind(b"\n") + 1
+    last = data[cut:-1].replace("weiß".encode(), b"wei\xff")                  # the last row, a bad byte, no newline
+    damaged = data[:cut] + (last if damage == "complete row" else last[: last.find(b"\xff") + 12])
+    assert damaged.count(b"\xff") == 1 and not damaged.endswith(b"\n") and damaged.rfind(b"\n") < damaged.find(b"\xff")
+    out.write_bytes(damaged)
+    with pytest.raises(UnicodeDecodeError) as e:
+        read_results(out)
+    assert e.value.start == damaged.find(b"\xff")                               # the offset in the whole file
+    backend = ScriptedBackend()
+    refused(backend, rows[:3], out, events, f"is not a text file \\(invalid start byte at byte {e.value.start}\\)")
+    assert out.read_bytes() == damaged
+    plan = tmp_path / "plan.jsonl"
+    write_jsonl(plan, rows[:3])
+    capsys.readouterr()
+    assert _report(plan, out) == 2 and _one_line(capsys.readouterr().err)
+    # a line cut inside a character at the very end is still a torn line, cut like any other
+    torn = data[:cut] + data[cut:-1][: data[cut:-1].find("ß".encode()) + 1]
+    assert torn[-1:] == b"\xc3"
+    out.write_bytes(torn)
+    assert [r["id"] for r in read_results(out)] == [rows[0]["id"]]
+
+
+def test_a_results_file_that_cannot_take_a_row_stops_the_run_with_status_2(tmp_path, capsys, fable_neon, gateway,
+                                                                           monkeypatch):
+    """An append that fails during the run (a full disk) stops it after calls were sent: no new call starts, the rows
+    written count, and the next run sends again the call whose row is missing (design section 6, exit status 2)."""
+    import cutoffmix.bench.keys.run as run_mod
+
+    written = []
+    real_append = run_mod.append_jsonl
+
+    def append(path, row):
+        if len(written) == 2:
+            raise OSError(28, "No space left on device")
+        written.append(row["id"])
+        real_append(path, row)
+    monkeypatch.setattr(run_mod, "append_jsonl", append)
+    plan, out = first_calls(tmp_path, fable_neon, 20), tmp_path / "keys.jsonl"
+    assert _run(plan, out, "--concurrency", "1") == 2
+    err = capsys.readouterr().err
+    line = err.splitlines()[-1]                                                 # after the progress line
+    assert _one_line(line + "\n") and "Traceback" not in err
+    assert f"cannot write a row to --out {out} (No space left on device): the run stopped" in line
+    assert "a call whose row is missing was paid and is sent again by the next run" in line
+    assert len(_recipient_calls(gateway.backend)) == 3 and [r["id"] for r in read_jsonl(out)] == written
+    monkeypatch.setattr(run_mod, "append_jsonl", real_append)
+    gateway.backend = ScriptedBackend()
+    assert _run(plan, out) == 0 and len(_recipient_calls(gateway.backend)) == 18
+
+
 # ---- D: failed calls, an error no retry can fix, failed judge calls -----------------------------------------------
 
 

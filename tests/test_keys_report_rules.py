@@ -128,7 +128,7 @@ def test_a_mixed_backend_report_states_no_verdict_anywhere():
     assert len(parts) == 12 and set(parts) == {mixed}
     assert report["predictions"][0]["confounded"] is None
     three = report["predictions"][3]
-    assert f"[Wilson upper bound of b/n 0.648] -> {mixed}; dark full rows whose right name is undecided 0 of 40" \
+    assert f"[Wilson upper bound of b/n 0.648] -> {mixed}; dark full rows undecided (ungraded) 0 of 40" \
         in three["evidence"]
     assert verdict_words(report) == []
 
@@ -143,8 +143,8 @@ def test_a_simulated_report_marks_every_verdict_and_its_parts():
     assert len(parts) == 12 and all(v.startswith("simulated: ") for v in parts)
     three = report["predictions"][3]
     assert three["halves"]["3a"]["verdict"] == three["halves"]["3a"]["comparison"]["verdict"] == "simulated: supported"
-    assert "[simulated: supported; Wilson upper bound of b/n 0.648] -> simulated: supported; dark full rows whose right " \
-        "name is undecided 0 of 40" in three["evidence"]
+    assert "[simulated: supported; Wilson upper bound of b/n 0.648] -> simulated: supported; dark full rows " \
+        "undecided (ungraded) 0 of 40" in three["evidence"]
     assert "key vs alone n=40, b=20, c=0, p=1.907e-06 [simulated: supported; Wilson" in \
         report["predictions"][0]["evidence"]
     assert "gate: prediction 1 simulated: supported" in report["predictions"][2]["evidence"]
@@ -483,11 +483,15 @@ def test_reported_speech_alone_cannot_support_3b():
     assert three["halves"]["3a"]["verdict"] == "supported"
     assert three["halves"]["3b"]["comparison"]["n_items"] == 40 and three["halves"]["3b"]["comparison"]["b"] == 0
     assert three["halves"]["3b"]["verdict"] == three["verdict"] == "not supported"
-    # undecided reported speech (no judges) on 5 of 40 full rows counts as not adopted, never as adoption
+    # undecided reported speech (no judges) on 5 of 40 full rows counts as not adopted, never as adoption; the
+    # refutation it would give (b = 0 of 40) does not stand, since the judges could endorse all 5 (b = 5 of 40)
     three = keyed_dark(Study()).adoption(40, full=lambda i: "undecided" if i < 5 else "absent") \
         .report()["predictions"][3]
     assert three["halves"]["3b"]["undecided"] == {"undecided": 5, "full_rows": 40, "share": 0.125}
-    assert three["verdict"] == "not supported"
+    assert three["halves"]["3b"]["comparison"]["b"] == 0 and three["halves"]["3b"]["comparison"]["verdict"] == \
+        "refuted"
+    assert three["halves"]["3b"]["against"]["refute"]["b"] == 5
+    assert three["verdict"] == "not testable (undecided answers; grade with --judges)"
 
 
 def test_3b_counts_adopted_not_the_rule_label():
@@ -543,8 +547,8 @@ def test_undecided_right_name_checks_make_3a_not_testable():
     assert three["halves"]["3a"]["comparison"]["b"] == 0
     assert three["halves"]["3a"]["verdict"] == three["verdict"] == \
         "not testable (undecided answers; grade with --judges)"
-    assert "-> not testable (undecided answers; grade with --judges); dark full rows whose right name is undecided " \
-           "40 of 40 (100.0 %, limit 20 %)" in three["evidence"]
+    assert "-> not testable (undecided answers; grade with --judges); dark full rows undecided (ungraded) 40 of 40 " \
+           "(100.0 %, limit 20 %)" in three["evidence"]
     # the same answers once the judges endorse them
     assert verdicts_of(dark_full(40, lambda i: ENDORSED_FULL).report())[3] == "supported"
     # at the limit (8 of 40: 20 %) the three-way verdict reads the data; above it (9 of 40) 3a is not testable
@@ -552,10 +556,64 @@ def test_undecided_right_name_checks_make_3a_not_testable():
     assert at["halves"]["3a"]["verdict"] == "supported"
     above = dark_full(40, lambda i: UNDECIDED_FULL if i < 9 else ENDORSED_FULL).report()["predictions"][3]
     assert above["halves"]["3a"]["verdict"] == "not testable (undecided answers; grade with --judges)"
-    # the floor comes first; rows the rules could not grade (no label) are misses, not undecided right names
+    # the floor comes first
     assert verdicts_of(dark_full(5, lambda i: UNDECIDED_FULL).report())[3] == "not testable (n too small)"
+
+
+UNDECIDED_ANSWERS = "not testable (undecided answers; grade with --judges)"
+
+
+def test_ungraded_dark_full_rows_without_a_label_count_as_undecided():
+    # a hedged pass-through the paper rules cannot grade ("It might be X.": "might" is one of their negations) has no
+    # label; counted as a miss outside the gate, it refuted 3a while the gate showed 0 % undecided (review of the final
+    # review). The premise of the primary analysis (1 correct among 57) comes from alone answers, never shown the name.
     plain = dark_full(40, lambda i: "ungraded").report()["predictions"][3]
-    assert plain["halves"]["3a"]["undecided"]["undecided"] == 0 and plain["halves"]["3a"]["verdict"] == "not supported"
+    assert plain["halves"]["3a"]["undecided"] == {"undecided": 40, "full_rows": 40, "share": 1.0}
+    assert plain["halves"]["3a"]["comparison"]["verdict"] == "refuted"
+    assert plain["halves"]["3a"]["verdict"] == plain["verdict"] == UNDECIDED_ANSWERS
+    # an ungraded key row is a miss as before (the key never shows the name): it decides neither the gate nor the check
+    study = Study()
+    for i in range(40):
+        study.item("dark", f"d{i}", {"key": "ungraded", "full": True})
+    three = study.adoption(30, full=lambda i: "endorsed" if i < 15 else "absent").report()["predictions"][3]
+    assert three["halves"]["3a"]["undecided"]["undecided"] == 0 and three["halves"]["3a"]["verdict"] == "supported"
+
+
+def test_a_refutation_the_undecided_full_rows_could_overturn_is_not_testable():
+    # at the limit (8 of 40 undecided: 20 %) 3a refuted itself on b = 0 of 40 (Wilson upper bound 0.088); with the 8
+    # undecided rows counted as correct b = 8 (upper bound 0.35): the judges could overturn the refutation
+    three = dark_full(40, lambda i: UNDECIDED_FULL if i < 8 else False, key=()).report()["predictions"][3]
+    a = three["halves"]["3a"]
+    assert a["comparison"]["verdict"] == "refuted" and a["undecided"]["undecided"] == 8
+    assert (a["against"]["refute"]["b"], a["against"]["refute"]["c"]) == (8, 0)
+    assert a["verdict"] == three["verdict"] == UNDECIDED_ANSWERS
+    assert "dark full rows undecided (ungraded) 8 of 40 (20.0 %, limit 20 %); undecided full rows counted as correct " \
+        "b=8, c=0; 3b adoption" in three["evidence"]
+    # a refutation that survives them: 1 undecided of 80 (counted as correct, b = 1: upper bound 0.068)
+    survives = dark_full(80, lambda i: UNDECIDED_FULL if i < 1 else False, key=()).report()["predictions"][3]
+    assert survives["halves"]["3a"]["verdict"] == "not supported"
+    # 3b the same way: 5 undecided of 40 full rows (12.5 %) beside b = 0
+    three = keyed_dark(Study()).adoption(40, full=lambda i: "undecided" if i < 5 else "absent") \
+        .report()["predictions"][3]
+    assert three["halves"]["3b"]["comparison"]["verdict"] == "refuted"
+    assert three["halves"]["3b"]["verdict"] == UNDECIDED_ANSWERS
+
+
+def test_a_support_the_undecided_alone_rows_could_overturn_is_not_testable():
+    # 8 full rows adopted by rule, their alone rows undecided (counted as not adopted): b = 8, c = 0 supported 3b, while
+    # with those alone rows adopted b = 0; the undecided alone rows were never gated (review of the final review)
+    study = keyed_dark(Study()).adoption(30, full=lambda i: "endorsed" if i < 8 else "absent",
+                                         alone=lambda i: "undecided" if i < 8 else "absent")
+    half = study.report()["predictions"][3]["halves"]["3b"]
+    assert half["comparison"]["verdict"] == "supported" and half["undecided"]["undecided"] == 0
+    assert (half["against"]["support"]["b"], half["against"]["support"]["c"]) == (0, 0)
+    assert half["verdict"] == UNDECIDED_ANSWERS
+    # undecided alone rows where full is not adopted cannot overturn a clear support (b = 15, c = 2)
+    kept = keyed_dark(Study()).adoption(30, full=lambda i: "endorsed" if i < 15 else "absent",
+                                        alone=lambda i: "undecided" if 15 <= i < 17 else "absent")
+    half = kept.report()["predictions"][3]["halves"]["3b"]
+    assert (half["against"]["support"]["b"], half["against"]["support"]["c"]) == (15, 2)
+    assert half["verdict"] == "supported"
 
 
 def test_prediction_3_combines_its_halves():

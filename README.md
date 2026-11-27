@@ -50,8 +50,8 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
   oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach vier Prüfrunden wurden
   die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis
-  etwa 0,41 $ für den Judge (im ungünstigsten Fall 0,77 $, zusammen 2,94 $) und läuft erst mit Freigabe und
-  Schlüssel.
+  etwa 0,41 $ für den Judge (im ungünstigsten Fall 0,77 $; zusammen geschätzt 2,94 $, eine Schätzung, keine
+  Obergrenze: die setzt `--max-cost`) und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -450,16 +450,36 @@ unbewertet und zählt als nicht richtig, bis der Judge entscheidet: zu eigen gem
 zurückgewiesen heißt falsch.
 
 Eine letzte Prüfung aller Bereiche vor dem Pilot hat die Regeln noch einmal verschärft. Die festen Regeln entscheiden
-jetzt nur noch die klaren Fälle („Der Erstautor ist X.“). Alles andere entscheidet der Judge: eine andere Schreibweise
-des Namens („Z. Wang“ statt „Ziqi Wang“), Zweifel („Ich bezweifle, dass es X ist“), eine Zurückweisung („X ist
-falsch“, „X ist nur Koautor, Erstautor ist Y“), eine Notiz, die mit anderen Worten zitiert wird („der bereitgestellte
-Text nennt X“) und jede Antwort, die neben dem Namen noch eine andere Person nennt. Beim falschen Namen des Spenders
-(3b) zählt eine Antwort nur dann als übernommen, wenn die Bewertung sie auch als falsche Antwort liest; sonst
-entscheidet der Judge. Bleiben bei 3a mehr als 20 % der `full`-Antworten unentschieden (etwa weil alle Judge-Aufrufe
-fehlschlugen), ist 3a nicht testbar statt widerlegt. Außerdem: Ein HTTP 403 betrifft beim Gateway oft nur eine einzelne
-Anfrage (etwa eine Moderationssperre) und hält den Lauf nicht mehr an; ein 401 oder 402 hält ihn an, auch bei einem
-Judge-Aufruf; das erste Strg-C wirkt sofort, auch vor dem ersten Aufruf; eine abgerissene letzte Zeile wird auch dann
-abgeschnitten, wenn sie mitten in einem Zeichen wie „ß“ endet. Die 746 geplanten Aufrufe sind dieselben geblieben.
+jetzt nur noch die klaren Fälle („Der Erstautor ist X.“). Beim richtigen Namen einer `full`-Notiz (3a) entscheidet
+alles andere der Judge: eine andere Schreibweise des Namens („Z. Wang“ statt „Ziqi Wang“), Zweifel („Ich bezweifle,
+dass es X ist“), eine Zurückweisung („X ist falsch“, „X ist nur Koautor, Erstautor ist Y“), eine Notiz, die mit
+anderen Worten zitiert wird („der bereitgestellte Text nennt X“) und jede Antwort, die neben dem Namen noch eine andere
+Person als Antwort anbietet. Beim falschen Namen des Spenders (3b) gilt eine Antwort nach den Regeln als übernommen,
+wenn sie sich den Namen zu eigen macht, die Bewertung sie als falsche Antwort liest und sie niemand anderen als
+Antwort anbietet; als nicht übernommen gilt sie nach den Regeln, wenn sie den Namen nicht als Antwort anbietet (auch
+in anderer Schreibweise, mit Zweifel oder als Zurückweisung) oder als richtig bewertet wird. Den Rest, etwa nur
+berichtete Rede, entscheidet der Judge. Bleiben bei 3a mehr als 20 % der `full`-Antworten unentschieden (etwa weil
+alle Judge-Aufrufe fehlschlugen), ist 3a nicht testbar statt widerlegt. Außerdem: Ein HTTP 403 betrifft beim Gateway
+oft nur eine einzelne Anfrage (etwa eine Moderationssperre) und hält den Lauf nicht mehr an; ein 401 oder 402 hält ihn
+an, auch bei einem Judge-Aufruf; das erste Strg-C wirkt sofort, auch vor dem ersten Aufruf; eine abgerissene letzte
+Zeile wird auch dann abgeschnitten, wenn sie mitten in einem Zeichen wie „ß“ endet. Die 746 geplanten Aufrufe sind
+dieselben geblieben.
+
+Eine Prüfung dieser Änderungen fand noch Lücken, ebenfalls vor dem ersten echten Aufruf. Eine Antwort, die den Namen
+nur nennt, um der Person eine andere Rolle zu geben („X ist Koautor, nicht Erstautor“, „X ist der Seniorautor“), oder
+die ihn mit anderen Worten zurückweist („X als Erstautor ist fragwürdig“, „Ich bestreite, dass X der Erstautor ist“),
+galt als zu eigen gemacht. Bei 3b hätte das die Übernahme überschätzt, zumal 13 der 53 falschen Spender-Namen echte
+Koautoren des Papers sind. Beim richtigen Namen galt auch eine Antwort mit Vorbehalt („Ich kann nicht bestätigen, dass
+X der Erstautor ist“) als richtig, ebenso eine, die die Notiz mit anderen Worten zitiert („laut den bereitgestellten
+Informationen“, „der Text oben nennt X“, „X ist angeblich der Erstautor“). All das entscheidet jetzt der Judge.
+Umgekehrt verneint ein Vorbehalt in der ersten Person den Namen nicht mehr („Wenn ich mich nicht irre, ist es X“, „Ich
+könnte mich irren, der Erstautor ist X“). Bei 3a zählt jede unbewertete `full`-Antwort als unentschieden, auch eine,
+die die Regeln gar nicht bewerten konnten („Es könnte X sein.“). Ein Urteil zu 3a oder 3b gilt außerdem nur, wenn die
+unentschiedenen Antworten es nicht kippen können: Widerlegt ist eine Hälfte nur, wenn sie es auch bliebe, sobald der
+Judge alle unentschiedenen `full`-Antworten als Treffer wertet; gestützt nur, wenn sie es auch bliebe, sobald er alle
+unentschiedenen Antworten des Vergleichsarms als Treffer wertet. Sonst ist sie nicht testbar. Ein ungültiges Byte in
+der letzten Zeile der Ergebnisdatei wird jetzt sofort abgewiesen, statt die Datei nach dem nächsten Lauf unlesbar zu
+machen. Die 746 geplanten Aufrufe sind dieselben geblieben.
 
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl \
@@ -469,20 +489,30 @@ cutoffmix bench keys run --plan runs/keys_plan.jsonl --events data/events/papers
 cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_results.jsonl --md runs/keys_report.md
 ```
 
-Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten:
-2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24). Dazu kommt der Judge: etwa 0,14 $ für die Antworten, die die Regeln nicht
-bewerten können, bis etwa 0,41 $, wenn er jede `full`-Antwort prüfen muss (bis zu 136 Aufrufe für den richtigen Namen,
-53 für den falschen), im ungünstigsten Fall etwa 0,77 $. Zusammen sind das im ungünstigsten Fall etwa 2,94 $, also nur
-etwa 6 Cent unter `--max-cost 3`. Der Deckel zählt den Judge mit, mehr wird also nicht ausgegeben; hält der Lauf am
-Deckel an, schickt ein weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein
-vorab freigegebener höherer Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach
-einer Unterbrechung fort und endet mit Exit-Code 3 bei `--max-cost`, mit 4, wenn Aufrufe fehlschlugen (auch bei
-`--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler auftrat, den kein neuer Versuch behebt (HTTP 401 oder
-402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf; dann startet er keinen Aufruf mehr), und mit 130 nach
-Strg-C, wobei das erste Strg-C die laufenden Aufrufe zu Ende laufen und speichern lässt und erst ein zweites sofort
-abbricht. Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene
-Datei (`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet
-sie als SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht gelaufen.**
+Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten
+(Mittelwerte): 2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24). Dazu kommt der Judge: etwa 0,14 $ für die Antworten, die die
+Regeln nicht bewerten können, bis etwa 0,41 $, wenn er jede `full`-Antwort prüfen muss (bis zu 136 Aufrufe für den
+richtigen Namen, 53 für den falschen), im ungünstigsten Fall etwa 0,77 $. Mit der Schätzung für die Empfänger sind das
+etwa 2,94 $, also etwa 6 Cent unter `--max-cost 3`. Eine Obergrenze ist das nicht: Der Anteil der Empfänger ist ein
+Mittelwert, und die Zahl der Judge-Aufrufe stammt aus einer Nachrechnung mit den gespeicherten Antworten; begrenzt wird
+der Lauf nur durch den Deckel. Der Deckel zählt den Judge mit, hält aber nur neue Aufrufe an: Was beim Erreichen schon
+läuft, läuft mit seinen Judge-Aufrufen zu Ende. Der Lauf kann den Deckel also um die Kosten von bis zu `--concurrency`
+laufenden Aufrufen überschreiten, bei der Voreinstellung 8 um höchstens etwa 0,23 $. Hält der Lauf am Deckel an, schickt
+ein weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein vorab freigegebener
+höherer Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung
+fort. Der Exit-Code ist der des Halts, der als erster geplante Aufrufe am Start hinderte: 3 bei `--max-cost`, 4 nach
+einem Fehler, den kein neuer Versuch behebt (HTTP 401 oder 402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf;
+dann startet kein Aufruf mehr), 130 nach Strg-C. Treffen mehrere bei derselben Prüfung zusammen, gilt Strg-C vor dem
+Fehler vor dem Deckel; ein späteres Strg-C oder ein späterer Fehler ändert den Code nicht, und ein Strg-C nach dem Start
+des letzten Aufrufs hält nichts mehr an. Ohne einen solchen Halt endet `run` mit 4, wenn Aufrufe fehlschlugen (auch bei
+`--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler, den kein neuer Versuch behebt, erst nach dem Start des
+letzten Aufrufs kam, sonst mit 0. Das erste Strg-C lässt die laufenden Aufrufe zu Ende laufen und speichern, erst ein
+zweites bricht sofort ab. Exit-Code 2 heißt: Eingaben oder Optionen abgewiesen, vor jedem Aufruf, oder die Ergebnisdatei
+nahm während des Laufs keine Zeile mehr an (etwa bei voller Platte); dann zählen die geschriebenen Zeilen, und ein
+bezahlter Aufruf, dessen Zeile fehlt, wird beim nächsten Lauf erneut geschickt. Mit `--mock` läuft alles offline gegen
+simulierte Modelle, in eine eigene Datei (`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht
+gemessen, der Bericht kennzeichnet sie als SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht
+gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 

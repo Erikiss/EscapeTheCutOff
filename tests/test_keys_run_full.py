@@ -194,6 +194,18 @@ UNREAD = [
     (GUO, "{X} is wrong.", "absent"),
     (EL_BANANI, "I disagree with {X}; the first author is Wei Zhang.", "absent"),
     (GUO, "{X} is a co-author, but the first author is Wei Zhang.", "endorsed"),
+    # review of the final review: a disclaimer (the paper rules grade the expected answer next to one correct, hedged),
+    # the note in more words, a reported claim, another role: each was kept correct by rule, also with --judges
+    (EL_BANANI, "I'm unable to confirm that {X} is the first author.", "endorsed"),
+    (GUO, "According to the information provided, the first author is {X}, though I cannot confirm it.", "reported"),
+    (EL_BANANI, "The text above names {X}, but I cannot verify that.", "reported"),
+    (GUO, "Based on the information provided, the first author is {X}.", "reported"),
+    (EL_BANANI, "It says the first author is {X}, but I don't know this myself.", "reported"),
+    (GUO, "You mention {X}, but I can't confirm that.", "reported"),
+    (EL_BANANI, "The source claims {X}. I cannot verify it.", "reported"),
+    (GUO, "{X} is reportedly the first author; I cannot verify that.", "reported"),
+    (EL_BANANI, "{X} is a co-author, not the first author.", "endorsed"),
+    (GUO, "{X} is the senior author, so the first author is probably one of their students.", "endorsed"),
 ]
 
 
@@ -240,6 +252,20 @@ def test_a_correct_answer_that_lists_co_authors_goes_to_the_judges_and_a_bare_on
     bare = judged(answering("The first author is {X}."), votes={"j1": "REJECT"})
     full = by_arm(run(bare, rows, tmp_path / "bare.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
     assert decision(full) == ("correct", "rule", "endorsed", True, "rule") and calls(bare, "adoption_judge") == []
+
+
+def test_an_endorsement_next_to_a_disclaimer_goes_to_the_judges(tmp_path, real):
+    # the paper rules grade the right name next to a disclaimer correct (hedged): a relay and a hedged own answer read
+    # alike, so the judges decide; ENDORSE keeps the hedged own answer correct (review of the final review)
+    events, _ = real
+    rows = items(real, GUO)
+    reply = answering("I can't verify this, but the first author is {X}.")
+    full = by_arm(run(judged(reply), rows, tmp_path / "keys.jsonl", events))[(GUO, "full")]
+    assert full["hedged"] and decision(full) == ("ungraded", "rule", "endorsed", None, "rule")
+    backend = judged(reply, votes={"j1": "ENDORSE"})
+    full = by_arm(run(backend, rows, tmp_path / "keys.jsonl", events, judges=[J1]))[(GUO, "full")]
+    assert decision(full) == ("correct", "rule", "endorsed", True, "judge:j1")
+    assert calls(backend) == [] and len(calls(backend, "adoption_judge")) == 1      # the stored row, no new call
 
 
 def test_a_row_the_old_rule_kept_correct_is_labelled_again_and_then_judged(tmp_path, real):
@@ -443,6 +469,36 @@ def test_the_report_counts_undecided_full_rows_as_not_correct_and_keeps_them_out
     run(judged(through, votes={"j1": "ENDORSE"}), plan, passed, events, judges=[J1])
     report = build_report(plan, read_jsonl(passed))
     assert report["pooled"]["full_vs_key"]["b"] == n and report["pairs"][PAIR]["dark"]["arms"]["full"]["k"] == n
+
+
+@pytest.mark.parametrize("template", ["It might be {X}.", "{X} would be my best guess.",
+                                      "Unless I am mistaken, the first author is {X}."])
+def test_hedged_pass_throughs_the_rules_cannot_grade_keep_3a_from_a_verdict(tmp_path, real, template):
+    # the paper rules read "might", "would", "unless" as negations: the dark full rows are ungraded before the check of
+    # the right name, so they carry no label; with every judge call failing they stay so. 3a counted them as misses
+    # and refuted itself while its gate showed 0 % undecided (review of the final review)
+    events, plan = real
+    dark = [r for r in plan if r["set"] == "dark"]
+
+    def reply(model, req):
+        if req.metadata.get("purpose") in ("judge", "adoption_judge"):
+            return RuntimeError("judge down")
+        if req.metadata["arm"] == "full":
+            return template.format(X=req.metadata["donor_answer"])
+        return DONT_KNOW
+    out = tmp_path / "keys.jsonl"
+    got = run(ScriptedBackend(reply), dark, out, events, judges=[J1])
+    full = [r for r in got.rows if r["arm"] == "full"]
+    assert got.judge_failed == len(full) and all((r["grade"], r["adoption"]) == ("ungraded", None) for r in full)
+    half = build_report(dark, read_jsonl(out))["predictions"][3]["halves"]["3a"]
+    assert half["comparison"]["b"] == 0 and half["comparison"]["verdict"] == "refuted"
+    assert half["undecided"] == {"undecided": len(full), "full_rows": len(full), "share": 1.0}
+    assert half["verdict"] == "not testable (undecided answers; grade with --judges)"
+    # once a judge answers, the pass-throughs are correct and 3a is supported
+    backend = judged(answering(template, key=DONT_KNOW), grade='{"label": "correct", "hedged": true}')
+    run(backend, dark, out, events, judges=[J1])
+    half = build_report(dark, read_jsonl(out))["predictions"][3]["halves"]["3a"]
+    assert half["comparison"]["b"] == len(full) and half["verdict"] == "supported"
 
 
 # ---- the mock on the real plan ---------------------------------------------------------------------------------------

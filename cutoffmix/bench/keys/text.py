@@ -4,7 +4,9 @@ The masking helpers (:func:`mask_title`, :func:`mask_note`) work on the original
 casefolded copy whose characters keep their positions in the original, so a name written "Pióro" or "Pioro",
 "Jun-sol" or "Junsol" is found either way and replaced in place. :func:`cue_tokens` reads what a masked note says
 beyond the question (section 3). :func:`offers` and :func:`adoption_label` read whether an answer gives a name as its
-own answer, and :func:`offers_another` whether it offers someone else as well (section 6).
+own answer, :func:`offers_another` whether it offers someone else as well, :func:`contradicted` whether it names the
+person only to give them another role or to reject them, and :func:`disclaims` whether it disclaims knowledge (section
+6).
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from typing import Any
 from cutoffmix.bench.grading import (
     _COMMA_CLAUSE_END,
     _COMMON_SURNAMES,
+    _DISCLAIMS,
+    _PAPER_ABSTAIN,
     _PUNCT_MAP,
     _compact,
     _compile_forms,
@@ -425,17 +429,44 @@ _TRUE_NEGATION = re.compile(
 # Conditions: they make a name no assertion only inside the name's own comma clause ("whether X is the author, I
 # cannot say"), not in a clause before it ("If it comes from team T, my guess would be X" offers X).
 _CONDITION = re.compile(r"(?<!\w)(?:if|whether|unless|ob|falls|wenn)(?!\w)")
+# First-person hedges reject nothing ("Unless I'm mistaken, the first author is X", "I could be wrong, the first
+# author is X", "If I'm not mistaken, it is X", "Correct me if I'm wrong, but ...", "If I recall correctly ...", "I'm
+# not certain, X is the first author"): they are cut from the name's clause before the search for negations and
+# conditions, so their "not", "wrong", "mistaken", "if" or "unless" is none. "I'm not sure" counts only as a clause of
+# its own (before a comma or colon): "I'm not sure X is the first author" doubts X.
+_SELF_HEDGE = re.compile(
+    r"(?<!\w)(?:(?:unless|if)\s+i(?:'m|\s+am)\s+(?:not\s+)?(?:mistaken|wrong|misremembering)"
+    r"|i\s+(?:could|may|might|can)\s+(?:well\s+|also\s+|easily\s+)?be\s+(?:wrong|mistaken|misremembering)"
+    r"|correct\s+me\s+if\s+i(?:'m|\s+am)\s+wrong|unless\s+i\s+misremember"
+    r"|if\s+i\s+(?:remember|recall)\s+(?:correctly|rightly|right)|if\s+memory\s+serves(?:\s+me)?(?:\s+(?:right|well))?"
+    r")(?!\w)"
+    r"|(?<!\w)i(?:'m|\s+am)\s+not\s+(?:entirely\s+|completely\s+|fully\s+|quite\s+|totally\s+|100%\s+)?"
+    r"(?:sure|certain|confident)\s*[,:]")
 # A period (or "!", "?") inside closing quotes ends the sentence there: 'can't confirm "Motion Mamba 2.0." The
 # original ...' is two sentences, so the first one's negation does not reach the second.
 _QUOTE_STOP = re.compile(r"([.!?])([\"'\u201d\u2019]+)(?=\s)")
 # A clause that refers to the note or its author: "the note says / claims / suggests / names X", "according to the
 # note", "the note's answer (X)", "the analyst's note", "the provided note", "the pointer", "the analyst", also in
 # other words: "the snippet", "the excerpt", "the passage", "the provided (or given) text, context, information or
-# answer", "the other model's answer", "another assistant", "the other response".
+# answer", the same nouns before "provided", "given", "above", "shown" or "supplied" ("the information provided", "the
+# text above"), "the above", "the source", "the message", "the prompt", "it says", "you mention", "the other model's
+# answer", "another assistant", "the other response"; and a clause that reports a claim without naming its source:
+# "X is reportedly / allegedly / supposedly the first author", "X is claimed / said / suggested to be", "the claim
+# (suggestion, assertion, attribution) that X ...".
 _NOTE_REF = re.compile(
     r"(?<!\w)(?:the|this|that|your|another|other)\s+(?:[\w'-]+\s+){0,2}?"
     r"(?:note|notes|pointer|hint|snippets?|excerpts?|passages?)(?:'s)?(?!\w)"
     r"|(?<!\w)(?:the|this|that)\s+(?:provided|given)\s+(?:text|context|information|answer)(?!\w)"
+    r"|(?<!\w)(?:the|this|that)\s+(?:text|context|information|answer|message|prompt|input|material)\s+"
+    r"(?:provided|given|above|shown|supplied|presented|included)(?!\w)"
+    r"|(?<!\w)the\s+(?:above|source|message|prompt)(?!\w)"
+    r"|(?<!\w)it\s+(?:says|said|states|stated|claims|claimed|suggests|suggested|names|named|mentions|mentioned|"
+    r"lists|listed|indicates|indicated)(?!\w)"
+    r"|(?<!\w)you\s+(?:mention(?:ed)?|say|said|suggest(?:ed)?|provided?|gave|give|name[ds]?|cite[ds]?|quote[ds]?|"
+    r"wrote|write|list(?:ed)?|state[ds]?)(?!\w)"
+    r"|(?<!\w)(?:reportedly|allegedly|supposedly|purportedly|ostensibly)(?!\w)"
+    r"|(?<!\w)(?:is|was|are|were|been|being)\s+(?:claimed|said|reported|suggested|alleged|purported|rumou?red)(?!\w)"
+    r"|(?<!\w)(?:the|this|that)\s+(?:claim|claims|suggestion|assertion|attribution)(?!\w)"
     r"|(?<!\w)(?:the\s+other|another)\s+(?:model|assistant|response)(?:'s)?(?!\w)"
     r"|(?<!\w)notes?'s?(?!\w)|(?<!\w)analysts?(?:'s?)?(?!\w)")
 # A tie of the name to another work (over normalised text): the answer gives X as the author of a related, earlier
@@ -457,24 +488,77 @@ _RELATED_WORK = re.compile(
 # answer's own guess, whatever came before the comma.
 _CONSEQUENCE = re.compile(r",\s*(?:and\s+)?(?:so|therefore|hence|thus)\s")
 
+# ---- an offer the answer contradicts (design section 6, :func:`contradicted`), over normalised text
+# Another role on the author list, in the clauses that speak of the person (:func:`_role_scope`): "X is a co-author",
+# "the senior (last, corresponding, second) author", "one of the authors", "listed among the authors", "listed as an
+# author", "X supervised the work", "X's advisor", "associated with", "contributed to", "involved in", "part of the
+# team".
+_ROLE = re.compile(
+    r"(?<!\w)(?:co-?\s?author\w*|co-?\s?first"
+    r"|(?:second|third|fourth|fifth|last|final|senior|corresponding|supervising|middle|joint|equal)[\s-]+authors?"
+    r"|one\s+of\s+(?:the\s+|its\s+|their\s+|this\s+paper's\s+)?(?:\w+\s+)?(?:authors|contributors|researchers)"
+    r"|among\s+(?:the\s+|its\s+|their\s+)?(?:\w+\s+)?(?:authors|contributors|researchers)"
+    r"|(?:listed|credited|named|included)\s+as\s+(?:an?|one)\s+(?:co-?\s?)?authors?|(?:an|another)\s+author"
+    r"|supervis\w*|advis(?:or|ors|er|ers|ed)|mentor\w*|principal\s+investigator|students?\s+of"
+    r"|associated\s+with|contribut\w*|involved\s+(?:in|with)"
+    r"|part\s+of\s+(?:the|this|that|their|its)\s+(?:\w+\s+)?(?:team|group|lab|authors))(?!\w)")
+# Before a role: a negation ("not the senior author") or the first authorship itself ("the first and corresponding
+# author", "listed first among the authors"), within the five words before it, makes it no other role.
+_ROLE_DENIED = re.compile(r"(?:(?<!\w)(?:not|never|first|lead)|n't)(?!\w)")
+# The first authorship named before the name in its own clause ("The first author is X, ..."): no role after it is
+# the person's other role.
+_FIRST_AUTHOR = re.compile(r"(?<!\w)(?:first|lead)[\s-]+(?:listed[\s-]+)?authors?(?!\w)")
+# "X's group", "X's lab", "X's students": the person leads the work's group rather than writing it first.
+_LAB_OF = re.compile(r"'s\s+(?:own\s+|research\s+)?(?:group|lab|laboratory|team|students?)(?!\w)")
+# Words of a rejection that offers() does not read as negations, before the name in its clause or after it in its
+# own comma clause: "untrue", "dubious", "questionable", "implausible", "I dispute / reject / question X", "skeptical
+# of X", "misattributed to X", "an error", "a mistake", "contradicts".
+_REJECTION = re.compile(
+    r"(?<!\w)(?:untrue|dubious|questionable|implausible|improbable|unfounded|unsupported|baseless|unsubstantiated"
+    r"|skeptic\w*|sceptic\w*|disput\w*|reject(?:s|ed|ing)?|refut\w*|contradict\w*|misattribut\w*|misidentif\w*"
+    r"|miscredit\w*|mislabel\w*|(?:i|we)(?:'d|\s+would)?\s+(?:also\s+|strongly\s+|seriously\s+)?question(?:ed)?"
+    r"|questioning|an?\s+(?:\w+\s+)?(?:error|mistake|typo)|in\s+error|by\s+mistake)(?![\w-])")
+# "rather than X", "instead of X", "in place of X": within the four words right before the name.
+_INSTEAD = re.compile(r"(?<!\w)(?:rather\s+than|instead\s+of|in\s+place\s+of)\s+(?:[\w'.-]+\s+){0,3}\Z")
+# Anywhere after the name: the answer says the first author is not that person, or is someone else ("X is a
+# co-author, not the first author", "X contributed, though was not the lead author", "the first author is probably
+# someone else").
+_NOT_FIRST = re.compile(
+    r"(?:(?<!\w)(?:not|never|rather\s+than|instead\s+of)|n't)\s+"
+    r"(?:(?:necessarily|actually|really|probably|likely|listed|credited|named|shown|the|a|an|its|their|as|this|"
+    r"that)\s+|[\w-]+'s\s+){0,4}(?:first|lead|main|primary)[\s-]+(?:listed\s+)?authors?(?!\w)"
+    r"|(?<!\w)(?:someone|somebody)\s+else(?!\w)|(?<!\w)(?:a\s+different|another)\s+person(?!\w)")
 
-def _offerings(response: str, name: str, event: Event) -> list[tuple[str, int, int]]:
-    """``(clause, start, end)`` for every place where ``response`` offers ``name``, by the rule of design section 6:
-    a full form of the name, or its distinctive surname alone, in an asserted clause. The clauses are normalised,
-    with the paper's title blanked first (the whole title, its main title of four letters or more, its subtitle of
-    three words or more; :func:`mask_title`), so that title words are never read as cues ("Never Forget: ...",
-    "Leave No Context Behind: ...")."""
+
+def _normalised(response: str, event: Event) -> str:
+    """``response`` as :func:`offers` reads it: the paper's title blanked (the whole title, its main title of four
+    letters or more, its subtitle of three words or more; :func:`mask_title`), a period inside closing quotes moved
+    after them, markdown removed, normalised (``grading.normalize_text``) and the title blanked again."""
     text = _QUOTE_STOP.sub(r"\2\1", mask_title(response or "", event))
-    text = _mask_title(normalize_text(_plain(text)), event)
+    return _mask_title(normalize_text(_plain(text)), event)
+
+
+def _sites(response: str, name: str, event: Event) -> tuple[list[str], list[tuple[int, int, int]]]:
+    """The normalised segments of ``response`` (:func:`_normalised`, then ``grading._segments``) and, for every place
+    where it offers ``name`` by the rule of design section 6 (a full form of the name, or its distinctive surname
+    alone, in an asserted clause), ``(segment index, start, end)``."""
+    segments = _segments(_normalised(response, event))
     pats = _name_patterns(name)
-    out: list[tuple[str, int, int]] = []
-    for segment, asserted in _segments(text):
+    out: list[tuple[int, int, int]] = []
+    for i, (segment, asserted) in enumerate(segments):
         if not asserted:  # a question
             continue
         for pat in pats:
-            out += [(segment, m.start(), m.end()) for m in pat.finditer(segment)
-                    if not _denied(segment, m.start(), m.end())]
-    return out
+            out += [(i, m.start(), m.end()) for m in pat.finditer(segment) if not _denied(segment, m.start(), m.end())]
+    return [segment for segment, _ in segments], out
+
+
+def _offerings(response: str, name: str, event: Event) -> list[tuple[str, int, int]]:
+    """``(clause, start, end)`` for every place where ``response`` offers ``name`` (:func:`_sites`). The clauses are
+    normalised, with the paper's title blanked first, so that title words are never read as cues ("Never Forget:
+    ...", "Leave No Context Behind: ...")."""
+    segments, sites = _sites(response, name, event)
+    return [(segments[i], start, end) for i, start, end in sites]
 
 
 def _tied_elsewhere(segment: str, start: int, end: int) -> bool:
@@ -489,15 +573,68 @@ def _tied_elsewhere(segment: str, start: int, end: int) -> bool:
     return _RELATED_WORK.search(segment, lo, hi) is not None
 
 
+def _unhedged(m: re.Match[str]) -> str:
+    """What a first-person hedge (:data:`_SELF_HEDGE`) leaves: a space, or a clause end when it ended in one."""
+    return ", " if m.group(0)[-1:] in ",:" else " "
+
+
+def _own_after(segment: str, end: int) -> str:
+    """The rest of the name's own comma clause after the match ending at ``end``."""
+    rest = segment[end:]
+    clause_end = _COMMA_CLAUSE_END.search(rest)
+    return rest[: clause_end.start() if clause_end else len(rest)]
+
+
 def _denied(segment: str, start: int, end: int) -> bool:
     """A true negation earlier in the clause or later in the name's own comma clause, or a condition inside the
-    name's own comma clause, makes the match at ``start:end`` no assertion; "would", "could", "might" do not."""
-    before, rest = segment[:start], segment[end:]
+    name's own comma clause, makes the match at ``start:end`` no assertion; "would", "could", "might" do not, and
+    neither do the words of a first-person hedge (:data:`_SELF_HEDGE`: "unless I'm mistaken", "I could be wrong",
+    "if I'm not mistaken"), which are cut before the search."""
+    before = _SELF_HEDGE.sub(_unhedged, segment[:start])
     own_before = _COMMA_CLAUSE_END.split(before)[-1]
-    clause_end = _COMMA_CLAUSE_END.search(rest)
-    own_after = rest[: clause_end.start() if clause_end else len(rest)]
+    own_after = _SELF_HEDGE.sub(_unhedged, _own_after(segment, end))
     return bool(_TRUE_NEGATION.search(before) or _TRUE_NEGATION.search(own_after)
                 or _CONDITION.search(own_before) or _CONDITION.search(own_after))
+
+
+def _role_scope(segment: str, start: int, end: int) -> list[tuple[int, int]]:
+    """The spans of ``segment`` that speak of the person at ``start:end``: the name's own comma clause, the clause
+    before it when the name opens its clause ("One of the co-authors, X, ..."), and the clause after it when the
+    name ends its clause ("X, a co-author of the paper, ..."). A clause about someone else ("X (the paper is from
+    team T, with Y as senior author)") is not among them."""
+    cuts = [(m.start(), m.end()) for m in _COMMA_CLAUSE_END.finditer(segment)]
+    clauses = list(zip([0] + [e for _, e in cuts], [s for s, _ in cuts] + [len(segment)], strict=True))
+    at = next((i for i, (lo, hi) in enumerate(clauses) if lo <= start <= hi), len(clauses) - 1)
+    scope = [(clauses[at][0], max(clauses[at][1], end))]
+    if at > 0 and not segment[clauses[at][0]:start].strip():
+        scope.append(clauses[at - 1])
+    if at + 1 < len(clauses) and not segment[end:clauses[at][1]].strip():
+        scope.append(clauses[at + 1])
+    return scope
+
+
+def _other_role(segment: str, start: int, end: int) -> bool:
+    """A role other than first author (:data:`_ROLE`) in the clauses that speak of the person (:func:`_role_scope`),
+    not right after a negation or the first authorship (the five words before it, :data:`_ROLE_DENIED`), unless the
+    name's own clause names it the first author ("The first author is X, who co-authored the earlier paper"); or "X's
+    group / lab / students" right after the name."""
+    if _LAB_OF.match(segment, end) is not None:
+        return True
+    scope = _role_scope(segment, start, end)
+    if _FIRST_AUTHOR.search(segment, scope[0][0], start):
+        return False
+    for lo, hi in scope:
+        for m in _ROLE.finditer(segment, lo, hi):
+            if not _ROLE_DENIED.search(" ".join(segment[: m.start()].split()[-5:])):
+                return True
+    return False
+
+
+def _rejected(segment: str, start: int, end: int) -> bool:
+    """A word of a rejection (:data:`_REJECTION`) before the name in its clause or after it in its own comma clause,
+    or "rather than", "instead of" right before it."""
+    before = segment[:start]
+    return bool(_REJECTION.search(before) or _REJECTION.search(_own_after(segment, end)) or _INSTEAD.search(before))
 
 
 def offers(response: str, name: str, event: Event) -> bool:
@@ -507,8 +644,9 @@ def offers(response: str, name: str, event: Event) -> bool:
     conjunction ("but", "though", ...). A true negation ("not", "n't", "never", "no", "cannot", ...) earlier in the
     clause or in the name's own comma clause, a question, or "if", "whether", "unless" inside the name's own comma
     clause make it no assertion; "would", "could", "might" are hedges, so "It might be X" and "X would be my best
-    guess" offer X, and "It is not X", "Whether X is the author, I cannot say" and "Is it X?" do not. The paper's
-    title is blanked first, so its words are no cues."""
+    guess" offer X, and "It is not X", "Whether X is the author, I cannot say" and "Is it X?" do not. A first-person
+    hedge negates nothing ("Unless I'm mistaken, the first author is X", "I could be wrong, the first author is X",
+    "If I'm not mistaken, it is X" offer X). The paper's title is blanked first, so its words are no cues."""
     return bool(_offerings(response, name, event))
 
 
@@ -560,3 +698,36 @@ def offers_another(response: str, name: str, event: Event) -> bool:
         others.append(event.expected_current)
     return any(_compact(other) and not _same_person(other, name) and offers(response, other, event)
                for other in dict.fromkeys(o for o in others if o))
+
+
+def contradicted(response: str, name: str, event: Event) -> bool:
+    """Whether ``response`` offers ``name`` (:func:`offers`) and says something that may contradict it as the
+    answer's own (design section 6), so that the rules leave it to the judges: at a place where it offers the name,
+    the clause gives the person another role on the author list (:data:`_ROLE`: "X is a co-author", "the senior /
+    last / corresponding author", "one of the authors", "listed among the authors", "X supervised the work",
+    "associated with", "contributed to"; or "X's group / lab" right after the name), rejects the name in words
+    :func:`offers` does not read as negations (:data:`_REJECTION`: "untrue", "dubious", "questionable",
+    "implausible", "I dispute / reject / question X", "misattributed to X", "an error", "a mistake"; "rather than X",
+    "instead of X" right before it), or the text after it says the first author is not that person or is someone
+    else (:data:`_NOT_FIRST`: "not the first author", "not the lead author", "someone else"). A negated role ("not
+    the senior author") and the first authorship itself ("the first and corresponding author", "listed first among
+    the authors") are no other role. Not used by the plan, so :func:`offers` and the planned calls stay as they
+    are."""
+    segments, sites = _sites(response, name, event)
+    for i, start, end in sites:
+        segment = segments[i]
+        later = " ".join([segment[end:], *segments[i + 1:]])
+        if _other_role(segment, start, end) or _rejected(segment, start, end) or _NOT_FIRST.search(later):
+            return True
+    return False
+
+
+def disclaims(response: str, event: Event) -> bool:
+    """Whether ``response`` disclaims knowledge of the paper or of its author ("I cannot verify ...", "I'm unable to
+    confirm ...", "I don't know ...", "I'm not familiar with ..."): the paper grader's phrases (``grading._DISCLAIMS``
+    and ``grading._PAPER_ABSTAIN``) on the normalised text with the title blanked, as ``grading.grade_paper`` reads
+    them. The paper grader leaves an unknown name next to such a phrase ungraded, but grades the expected answer next
+    to one ``correct`` (hedged): an answer that names the note's right name and disclaims knowledge may only relay it
+    (design section 6)."""
+    text = _mask_title(normalize_text(_plain(response or "")), event)
+    return bool(_DISCLAIMS.search(text) or _PAPER_ABSTAIN.search(text))

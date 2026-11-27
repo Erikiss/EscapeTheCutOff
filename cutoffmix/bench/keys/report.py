@@ -216,9 +216,13 @@ def _arm_entry(rows: Sequence[_Row], success: Callable[[_Row], bool] = _is_corre
     return entry
 
 
-def _discordant(both: Sequence[tuple[_Row, _Row]], success: Callable[[_Row], bool]) -> dict[str, Any]:
-    b = sum(1 for x, y in both if success(x) and not success(y))
-    c = sum(1 for x, y in both if success(y) and not success(x))
+def _discordant(both: Sequence[tuple[_Row, _Row]], success: Callable[[_Row], bool],
+                second: Callable[[_Row], bool] | None = None) -> dict[str, Any]:
+    """b, c and the exact McNemar p of the pairs ``(x, y)``: ``success`` decides x, and y as well unless ``second``
+    is given."""
+    succeeds = second or success
+    b = sum(1 for x, y in both if success(x) and not succeeds(y))
+    c = sum(1 for x, y in both if succeeds(y) and not success(x))
     return {"n_items": len(both), "b": b, "c": c, "p": mcnemar_exact(b, c)}
 
 
@@ -231,6 +235,16 @@ def _compare(items: Iterable[_Item], first: str, second: str, success: Callable[
     entry = _discordant(both, success)
     entry["sensitivity"] = _discordant([(x, y) for x, y in both if not unsure(x) and not unsure(y)], success)
     return entry
+
+
+def _against(items: Iterable[_Item], first: str, second: str, success: Callable[[_Row], bool],
+             unsure_first: Callable[[_Row], bool], unsure_second: Callable[[_Row], bool]) -> dict[str, Any]:
+    """The paired comparison of :func:`_compare` twice more, with the undecided rows resolved against a verdict
+    (design section 7): ``refute`` counts every undecided ``first`` row as a success (deciding them could only raise
+    b and lower c), ``support`` every undecided ``second`` row (that could only lower b and raise c)."""
+    both = [(it.rows[first], it.rows[second]) for it in items if it.answered(first, second)]
+    return {"refute": _discordant(both, lambda r: success(r) or unsure_first(r), success),
+            "support": _discordant(both, success, lambda r: success(r) or unsure_second(r))}
 
 
 def _three_way(comparison: Mapping[str, Any], margin: float) -> dict[str, Any]:
@@ -372,6 +386,12 @@ def _undecided(row: _Row) -> bool:
 
 def _not_correct(row: _Row) -> bool:
     return not row.correct
+
+
+def _never(row: _Row) -> bool:
+    """No row of this arm is undecided: in 3a an ungraded ``key`` row counts as not correct (the key never shows the
+    name, so the rules leave almost only misses ungraded; design section 6)."""
+    return False
 
 
 def _harm(items: Sequence[_Item]) -> dict[str, Any]:
@@ -610,14 +630,22 @@ def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str
             "all_items": _brief(every), "pointer_items": _brief(pointed)}
 
 
-def _gated(comparison: Mapping[str, Any], undecided: Mapping[str, Any]) -> str:
+def _gated(comparison: Mapping[str, Any], undecided: Mapping[str, Any], against: Mapping[str, Any],
+           margin: float) -> str:
     """A half of prediction 3 (design section 7): the floor, then the undecided share of its full rows (more than
-    :data:`UNDECIDED_LIMIT`: :data:`UNDECIDED_VERDICT`), then the three-way verdict."""
-    if comparison["verdict"] == NOT_TESTABLE_N:
+    :data:`UNDECIDED_LIMIT`: :data:`UNDECIDED_VERDICT`), then the three-way verdict, which stands only if the undecided
+    rows resolved against it (``against``, :func:`_against`) leave it as it is: a refutation that the undecided first
+    rows counted as successes would overturn, or a support that the undecided second rows counted as successes would,
+    is :data:`UNDECIDED_VERDICT` as well."""
+    raw = str(comparison["verdict"])
+    if raw == NOT_TESTABLE_N:
         return NOT_TESTABLE_N
     if _share_above(undecided["undecided"], undecided["full_rows"], UNDECIDED_LIMIT):
         return UNDECIDED_VERDICT
-    return _combine([comparison["verdict"]])
+    for verdict, case in (("refuted", "refute"), ("supported", "support")):
+        if raw == verdict and _three_way(against[case], margin)["verdict"] != verdict:
+            return UNDECIDED_VERDICT
+    return _combine([raw])
 
 
 def _fmt_undecided(undecided: Mapping[str, Any]) -> str:
@@ -626,11 +654,21 @@ def _fmt_undecided(undecided: Mapping[str, Any]) -> str:
             f"({'n/a' if share is None else f'{100 * share:.1f} %'}, limit 20 %)")
 
 
+def _fmt_against(against: Mapping[str, Any], first: str, second: str | None, what: str) -> str:
+    """The comparisons with the undecided rows resolved against the verdict, numbers only (``second`` None: that arm
+    has no undecided rows, so only the refutation's check is printed)."""
+    r, s = against["refute"], against["support"]
+    text = f"undecided {first} rows counted as {what} b={r['b']}, c={r['c']}"
+    return text if second is None else f"{text}; undecided {second} rows counted as {what} b={s['b']}, c={s['c']}"
+
+
 def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 3 (design section 7): 3a full vs key pooled over the keyed pairs' dark items (margin 0.10), 3b full
     vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20). Each half checks the
-    floor, then the undecided share of its full rows (3a: the right-name check of the dark full rows, 3b: adoption;
-    more than 20 % undecided is not testable, since an undecided row counts as a miss), then the three-way verdict.
+    floor, then the undecided share of its full rows (3a: the dark full rows left ungraded, 3b: adoption undecided;
+    more than 20 % undecided is not testable, since an undecided row counts as a miss), then the three-way verdict,
+    which must survive the undecided rows resolved against it (3a: the ungraded full rows counted as correct; 3b: the
+    undecided full rows, or the undecided alone rows, counted as adopted), else the half is not testable either.
     Each half is interim on its own rows; the prediction is interim when one half is (k and N summed over both)."""
     done_a, planned_a = _completed(ctx.of("dark", ctx.keyed))
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
@@ -639,23 +677,27 @@ def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> di
     a = _three_way(pooled["full_vs_key"], KEY_MARGIN)
     b = _three_way(pooled["adoption_full_vs_alone"], ADOPTION_MARGIN)
     undecided_a, undecided = pooled["full_undecided"], pooled["adoption_full_undecided"]
-    raw_a, raw_b = _gated(a, undecided_a), _gated(b, undecided)
+    against_a, against_b = pooled["full_vs_key_against"], pooled["adoption_full_vs_alone_against"]
+    raw_a = _gated(a, undecided_a, against_a, KEY_MARGIN)
+    raw_b = _gated(b, undecided, against_b, ADOPTION_MARGIN)
     interim = (f"interim ({done_a + done_b} of {planned_a + planned_b} planned items answered)"
                if interim_a or interim_b else None)
     half_a, half_b = voice.verdict(raw_a, interim_a), voice.verdict(raw_b, interim_b)
     label_a, label_b = _stated(a, voice, interim_a), _stated(b, voice, interim_b)
     evidence = (f"3a full vs key, the keyed pairs' dark items: {_fmt_verdict(a, label_a)} -> {half_a}; dark full "
-                f"rows whose right name is undecided {_fmt_undecided(undecided_a)}; 3b adoption (adopted true) full "
-                f"vs alone, donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> {half_b}; full rows "
-                f"undecided {_fmt_undecided(undecided)}; adopted: full {_fmt_rate(pooled['adoption_arms'].get('full'))}"
-                f", alone {_fmt_rate(pooled['adoption_arms'].get('alone'))}")
+                f"rows undecided (ungraded) {_fmt_undecided(undecided_a)}; "
+                f"{_fmt_against(against_a, 'full', None, 'correct')}; 3b adoption (adopted true) full vs alone, "
+                f"donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> {half_b}; full rows undecided "
+                f"{_fmt_undecided(undecided)}; {_fmt_against(against_b, 'full', 'alone', 'adopted')}; adopted: full "
+                f"{_fmt_rate(pooled['adoption_arms'].get('full'))}, alone "
+                f"{_fmt_rate(pooled['adoption_arms'].get('alone'))}")
     return {"id": 3, "text": "full beats key on dark items (3a, margin 0.10), and full makes the recipient endorse a "
                              "wrong donor answer far more often than alone (3b, adopted true, margin 0.20).",
             "verdict": voice.verdict(_combine([raw_a, raw_b]), interim), "evidence": evidence,
             "halves": {"3a": {"verdict": half_a, "comparison": a, "answered": done_a, "planned": planned_a,
-                              "undecided": undecided_a},
+                              "undecided": undecided_a, "against": against_a},
                        "3b": {"verdict": half_b, "comparison": b, "answered": done_b, "planned": planned_b,
-                              "undecided": undecided}}}
+                              "undecided": undecided, "against": against_b}}}
 
 
 def _prediction_4(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
@@ -798,17 +840,22 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
     full_rows = [it.rows["full"] for it in adoption_items if "full" in it.rows and it.rows["full"].answered]
     undecided = sum(1 for r in full_rows if r.undecided)
-    # 3a's gate: the keyed pairs' answered dark full rows whose check of the right name is undecided (a label, adopted
-    # None: the rules left the name to the judges, and no judge decided)
+    # 3a's gate: the keyed pairs' answered dark full rows left ungraded (no judge decided the grade or the right name).
+    # Their note shows the right name, so an ungraded one may be a pass-through the judges call correct, also when
+    # the rules could not grade it at all ("It might be X.": "might" is a negation of the paper rules)
     dark_full = [it.rows["full"] for it in ctx.of("dark", keyed) if "full" in it.rows and it.rows["full"].answered]
-    undecided_dark = sum(1 for r in dark_full if r.get("adoption") is not None and r.undecided)
+    undecided_dark = sum(1 for r in dark_full if r.ungraded)
     pooled = {
         "full_vs_key": _compare(ctx.of("dark", keyed), "full", "key"),
         "full_undecided": {"undecided": undecided_dark, "full_rows": len(dark_full),
                            "share": undecided_dark / len(dark_full) if dark_full else None},
+        "full_vs_key_against": _against(ctx.of("dark", keyed), "full", "key", _is_correct, _is_ungraded,
+                                        _never),
         "adoption_full_vs_alone": _compare(adoption_items, "full", "alone", _adopted, _undecided),
         "adoption_full_undecided": {"undecided": undecided, "full_rows": len(full_rows),
                                     "share": undecided / len(full_rows) if full_rows else None},
+        "adoption_full_vs_alone_against": _against(adoption_items, "full", "alone", _adopted, _undecided,
+                                                   _undecided),
         "adoption_arms": {arm: _adoption_arm([it.rows[arm] for it in adoption_items if arm in it.rows])
                           for arm in ("alone", "full")},
         "both_right": _harm(ctx.of("both_right")),
