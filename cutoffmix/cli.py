@@ -41,8 +41,10 @@ the calls offline from stored graded results (does a donor's note with the answe
 it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
 and never a file that is not a plan);
 ``run`` sends them (``--max-cost`` is required for the real models and counts the judges; a run the cap stops exits
-with status 3; a results file holds one backend's rows, so a mock run writes to its own file); ``report`` joins plan
-and results offline into rates, paired tests and adoption rates.
+with status 3, a run with failed calls or one stopped by an error no retry can fix (HTTP 401, 402, 403) with status 4,
+and the first Ctrl-C lets the calls in flight finish and exits with status 130; a results file holds one backend's
+rows, so a mock run writes to its own file); ``report`` joins plan and results offline into rates, paired tests and
+adoption rates (it never writes its ``--json`` or ``--md`` over its inputs).
 """
 
 from __future__ import annotations
@@ -55,7 +57,9 @@ import logging
 import math
 import os
 import shutil
+import signal
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
@@ -977,6 +981,38 @@ def _plan_conflict(path: Path, rows: Sequence[Mapping[str, Any]] | None, *, forc
     return None
 
 
+def _first_sigint_sets(stop: asyncio.Event, notice: Callable[[], None]) -> Callable[[], None]:
+    """Make the first SIGINT (Ctrl-C) set ``stop`` instead of aborting (DESIGN_keys.md section 6: the run starts no new
+    call, and the calls in flight finish and write their rows), and return the function that undoes it. That first
+    SIGINT also calls ``notice`` and puts the previous handler back, so a second one aborts at once, as before. Called
+    inside the running loop. POSIX only (``loop.add_signal_handler``, main thread, SIGINT handled by Python);
+    elsewhere nothing changes and a SIGINT aborts at once."""
+    loop = asyncio.get_running_loop()
+    previous = signal.getsignal(signal.SIGINT)
+    if not callable(previous):  # SIGINT ignored, or left to the system: keep it so
+        return lambda: None
+    armed = False
+
+    def disarm() -> None:
+        nonlocal armed
+        if armed:
+            armed = False
+            loop.remove_signal_handler(signal.SIGINT)
+            signal.signal(signal.SIGINT, previous)  # from now on a SIGINT aborts as it would have
+
+    def first() -> None:
+        disarm()
+        stop.set()
+        notice()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, first)
+    except (NotImplementedError, RuntimeError, ValueError):  # not POSIX, or not the main thread
+        return lambda: None
+    armed = True
+    return disarm
+
+
 def _keys_run_start(start: Any, limit: int | None) -> str:
     """The line ``bench keys run`` prints before its first call: what is answered, what it sends, what it re-grades
     (``start`` is the run's :class:`cutoffmix.bench.keys.RunStart`)."""
@@ -1069,6 +1105,13 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
     backend = make_backend(cfg, mock=args.mock, events=events)
     line_open = False  # the progress line on stderr has no newline yet
 
+    def end_line() -> None:
+        nonlocal line_open
+        if line_open:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+            line_open = False
+
     def progress(done: int, total: int, _row: Any) -> None:
         nonlocal line_open
         sys.stderr.write(f"\r  {done}/{total}")
@@ -1080,13 +1123,21 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
     def on_start(start: Any) -> None:
         print(_keys_run_start(start, args.limit), flush=True)
 
+    def on_interrupt() -> None:
+        end_line()
+        print("interrupted: no new calls are started; the calls in flight finish and are written (Ctrl-C again "
+              "aborts them)", file=sys.stderr, flush=True)
+
     async def go() -> Any:
+        stop = asyncio.Event()
+        restore = _first_sigint_sets(stop, on_interrupt)
         try:
             return await keys.run_plan(backend, models, plan, args.out, events=events, concurrency=args.concurrency,
                                        max_cost=args.max_cost, limit=args.limit, judges=judges, progress=progress,
                                        backend_name="mock" if args.mock else "openrouter",
-                                       resend_stale=args.resend_stale, on_start=on_start)
+                                       resend_stale=args.resend_stale, on_start=on_start, stop=stop)
         finally:
+            restore()
             await _close(backend)
 
     try:
@@ -1094,13 +1145,13 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as e:  # the run's refusals, its argument checks, a file it cannot use: one line
         raise CLIError(" ".join(str(e).split())) from e
     finally:
-        if line_open:  # stopped before the last planned call: end the progress line
-            sys.stderr.write("\n")
-            sys.stderr.flush()
-    grades: dict[str, int] = {}
-    for row in outcome.rows:
-        grades[str(row.get("grade"))] = grades.get(str(row.get("grade")), 0) + 1
-    print("  " + "  ".join(f"{g} {n}" for g, n in sorted(grades.items())))
+        end_line()  # stopped before the last planned call: end the progress line
+    def failed(row: Mapping[str, Any]) -> bool:  # a send error: no answer (a failed grading keeps its answer)
+        return bool(row.get("error")) and not str(row["error"]).startswith(GRADING_FAILED)
+    errors = [r for r in outcome.rows if failed(r)]
+    grades = Counter(str(r.get("grade")) for r in outcome.rows if not failed(r))
+    tally = [f"{g} {n}" for g, n in sorted(grades.items())] + ([f"errors {len(errors)}"] if errors else [])
+    print("  " + "  ".join(tally))
     print(f"{len(outcome.rows)} rows -> {args.out} · sent {outcome.sent} calls, graded {outcome.regraded} stored "
           f"answers again · cost ${outcome.cost_usd:.4f} (recipients ${outcome.recipients_usd:.4f} + judges "
           f"${outcome.judges_usd:.4f}; this run ${outcome.run_cost_usd:.4f})"
@@ -1110,33 +1161,88 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
                       if str(r.get("error") or "").startswith(GRADING_FAILED)), "")
         print(f"{outcome.not_graded} answers could not be graded ({first}); they are kept and counted in the cost, "
               "and the next run grades them again from the stored responses, without a new call", file=sys.stderr)
+    if outcome.judge_failed:
+        print(f"{outcome.judge_failed} judge calls failed (first error: {outcome.judge_error}); an answer they leave "
+              "undecided stays undecided, and the next run with --judges asks again", file=sys.stderr)
     left = f"{outcome.not_sent} of {outcome.planned} planned calls not sent"
     if outcome.not_regraded:
         left += f" and {outcome.not_regraded} stored answers not graded again"
+    if outcome.stopped_by == "interrupted":
+        print(f"interrupted: {left}; rerun to resume", file=sys.stderr)
+        return 130
     if outcome.stopped_by == "max_cost":
         print(f"stopped at --max-cost ${args.max_cost:g}: {left}; rerun with a higher --max-cost to resume",
               file=sys.stderr)
         return 3
+    if outcome.stopped_by == "error":
+        print(f"stopped after an error that no retry can fix ({outcome.error}): {left}; fix its cause (the API key, "
+              "the credits or the access to the model) and rerun to send them", file=sys.stderr)
+        return 4
     if outcome.stopped_by == "limit":
         print(f"stopped at --limit {args.limit}: {left}; rerun to send the next ones", file=sys.stderr)
+        return 0
+    if errors:
+        print(f"{len(errors)} of {outcome.planned} planned calls failed (first error: {errors[0]['error']}); rerun "
+              "to send them again", file=sys.stderr)
+        return 4
     return 0
+
+
+def _same_file(a: str, b: str) -> bool:
+    """Whether the paths ``a`` and ``b`` name one file: :func:`os.path.samefile` when both exist (a symlink or a hard
+    link to the file is the file), else their resolved paths."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return Path(a).resolve() == Path(b).resolve()
+
+
+def _report_conflict(args: argparse.Namespace) -> str | None:
+    """Why ``report`` may not write its ``--json`` or ``--md`` (DESIGN_keys.md section 6), or None: one of them is the
+    ``--plan`` or ``--results`` file (the report would replace the plan or the paid results), or both are one file."""
+    outputs = [(option, path) for option, path in (("--json", args.json), ("--md", args.md)) if path]
+    for option, path in outputs:
+        for source, other in (("--plan", args.plan), ("--results", args.results)):
+            if _same_file(path, other):
+                return f"{option} {path} is the {source} file: write the report to a file of its own"
+    if len(outputs) == 2 and _same_file(args.json, args.md):
+        return f"--json {args.json} and --md {args.md} are the same file: give each its own"
+    return None
 
 
 def _cmd_bench_keys_report(args: argparse.Namespace) -> int:
     from cutoffmix.bench import keys
     from cutoffmix.bench.io import read_jsonl
+    from cutoffmix.bench.keys.run import check_plan, read_results
 
-    plan, results = read_jsonl(args.plan), read_jsonl(args.results)
+    if conflict := _report_conflict(args):  # before anything is read or written
+        raise CLIError(conflict)
+    plan = _keys_input(read_jsonl, args.plan, "--plan", "a plan")
+    if not plan:
+        raise CLIError(f"the plan {args.plan} has no calls")
+    try:
+        check_plan(plan)  # a file of another kind (events, results) gets a one-line error, not a report on it
+    except ValueError as e:
+        raise CLIError(f"--plan {args.plan}: {' '.join(str(e).split())}") from e
+    results = _keys_input(read_results, args.results, "--results", "a results file of 'bench keys run'")
     report = keys.build_report(plan, results)
     text = keys.render_report(report)
     print(text)
-    if args.json:
-        _write_json(args.json, report)
-    if args.md:
-        path = Path(args.md)
+
+    def write_json(target: str) -> None:
+        _write_json(target, report)
+
+    def write_md(target: str) -> None:
+        path = Path(target)
         if path.parent != Path():
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    for option, target, write in (("--json", args.json, write_json), ("--md", args.md, write_md)):
+        if target:
+            try:
+                write(target)
+            except OSError as e:  # e.g. a directory: one line, no traceback
+                raise CLIError(f"cannot write {option} {target} ({e.strerror or e})") from e
     return 0
 
 
@@ -1380,7 +1486,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "file that is not a plan, or the --results or --events file, is never replaced")
     _add_config(kp)
     kp.set_defaults(func=_cmd_bench_keys_plan)
-    krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers")
+    krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers",
+                               epilog="exit status: 0 done (or stopped by --limit), 2 refused before any call, 3 "
+                                      "stopped by --max-cost, 4 planned calls failed or an error no retry can fix "
+                                      "(HTTP 401, 402, 403) stopped the run, 130 interrupted (the first Ctrl-C lets "
+                                      "the calls in flight finish, a second aborts at once)")
     krun.add_argument("--plan", required=True, metavar="FILE")
     krun.add_argument("--events", required=True, metavar="FILE")
     krun.add_argument("--out", required=True, metavar="FILE",

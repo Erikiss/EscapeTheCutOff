@@ -8,10 +8,16 @@
   else stops the run before its first call.
 - Safety: ``--out`` must be a regular file this run can append to that holds rows of an earlier keys run only, a plan
   may not repeat an id, and a lock file (next to the file a symlink points to) keeps a second run from writing the
-  same results file.
+  same results file. A complete last row without its newline is kept (the newline is added); only a torn last line
+  (an interrupted append) is cut, with a warning.
 - Cost: the cap counts every row of the file, the recipients' ``usage`` and the judges' calls (``judge_usage``,
-  metered per row). A paid answer is always written: when its grading raises, the row keeps the answer with an
-  ``error`` that starts with :data:`GRADING_FAILED`, and the next run grades it again instead of sending it again.
+  metered per row, failed calls included). A paid answer is always written: when its grading raises, the row keeps
+  the answer with an ``error`` that starts with :data:`GRADING_FAILED`, and the next run grades it again instead of
+  sending it again.
+- Stops: besides the cap and the limit, an error no retry can fix (HTTP 401, 402 or 403 from the gateway) and the
+  ``stop`` event (the CLI sets it on the first Ctrl-C) stop the run from starting new items; the items in flight
+  finish and write their rows. An answer without visible text that was not cut at ``max_tokens`` is no answer: its
+  row is a send error, and the next run sends the call again.
 - Grading: with judges, stored answers the rules left undecided, and stored rows still undecided because they give
   their name (the donor's, or the right one) in reported speech only, are graded again from their stored response,
   without a new recipient call.
@@ -39,8 +45,9 @@ from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
+from cutoffmix.backends.base import BackendError
 from cutoffmix.bench.grading import _json_objects, grade_response
 from cutoffmix.bench.io import append_jsonl
 from cutoffmix.bench.keys import text as _text  # looked up at call time: adoption_label can be swapped in tests
@@ -72,6 +79,12 @@ _ROW_NEEDS = ("id", "arm", "grade")  # every row of 'bench keys run' has these .
 _ROW_NEVER = ("probe", "model", "messages")  # ... and none of these (probe results, plans)
 _PROVENANCE = ("backend", "prompt_sha", "request_sha")
 _PLAN_NEEDS = ("id", "set", "donor", "recipient", "event_id", "arm", "messages")
+_OUT_FILE = "--out must be a new file or an earlier 'bench keys run' results file"
+_OUT_ROWS = "--out must be a new file or an earlier keys results file, not probe results, events or a plan"
+# HTTP statuses of an error that no retry can fix (design section 6): a missing or wrong key, no credits, no access. A
+# 402 that the gateway marks retryable (Retry-After: OpenRouter's in-flight budget limit) is not one.
+FATAL_STATUS: frozenset[int] = frozenset({401, 402, 403})
+StopReason = Literal["max_cost", "limit", "error", "interrupted"]
 
 # ---- the adoption judge (design section 6): one dedicated question per judge for answers in reported speech
 ADOPTION_JUDGE_SYSTEM = (
@@ -129,13 +142,18 @@ class RunOutcome:
     sent: int  # recipient calls this run sent (each wrote a row, errors included)
     regraded: int  # stored answers graded again (each wrote a row, no recipient call)
     not_sent: int  # planned calls still without a current answer (no row, a send error, or a stale answer)
-    not_regraded: int  # stored answers due for a re-grade that the run left (the cost cap stopped it)
-    stopped_by: Literal["max_cost", "limit"] | None  # what kept planned work from being done; None: nothing did
+    not_regraded: int  # stored answers due for a re-grade that the run left (a stop before they started)
+    # what kept planned work from being started: the cost cap, the limit, an error no retry can fix (``error``), the
+    # ``stop`` event (Ctrl-C); None: nothing did (every planned call was sent, though some may have failed)
+    stopped_by: StopReason | None
     cost_usd: float  # summed cost of every row in the file now: what ``max_cost`` is compared with
     recipients_usd: float  # of ``cost_usd``: the recipients' ``usage``
     judges_usd: float  # of ``cost_usd``: the judges' calls (``judge_usage``)
     run_cost_usd: float  # what this run added
     not_graded: int = 0  # planned calls whose current answer could not be graded (the next run grades it again)
+    error: str | None = None  # with ``stopped_by`` "error": the error no retry can fix that stopped the run
+    judge_failed: int = 0  # judge calls of this run that failed (each recorded in ``judge_usage`` with its error)
+    judge_error: str | None = None  # the first of them
 
     @property
     def planned(self) -> int:
@@ -190,33 +208,37 @@ def _has_provenance(row: Mapping[str, Any]) -> bool:
     return all(isinstance(row.get(k), str) and row.get(k) for k in _PROVENANCE)
 
 
-def _check_row(path: Path, lineno: int, row: Any) -> dict[str, Any]:
+def _check_row(where: str, row: Any, remedy: str | None = None) -> dict[str, Any]:
+    """``row`` when it is a row of ``bench keys run`` (design section 6): a JSON object with ``id``, ``arm`` and
+    ``grade`` and without ``probe``, ``model`` or ``messages`` (a probe results file, an events file, a plan). Else
+    ``ValueError`` naming ``where`` (a file and line, or a line) and, when given, the ``remedy``."""
+    then = f": {remedy}" if remedy else ""
     if not isinstance(row, dict):
-        raise ValueError(f"{path}:{lineno}: expected a JSON object, got {type(row).__name__}: --out must be a new "
-                         "file or an earlier 'bench keys run' results file")
+        raise ValueError(f"{where}: expected a JSON object, got {type(row).__name__}{then}")
     missing = [k for k in _ROW_NEEDS if row.get(k) in (None, "")]
     foreign = [k for k in _ROW_NEVER if k in row]
     if missing or foreign:
         what = "; ".join(part for part in (f"no {', '.join(missing)}" if missing else "",
                                            f"has {', '.join(foreign)}" if foreign else "") if part)
-        raise ValueError(f"{path}:{lineno} is not a 'bench keys run' result row ({what}): --out must be a new file "
-                         "or an earlier keys results file, not probe results, events or a plan")
+        raise ValueError(f"{where} is not a 'bench keys run' result row ({what}){then}")
     return row
 
 
-def _existing(path: Path) -> list[dict[str, Any]]:
-    """Every row in ``path`` up to its last newline (an interrupted last line is left for the caller to cut); none
-    for a missing file. Raises ``ValueError`` naming the first line that is not a row of ``bench keys run``: each
-    has ``id``, ``arm`` and ``grade``, and none has ``probe``, ``model`` or ``messages`` (a probe results file, an
-    events file or a plan given as ``--out``; design section 6). A last line without a newline that is complete JSON
-    is checked too, so a foreign file is never cut. Nothing is written."""
-    if not path.is_file():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"{path} is not a text file ({e.reason} at byte {e.start}): --out must be a new file or an "
-                         "earlier 'bench keys run' results file") from e
+class _Rows(NamedTuple):
+    """The rows of a results file and what follows its last newline (``tail``): ``""`` nothing (or blanks only),
+    ``"row"`` a complete row without its newline (it is among ``rows``), ``"torn"`` a line that is no valid JSON (an
+    interrupted append; not among ``rows``). ``tail_line`` is the number of that last line."""
+
+    rows: list[dict[str, Any]]
+    tail: Literal["", "row", "torn"]
+    tail_line: int
+
+
+def _parse_rows(text: str, where: Callable[[int], str], invalid: str | None, remedy: str | None) -> _Rows:
+    """The rows of a results file's ``text`` (blank lines skipped), each checked by :func:`_check_row`; raises
+    ``ValueError`` for the first line that is no valid JSON (``where(lineno)``, then ``invalid`` when given) or no row.
+    A last line without its newline that is valid JSON is checked and kept, so a foreign file is never cut and a
+    complete row never lost; one that is no valid JSON is the torn line of an interrupted append."""
     cut = text.rfind("\n") + 1
     lines = text[:cut].split("\n")
     rows: list[dict[str, Any]] = []
@@ -226,17 +248,59 @@ def _existing(path: Path) -> list[dict[str, Any]]:
         try:
             row = json.loads(line)
         except json.JSONDecodeError as e:
-            raise ValueError(f"{path}:{lineno}: invalid JSON ({e}): --out must be a new file or an earlier "
-                             "'bench keys run' results file") from e
-        rows.append(_check_row(path, lineno, row))
+            raise ValueError(f"{where(lineno)}: invalid JSON ({e})" + (f": {invalid}" if invalid else "")) from e
+        rows.append(_check_row(where(lineno), row, remedy))
     tail = text[cut:]
-    if tail.strip():
-        try:
-            last = json.loads(tail)
-        except json.JSONDecodeError:  # an interrupted append: the caller cuts it
-            return rows
-        _check_row(path, len(lines), last)  # complete but without its newline: cut all the same, as an interruption
-    return rows
+    if not tail.strip():
+        return _Rows(rows, "", len(lines))
+    try:
+        last = json.loads(tail)
+    except json.JSONDecodeError:
+        return _Rows(rows, "torn", len(lines))
+    rows.append(_check_row(where(len(lines)), last, remedy))
+    return _Rows(rows, "row", len(lines))
+
+
+def _existing(path: Path) -> _Rows:
+    """Every row in ``path`` (none for a missing file), and what follows its last newline (:class:`_Rows`): a
+    complete row without its newline is among the rows, a torn line is left for the caller to cut. Raises
+    ``ValueError`` naming the first line that is not a row of ``bench keys run``: each has ``id``, ``arm`` and
+    ``grade``, and none has ``probe``, ``model`` or ``messages`` (a probe results file, an events file or a plan given
+    as ``--out``; design section 6). Nothing is written."""
+    if not path.is_file():
+        return _Rows([], "", 0)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not a text file ({e.reason} at byte {e.start}): {_OUT_FILE}") from e
+    return _parse_rows(text, lambda n: f"{path}:{n}", _OUT_FILE, _OUT_ROWS)
+
+
+def read_results(path: str | Path) -> list[dict[str, Any]]:
+    """The rows of a results file of ``bench keys run``, as ``bench keys report`` reads them (design section 6). Every
+    line must be such a row: ``ValueError`` names the first that is not ("line N is not a 'bench keys run' result row
+    (no grade; has messages)"), or that is no valid JSON. A complete last row without its newline counts; a torn last
+    line (an interrupted append) is skipped with a warning, as :func:`cutoffmix.bench.io.read_jsonl` does. A missing
+    file raises ``FileNotFoundError``."""
+    p = Path(path)
+    got = _parse_rows(p.read_text(encoding="utf-8"), lambda n: f"line {n}", None, None)
+    if got.tail == "torn":
+        log.warning("%s: skipping truncated last line %d (interrupted append)", p, got.tail_line)
+    return got.rows
+
+
+def _mend_last_line(path: Path, stored: _Rows) -> None:
+    """Make ``path`` end with a newline before rows are appended (design section 6, Resume): a complete last row
+    without its newline gets its newline (the row is kept and counts); a torn last line (an interrupted append) is
+    cut, with a warning; blanks after the last newline are cut. It opens a non-empty file for writing, so a read-only
+    one fails here (``OSError``), before any call."""
+    if stored.tail == "row":
+        with path.open("ab") as f:
+            f.write(b"\n")
+        return
+    if stored.tail == "torn":
+        log.warning("%s: cutting truncated last line %d (interrupted append)", path, stored.tail_line)
+    _drop_partial_line(path)
 
 
 def _unwritable(path: Path, e: OSError) -> ValueError:
@@ -262,6 +326,13 @@ def _grading_failed(row: Mapping[str, Any]) -> bool:
 def _is_answer(row: Mapping[str, Any]) -> bool:
     """Whether ``row`` holds the recipient's answer: no error, or only its grading failed (a send error has none)."""
     return not row.get("error") or _grading_failed(row)
+
+
+def _no_retry_fixes(exc: BaseException) -> bool:
+    """Whether a failed call's error is one that no retry can fix (design section 6), so that the run stops starting
+    new calls: a :class:`~cutoffmix.backends.base.BackendError` with an HTTP status in :data:`FATAL_STATUS` (401
+    unauthorised, 402 no credits, 403 forbidden) that the backend does not mark retryable."""
+    return isinstance(exc, BackendError) and exc.status in FATAL_STATUS and not exc.retryable
 
 
 def _shows_right_name(item: Mapping[str, Any]) -> bool:
@@ -359,17 +430,25 @@ class _JudgeMeter:
     """The backend the judges of one item are asked through: forwards every call and records its usage, so the
     row's ``judge_usage`` lists every judge call and the cost cap counts it (design section 6). Each entry is
     ``{judge, purpose, cost, usage}``: :func:`row_cost` reads an entry like a row (its ``usage``), and the entry's
-    own ``cost`` is that value too."""
+    own ``cost`` is that value too. A call that raises is recorded as ``{judge, purpose, cost: 0.0, usage: None,
+    error}`` and the exception raised on (the grading counts it as a missing vote), so failed judge calls are
+    counted instead of disappearing."""
 
     def __init__(self, backend: Backend) -> None:
         self._backend = backend
         self.entries: list[dict[str, Any]] = []
 
     async def chat(self, model: ModelSpec, req: ChatRequest) -> ChatResult:
-        result = await self._backend.chat(model, req)
+        purpose = str(req.metadata.get("purpose") or "judge")
+        try:
+            result = await self._backend.chat(model, req)
+        except Exception as e:
+            self.entries.append({"judge": model.key, "purpose": purpose, "cost": 0.0, "usage": None,
+                                 "error": f"{type(e).__name__}: {e}"[:300]})
+            raise
         usage = dict(result.usage) if isinstance(result.usage, Mapping) else None
-        self.entries.append({"judge": model.key, "purpose": str(req.metadata.get("purpose") or "judge"),
-                             "cost": row_cost({"usage": usage}), "usage": usage})
+        self.entries.append({"judge": model.key, "purpose": purpose, "cost": row_cost({"usage": usage}),
+                             "usage": usage})
         return result
 
     def stream_continuation(self, model: ModelSpec,
@@ -593,6 +672,7 @@ async def run_plan(
     backend_name: str | None = None,
     resend_stale: bool = False,
     on_start: Callable[[RunStart], None] | None = None,
+    stop: asyncio.Event | None = None,
 ) -> RunOutcome:
     """Send the planned calls, grade each answer and append one row per answer to ``out_path`` (JSONL); return how
     the run ended (:class:`RunOutcome`). Every check below runs before the first call.
@@ -601,10 +681,14 @@ async def run_plan(
       model, arm, set, donor, item, donor_answer})`` to the recipient model. The answer is graded with
       :func:`cutoffmix.bench.grading.grade_response` (the paper rules; ``judges`` only when given). A policy refusal
       (``content_filter``) is ``ungraded`` with grader ``refusal``; an exception becomes an ``ungraded`` row with
-      ``error``. When the call raises, the row has no answer (``usage`` None) and the next run sends it again. When
-      the grading of an answer raises, the row keeps the answer, its ``usage`` and the judges' calls made so far, and
-      its ``error`` starts with :data:`GRADING_FAILED`: the paid call is counted once and never sent again; the next
-      run grades the stored answer again (with or without judges).
+      ``error``. When the call raises, the row has no answer (``usage`` None) and the next run sends it again. An
+      answer without visible text whose ``finish_reason`` is neither ``length`` (cut at ``max_tokens``, which is
+      pre-registered: an answer) nor ``content_filter`` is no answer either: its row keeps the ``usage`` and has the
+      ``error`` "empty answer (finish_reason ...)", and the next run sends it again. When the grading of an answer
+      raises, the row keeps the answer, its ``usage`` and the judges' calls made so far, and its ``error`` starts
+      with :data:`GRADING_FAILED`: the paid call is counted once and never sent again; the next run grades the stored
+      answer again (with or without judges). A judge call that fails is a missing vote; its entry in ``judge_usage``
+      carries the ``error`` (:class:`_JudgeMeter`), and ``RunOutcome.judge_failed`` counts this run's.
     - Rows: ``{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, adoption,
       adoption_grader, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, today, error}``
       (design section 6). ``backend`` is ``backend_name`` (default: :func:`_backend_name` of ``backend``),
@@ -626,8 +710,9 @@ async def run_plan(
     - Safety: the plan must pass :func:`check_plan` (no repeated id); ``out_path`` must be a regular file (or new)
       that holds rows of an earlier keys run only (see :func:`_existing`) and that this run can append to (checked
       before the first call); an exclusive lock on ``<out_path>.lock`` (next to the file a symlink resolves to) is
-      held from before the interrupted last line is cut until the last row is appended (another run holding it:
-      ``ValueError``).
+      held from before the last line is mended until the last row is appended (another run holding it:
+      ``ValueError``). The last line: a complete row without its newline gets the newline and counts like any row;
+      a torn line (an interrupted append, no valid JSON) is cut with a warning on the log.
     - Resume: a stored row counts as done only when it has provenance, comes from the same backend and answered the
       same request, and has no ``error``; readers keep the last row per id. A row without provenance or from another
       backend anywhere in the file stops the run (``ValueError`` with the counts): those calls are never sent again,
@@ -650,7 +735,11 @@ async def run_plan(
       this run sends (re-grades are no calls). ``max_cost`` (USD) stops starting new items once the summed cost of
       every row in ``out_path`` (:func:`row_cost` plus :func:`judge_cost`; earlier rows, repeats and this run's)
       reaches it; items in flight finish with their judge calls. Re-grades without judges cost nothing and are never
-      stopped by it. ``RunOutcome.stopped_by`` says whether the cap or the limit left planned work undone.
+      stopped by it. Two more stops work the same way (no new item, the items in flight finish and write their rows):
+      a call that fails with an error no retry can fix (a :class:`~cutoffmix.backends.base.BackendError` with an HTTP
+      status in :data:`FATAL_STATUS` that is not retryable: a missing or wrong key, no credits, no access), and
+      ``stop`` once it is set (the CLI sets it on the first Ctrl-C). ``RunOutcome.stopped_by`` says which of the cap,
+      the limit, the error (``RunOutcome.error``) or the stop event left planned work unstarted.
     - ``on_start`` is called once, before the first call, with what the run found (:class:`RunStart`).
     """
     if concurrency < 1:
@@ -679,13 +768,13 @@ async def run_plan(
     with _locked(path):
         stored = _existing(path)
         try:
-            _drop_partial_line(path)  # only after the file passed as keys results
+            _mend_last_line(path, stored)  # only after the file passed as keys results
         except OSError as e:  # it opens a non-empty file for writing: a read-only one fails here, before any call
             raise _unwritable(path, e) from e
         return await _run_locked(
-            backend, specs, plan, path, stored, current, by_event, name=name, concurrency=concurrency,
+            backend, specs, plan, path, stored.rows, current, by_event, name=name, concurrency=concurrency,
             max_cost=max_cost, limit=limit, judges=list(judges or []), max_tokens=max_tokens, progress=progress,
-            resend_stale=resend_stale, on_start=on_start)
+            resend_stale=resend_stale, on_start=on_start, stop=stop)
 
 
 def _check_resumable(path: Path, stored: Sequence[Mapping[str, Any]], plan: Sequence[Mapping[str, Any]],
@@ -739,6 +828,7 @@ async def _run_locked(
     progress: ProgressCallback | None,
     resend_stale: bool,
     on_start: Callable[[RunStart], None] | None,
+    stop: asyncio.Event | None,
 ) -> RunOutcome:
     """:func:`run_plan` once the lock is held and the stored rows are read."""
     last: dict[str, dict[str, Any]] = {}
@@ -792,8 +882,12 @@ async def _run_locked(
     total, finished, sent, regraded = len(regrade) + len(to_send), 0, 0, 0
     sem = asyncio.Semaphore(concurrency)
     failures: list[Exception] = []
+    fatal: str | None = None  # the first error no retry can fix: no new item starts after it
+    halted: StopReason | None = None  # why an item was not started
+    judge_failed, judge_error = 0, None
 
     async def send(item: Mapping[str, Any]) -> dict[str, Any]:
+        nonlocal fatal
         item_id = str(item["id"])
         event = by_event[str(item["event_id"])]
         spec = specs[str(item["recipient"])]
@@ -806,16 +900,25 @@ async def _run_locked(
         start_time = time.perf_counter()
         try:
             result = await backend.chat(spec, req)
-        except Exception as e:  # every failure is recorded, the run goes on
+        except Exception as e:  # every failure is recorded; the run goes on unless no retry can fix it
+            error = f"{type(e).__name__}: {e}"[:500]
+            if fatal is None and _no_retry_fixes(e):
+                fatal = error
             return _row(item, provenance, response="", grade="ungraded", hedged=False, grader="none", adopted=None,
                         adoption=None, adoption_grader=None, latency_s=round(time.perf_counter() - start_time, 4),
-                        usage=None, judge_usage=[], error=f"{type(e).__name__}: {e}"[:500])
+                        usage=None, judge_usage=[], error=error)
         latency = round(result.latency_s if result.latency_s > 0 else time.perf_counter() - start_time, 4)
         text = result.text or ""
         if result.finish_reason == "content_filter":  # a policy refusal says nothing about knowledge
             return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="refusal",
                         adopted=None, adoption=None, adoption_grader=None, latency_s=latency, usage=result.usage,
                         judge_usage=[], error=None)
+        if not text.strip() and result.finish_reason != "length":
+            # no visible text and not cut at the pre-registered max_tokens: no answer (e.g. a provider's empty reply
+            # inside an HTTP 200); the usage is kept for the cap, and the next run sends the call again
+            return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="none", adopted=None,
+                        adoption=None, adoption_grader=None, latency_s=latency, usage=result.usage, judge_usage=[],
+                        error=f"empty answer (finish_reason {result.finish_reason})")
         meter = _JudgeMeter(backend)
         try:
             graded = await grade_response(event, PROBE, text, backend=meter, judges=judges or None)
@@ -843,7 +946,7 @@ async def _run_locked(
                     judge_usage=meter.entries, error=None)
 
     async def worker(make: Callable[[], Awaitable[dict[str, Any]]], counts_as_call: bool) -> None:
-        nonlocal finished, spent, sent, regraded, run_recipients, run_judges
+        nonlocal finished, spent, sent, regraded, run_recipients, run_judges, judge_failed, judge_error
         try:
             row = await make()
             append_jsonl(path, row)
@@ -851,6 +954,10 @@ async def _run_locked(
             run_recipients += row_cost(row)
             run_judges += judge_cost(row)
             spent += _cost(row)
+            for entry in row.get("judge_usage") or []:
+                if entry.get("error"):
+                    judge_failed += 1
+                    judge_error = judge_error or str(entry["error"])
             if counts_as_call:
                 sent += 1
             else:
@@ -863,17 +970,30 @@ async def _run_locked(
         finally:
             sem.release()
 
+    def stopped(free: bool) -> StopReason | None:
+        """Why no new item may start now, or None: the stop event (Ctrl-C), an error no retry can fix, the cost cap
+        (unless the items are ``free``: re-grades without judges)."""
+        if stop is not None and stop.is_set():
+            return "interrupted"
+        if fatal is not None:
+            return "error"
+        if not free and max_cost is not None and spent >= max_cost:
+            return "max_cost"
+        return None
+
     async def drain(work: Sequence[tuple[Callable[[], Awaitable[dict[str, Any]]], bool]], *, free: bool) -> int:
-        """Start the items in order, at most ``concurrency`` at a time, until the cap (unless the items are ``free``:
-        re-grades without judges) or a failure stops it; return how many were started (every started item
-        finishes)."""
+        """Start the items in order, at most ``concurrency`` at a time, until a stop (:func:`stopped`) or a failure;
+        return how many were started (every started item finishes and writes its row)."""
+        nonlocal halted
         started = 0
         tasks: set[asyncio.Task[None]] = set()
         try:
             for make, counts_as_call in work:
                 await sem.acquire()  # bounds the live tasks, not only the calls in flight
-                if failures or (not free and max_cost is not None and spent >= max_cost):
+                why = stopped(free)
+                if failures or why is not None:
                     sem.release()
+                    halted = halted or why
                     break
                 task = asyncio.create_task(worker(make, counts_as_call))
                 tasks.add(task)
@@ -893,9 +1013,9 @@ async def _run_locked(
     send_started = await drain([((lambda p=p: send(p)), True) for p in to_send], free=False)
     if failures:
         raise failures[0]
-    stopped_by: Literal["max_cost", "limit"] | None = None
+    stopped_by: StopReason | None = None
     if regrade_started < len(regrade) or send_started < len(to_send):
-        stopped_by = "max_cost"
+        stopped_by = halted or "max_cost"
     elif len(to_send) < len(pending):
         stopped_by = "limit"
     order = [str(p["id"]) for p in plan]
@@ -905,4 +1025,5 @@ async def _run_locked(
         not_sent=sum(1 for i in current if not graded(i) and not ungradable(i)),
         not_regraded=len(regrade) - regrade_started, stopped_by=stopped_by, cost_usd=spent,
         recipients_usd=recipients_before + run_recipients, judges_usd=judges_before + run_judges,
-        run_cost_usd=run_recipients + run_judges, not_graded=sum(1 for i in current if ungradable(i)))
+        run_cost_usd=run_recipients + run_judges, not_graded=sum(1 for i in current if ungradable(i)),
+        error=fatal if stopped_by == "error" else None, judge_failed=judge_failed, judge_error=judge_error)

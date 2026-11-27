@@ -748,6 +748,37 @@ async def test_chat_error_payload_and_refusal(sleeps):
     assert res.text == "" and res.finish_reason == "content_filter"
 
 
+def failed_completion(error: dict | None) -> dict:
+    """A provider failure inside an HTTP 200: ``finish_reason`` "error", with or without ``choices[0].error``."""
+    choice = {"index": 0, "finish_reason": "error", "message": {"role": "assistant", "content": ""}}
+    return {"id": "gen-4", "choices": [choice | ({"error": error} if error else {})], "usage": USAGE}
+
+
+async def test_chat_choice_level_errors_raise_a_retryable_error(sleeps):
+    upstream = failed_completion({"code": 502, "message": "Upstream provider error"})
+    rec = Recorder(httpx.Response(200, json=upstream), httpx.Response(200, json=chat_payload("ok")))
+    res = await backend(rec, retry_base_delay=0).chat(SOL, ChatRequest(messages=[]))
+    assert res.text == "ok" and res.finish_reason == "stop" and len(rec.requests) == 2      # retried, then answered
+    for payload, needle, status in ((upstream, "Upstream provider error", 502),
+                                    (failed_completion(None), "finish_reason 'error'", None)):
+        rec = Recorder(httpx.Response(200, json=payload))
+        with pytest.raises(BackendError) as ei:
+            await backend(rec, max_retries=2, retry_base_delay=0).chat(SOL, ChatRequest(messages=[]))
+        assert ei.value.retryable and ei.value.status == status and needle in str(ei.value)
+        assert len(rec.requests) == 3                                                       # every retry was used
+
+
+async def test_chat_native_refusal_is_reported_as_content_filter():
+    """OpenAI's native refusal shape (no content, ``message.refusal``, finish "stop") as the stream path reports it."""
+    def payload(content):
+        message = {"role": "assistant", "content": content, "refusal": "I'm sorry, but I can't help with that."}
+        return {"id": "gen-5", "choices": [{"index": 0, "finish_reason": "stop", "message": message}], "usage": USAGE}
+    res = await backend(Recorder(httpx.Response(200, json=payload(None)))).chat(SOL, ChatRequest(messages=[]))
+    assert res.text == "" and res.finish_reason == "content_filter" and res.usage == USAGE
+    res = await backend(Recorder(httpx.Response(200, json=payload("Paris.")))).chat(SOL, ChatRequest(messages=[]))
+    assert res.text == "Paris." and res.finish_reason == "stop"                              # an answer is an answer
+
+
 def test_retry_after_parsing():
     assert orb._retry_after(None) is None and orb._retry_after("soon") is None
     assert orb._retry_after("2.5") == 2.5 and orb._retry_after("-3") == 0.0

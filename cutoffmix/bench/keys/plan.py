@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from cutoffmix.bench.grading import _compact, _plain
+from cutoffmix.bench.grading import _compact, _plain, normalize_text
 from cutoffmix.bench.keys.common import (
     _KEY_SPLIT,
     BLANK_NOTE,
@@ -42,9 +42,10 @@ def _messages(event: Event, today: str, note: str | None) -> list[dict[str, Any]
 
 
 def _flat(note: str) -> str:
-    """A note without markdown, quotes and whitespace, casefolded: two notes that differ only there are the same
-    note (a wrong key must never be the key itself, design section 3)."""
-    return re.sub(r"[\s\"'\u201c\u201d\u2018\u2019\u201e\u00ab\u00bb]+", "", _plain(note)).replace("#", "").casefold()
+    """A note's letters and digits only, accents folded and casefolded (``normalize_text``): two notes that differ
+    only in punctuation, markdown, quotes, whitespace, case or accents are the same note (a wrong key must never be
+    the key itself, design section 3), as names are compared letters-only for the wrong key's person."""
+    return "".join(ch for ch in normalize_text(note) if ch.isalnum())
 
 
 # ---- pointers (design section 3): a key that ties [withheld] to another work
@@ -140,9 +141,9 @@ def build_plan(
       (``no_cue``, :func:`~cutoffmix.bench.keys.text.cue_tokens`) or for which no wrong key is left
       (``no_wrong_key``). A wrong key is drawn (seeded) among the donor's other correct, non-leaking notes that carry
       a cue themselves, never the same event, never one with this item's expected answer (compared letters-only, so
-      "Jun-sol Kim" and "Junsol Kim" are one person), never one equal to the key once markdown, quotes and whitespace
-      are removed, masked with that event's answer forms and this item's title, and never one that still contains
-      this item's answer.
+      "Jun-sol Kim" and "Junsol Kim" are one person), never one equal to the key on letters and digits (so notes that
+      differ only in punctuation, markdown, quotes or whitespace are one note), masked with that event's answer forms
+      and this item's title, and never one that still contains this item's answer.
     - A key that ties ``[withheld]`` to another work, or names a short handle of another event of ``events`` with
       the same expected answer, is a ``pointer``; ``related_known`` lists the recipient's stored ``current_d`` and
       ``mcq`` grades on those events. Pointer items are planned all the same.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter
 
 import pytest
@@ -261,8 +262,10 @@ POINTER_EVENTS = {"paper:2603.02138", "paper:2603.03283", "paper:2603.13398", "p
 
 
 def _flat(note: str) -> str:
-    """A note without markdown, quotes and whitespace, casefolded (an independent copy of the plan's rule)."""
-    return re.sub(r"[\s*_`#\"'“”‘’]+", "", note).casefold()
+    """A note's letters and digits, accents folded and casefolded (an independent copy of the plan's rule, design
+    section 3): notes that differ only in punctuation, markdown, quotes or whitespace are one note."""
+    folded = unicodedata.normalize("NFKD", note)
+    return "".join(ch for ch in folded if ch.isalnum() and not unicodedata.combining(ch)).casefold()
 
 
 # the reviewer's adjacency pattern (review masking-3): a placeholder joined to a capitalised word

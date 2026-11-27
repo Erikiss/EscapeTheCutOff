@@ -410,8 +410,14 @@ Vorab festgelegte Vorhersagen (`docs/DESIGN_keys.md`, Abschnitt 7, Version 2):
    als allein.
 4. Die Notiz stört selten eine richtige Antwort: weniger als 10 Prozentpunkte über dem Rauschen des erneuten Fragens.
 
-Jede Vorhersage hat drei mögliche Ausgänge: gestützt, widerlegt (die Daten schließen den vorhergesagten Effekt aus) oder
-unentschieden. Ein unvollständiger Lauf ergibt „vorläufig“ statt eines Urteils.
+Die möglichen Ausgänge hängen von der Vorhersage ab. Die Vorhersagen 1, 1b und 3 sind gestützt, nicht gestützt (ein
+Vergleich schließt den vorhergesagten Gewinn aus: 10 Prozentpunkte, bei 3b 20), unentschieden oder nicht testbar (unter
+6 Fragen in einem Vergleich; bei 3b auch, wenn mehr als 20 % der `full`-Antworten unentschieden bleiben). Vorhersage 2
+wird nur geprüft, wenn 1 gestützt ist und jede Gruppe mindestens 10 Einheiten hat (sonst nicht testbar), und ist dann
+nur gestützt oder unentschieden, nie widerlegt. Vorhersage 4 ist gestützt oder nicht gestützt, je nachdem, ob der
+gemessene Mehrschaden unter der festen Schwelle von 10 Prozentpunkten liegt (ein Punktwert, kein statistischer
+Ausschluss), oder nicht testbar (unter 10 Fragen). Ein unvollständiger Lauf ergibt „vorläufig“ statt eines Urteils;
+Zeilen aus mehreren Backends ergeben gar keines.
 
 **Version 2 nach einem Review.** Drei unabhängige Prüfer haben die erste Fassung angegriffen. Jeder Fund wurde
 gegengeprüft und auf dem echten Plan nachgerechnet; 16 Funde haben sich bestätigt. Die Regeln wurden geändert, bevor
@@ -452,10 +458,13 @@ cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_resu
 Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten:
 2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24), dazu wenige Cent bis etwa 0,35 $ für den Judge (darin bis zu 136 Aufrufe für
 `full`-Antworten, die den richtigen Namen nur berichten; im ungünstigsten Fall etwa 0,55 $). Beides zusammen bleibt
-unter `--max-cost 3`. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und hört
-bei `--max-cost` auf (Exit-Code 3). Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene Datei
-(`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet sie als
-SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht gelaufen.**
+unter `--max-cost 3`. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und endet
+mit Exit-Code 3 bei `--max-cost`, mit 4, wenn Aufrufe fehlschlugen (der nächste Lauf schickt sie erneut) oder ein
+Fehler auftrat, den kein neuer Versuch behebt (HTTP 401, 402 oder 403: Schlüssel, Guthaben, Zugang; dann startet er
+keinen Aufruf mehr), und mit 130 nach Strg-C, wobei das erste Strg-C die laufenden Aufrufe zu Ende laufen und speichern
+lässt und erst ein zweites sofort abbricht. Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene
+Datei (`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet
+sie als SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 

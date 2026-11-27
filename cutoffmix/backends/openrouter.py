@@ -19,6 +19,11 @@ Stream facts this module relies on (OpenRouter docs, checked 2026-11-24):
   reported like OpenRouter's ``content_filter`` refusal.
 - After the HTTP 200 is committed, errors arrive as a chunk with a top-level ``error`` and ``finish_reason: "error"``.
 - Closing the connection stops generation (and billing) on Anthropic/OpenAI/Azure, not on Google.
+
+The non-streaming chat path (:meth:`OpenRouterBackend.chat`) reads the same shapes from one response: a top-level
+``error``, or a choice-level one (``choices[0].error``, or ``finish_reason: "error"``: the provider failed inside an
+HTTP 200), raises a :class:`BackendError` (the choice-level one retryable); a message with no content and a
+``refusal`` text is reported with ``finish_reason`` ``content_filter``.
 """
 
 from __future__ import annotations
@@ -585,8 +590,10 @@ class OpenRouterBackend:
     # ---- non-streaming ------------------------------------------------------------------
 
     async def chat(self, model: ModelSpec, req: ChatRequest) -> ChatResult:
-        """One non-streaming chat call. Retries (up to ``max_retries``) on 408/429/5xx, retryable 402s, timeouts and
-        connection errors, honouring Retry-After and otherwise backing off exponentially with jitter."""
+        """One non-streaming chat call. Retries (up to ``max_retries``) on 408/429/5xx, retryable 402s, timeouts,
+        connection errors and a completion that failed inside an HTTP 200 (``choices[0].error`` or ``finish_reason``
+        ``error``), honouring Retry-After and otherwise backing off exponentially with jitter. A reply with no content
+        and a ``message.refusal`` text comes back with ``finish_reason`` ``content_filter``."""
         body = self.build_chat_body(model, req)
         headers = self._headers()
         attempt = 0
@@ -629,13 +636,25 @@ class OpenRouterBackend:
         if not choices:
             raise BackendError(f"response from {model.provider_id} has no choices", error_type="bad_response",
                                retryable=True)
-        choice = choices[0]
+        choice = choices[0] if isinstance(choices[0], Mapping) else {}
+        finish = choice.get("finish_reason")
+        failure = choice.get("error")
+        if failure or finish == "error":  # the provider failed inside an HTTP 200: the same request may succeed later
+            code = failure.get("code") if isinstance(failure, Mapping) else None
+            what = _error_message(failure) if failure else "finish_reason 'error'"
+            raise BackendError(f"{model.provider_id}: the completion failed ({what})",
+                               status=code if isinstance(code, int) and not isinstance(code, bool) else None,
+                               error_type=_error_meta(failure).get("error_type") or "completion_error", retryable=True)
         message = choice.get("message") or {}
+        message = message if isinstance(message, Mapping) else {}
+        text = _message_text(message.get("content"))
+        if not text.strip() and _message_text(message.get("refusal")).strip():
+            finish = "content_filter"  # OpenAI's native refusal shape, reported as the stream path reports it
         return ChatResult(
-            text=_message_text(message.get("content")),
+            text=text,
             reasoning=message.get("reasoning") or "",
             usage=payload.get("usage"),
-            finish_reason=choice.get("finish_reason"),
+            finish_reason=finish,
             latency_s=time.monotonic() - t0,
             raw=payload,
         )
