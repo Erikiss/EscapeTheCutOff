@@ -61,7 +61,10 @@ from cutoffmix.bench.keys.run import (
 # ---- statistics (stats.py)
 from cutoffmix.bench.keys.stats import (
     fisher_exact,
+    items_needed,
     mcnemar_exact,
+    stratified_difference,
+    stratified_permutation_test,
     wilson,
 )
 
