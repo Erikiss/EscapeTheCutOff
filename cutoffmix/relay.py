@@ -80,6 +80,7 @@ from cutoffmix.prompts import (
     relay_system_prompt_rally,
     relay_tail,
     relay_tail_rally,
+    relay_tail_rally_light,
     split_final,
     strip_preamble,
     trim_overlap,
@@ -88,7 +89,7 @@ from cutoffmix.prompts import (
     vs_menu_messages,
     word3gram_jaccard,
 )
-from cutoffmix.rally import RallyState
+from cutoffmix.rally import RallyState, parse_note
 from cutoffmix.taxonomy import argmax_topic
 from cutoffmix.types import (
     Backend,
@@ -293,21 +294,30 @@ class _Echo:
     one that was cut off.
     """
 
-    def __init__(self, segments: Sequence[str]) -> None:
+    def __init__(self, segments: Sequence[str], *, exempt: Callable[[str], bool] | None = None) -> None:
         self.context = notes_echo_window(list(segments))
         self._notes = sorted({n.strip() for n in segments if len(n.strip()) >= _ECHO_MIN_CHARS}, key=len,
                              reverse=True)
+        self._exempt = exempt  # the rally: a short quiet note ('Nothing newer: ...') may repeat an earlier one
+
+    def exempt(self, text: str) -> bool:
+        """Whether ``text`` is a whole note that may repeat earlier wording (never a partial repeat of an earlier note)."""
+        return self._exempt is not None and self._exempt(text)
 
     def strip(self, text: str) -> str:
         body = text.lstrip()
+        if self.exempt(body):  # a quiet rally note as a whole is kept as written, even when it repeats earlier wording
+            return body
         while True:
             note = next((n for n in self._notes if body.startswith(n)), None)
             if note is None:
-                return trim_overlap(self.context, body) if self.context else body
+                if self.context and not self.exempt(body):
+                    return trim_overlap(self.context, body)
+                return body
             body = body[len(note):].lstrip()
 
     def repeats(self, text: str) -> bool:
-        return len(text) >= _ECHO_MIN_CHARS and text in self.context
+        return len(text) >= _ECHO_MIN_CHARS and text in self.context and not self.exempt(text)
 
 
 class _StreamFilter:
@@ -415,9 +425,20 @@ class _StreamFilter:
         return out
 
 
+def _quiet_shape(text: str) -> bool:
+    """A rally note that says nothing more than 'I confirm / know nothing newer', with its closing 'Newest I know:' line:
+    the shape of the note the stop rule waits for, which models write in nearly the same words twice in a row."""
+    got = parse_note(text)
+    labels = got["labels"]
+    return (labels["confirm"] + labels["nothing_newer"] + labels["unverified"] > 0
+            and labels["update"] == labels["newer"] == labels["known"] == 0 and got["newest_raw"] is not None)
+
+
 def _finalize_think(raw: str, echo: _Echo, *, sentinel: str, final_marker: str,
-                    hard_cut_chars: int) -> tuple[str, str | None, bool, bool]:
-    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel, cut)`` of a think attempt.
+                    hard_cut_chars: int) -> tuple[str, str | None, bool, bool, str]:
+    """Authoritative ``(segment text, answer after the final marker or None, saw_sentinel, cut, full)`` of a think
+    attempt; ``full`` is the paragraph as the model wrote it, before the hard cut (the rally reads its labels and its
+    closing 'Newest I know:' line from it).
 
     Nothing after the first sentinel counts, also a mangled one (a final marker written after it is not an answer).
     Notes repeated before the new paragraph are removed, and a text that is only a piece of the notes (an echo,
@@ -428,14 +449,15 @@ def _finalize_think(raw: str, echo: _Echo, *, sentinel: str, final_marker: str,
     pre, saw = cut_at_sentinel(raw, sentinel)
     notes, answer = split_final(pre, final_marker)
     body = echo.strip(strip_preamble(notes if answer is not None else pre))
-    full = clean_segment(body, echo.context, sentinel=sentinel, hard_cut_chars=_NO_LIMIT)[0]
+    full = clean_segment(body, "" if echo.exempt(body) else echo.context, sentinel=sentinel,
+                         hard_cut_chars=_NO_LIMIT)[0]
     text = trim_to_sentence(full, hard_cut_chars)
     cut = len(text) < len(full)
     if echo.repeats(text):
         text = ""
     if answer is not None:
         answer = clean_segment(answer, "", sentinel=sentinel, hard_cut_chars=_NO_LIMIT)[0]
-    return text, answer, saw, cut
+    return text, answer, saw, cut, full
 
 
 def _finalize_answer(raw: str, *, sentinel: str, final_marker: str) -> str:
@@ -469,6 +491,7 @@ class _Attempt:
     note: str | None = None  # the backend's done.error, e.g. "refused: ..."
     saw_sentinel: bool = False
     cut: bool = False  # think: the committed text is shorter than what was written (hard cut or truncated stream)
+    full: str = ""  # think: the paragraph before the hard cut (``text`` is its sentence-trimmed form)
     aborted: bool = False  # the stream was closed (by the relay or the backend) before the provider finished
     streamed: bool = False  # the backend yielded at least one event (a call that failed before it is not billed)
     timed_out: bool = False  # the relay gave up waiting (the provider may have billed it: its usage is unknown)
@@ -945,6 +968,9 @@ class Relay:
                     if st.rally is not None:
                         st.rally.stop_reason = "empty"
                     break  # no model has anything to add: the notes are concluded, answer from them
+                if st.rally is not None and st.notes:
+                    st.rally.stop_reason = "no_partner"  # nobody in the ring can take the turn: answer from the record
+                    break
                 st.error = out.error or f"segment {index} failed"
             elif out.attempt.answer is not None:
                 final = out.attempt
@@ -1065,7 +1091,9 @@ class Relay:
                 if plan is not None:
                     start["explore"] = plan.badge()
                 if st.rally is not None and phase == "think":
-                    start["rally"] = {"kind": st.rally.kind(), "turn": st.rally.turns + 1, "ring": list(st.rally.ring)}
+                    last = st.rally.previous()
+                    start["rally"] = {"kind": st.rally.kind(), "turn": st.rally.turns + 1, "ring": list(st.rally.ring),
+                                      "self_reply": last is not None and last["model"] == spec.key}
                 yield RelayEvent(
                     type="segment_start" if phase == "think" else "phase", segment=index, model=spec.key, phase=phase,
                     decision=d.decision, topic_posterior=_rounded(d.posterior, 4), scores=_rounded(d.scores, 3),
@@ -1099,6 +1127,10 @@ class Relay:
                     continue
                 if result == "refused":
                     self._count_refusal(st, spec.key)
+                if st.rally is not None and phase == "think":
+                    st.rally.note_skipped(index, spec.key, result)
+                    if result == "error" and st.rally.hand_over_failed(spec.key, fatal=not att.retryable):
+                        st.disabled.add(spec.key)  # a partner that keeps failing is out for the run (no_partner follows)
                 excluded.add(spec.key)
                 break
 
@@ -1185,11 +1217,22 @@ class Relay:
                 turn = ra.turns + 1
                 prev = ra.previous()
                 writer = self._spec[prev["model"]].label() if prev is not None and prev["model"] in self._spec else None
-                req.system_override = relay_system_prompt_rally(rc.segment_tokens, st.today, rc.sentinel)
-                req.tail = relay_tail_rally(turn, rally_directive(turn, writer, prev["newest"] if prev else None))
-                req.metadata["kind"] = ra.kind()
+                light = spec is not None and spec.key in self.cfg.rally.light_schema_models
+                self_reply = spec is not None and prev is not None and spec.key == prev["model"]
+                directive = rally_directive(turn, writer, prev["newest"] if prev else None,
+                                            newest_raw=prev["newest_raw"] if prev else None,
+                                            approx=bool(prev and prev["approx"]), self_reply=self_reply, light=light)
+                if light:  # the default system prompt and a prose tail: schema-heavy prompts trip Fable's input filter
+                    req.system_override = relay_system_prompt(rc.segment_tokens, st.today, rc.sentinel, rc.final_marker)
+                    req.tail = relay_tail_rally_light(turn, directive, rc.final_marker)
+                else:
+                    req.system_override = relay_system_prompt_rally(rc.segment_tokens, st.today, rc.sentinel)
+                    req.tail = relay_tail_rally(turn, directive)
+                req.metadata |= {"kind": ra.kind(), "light": light, "self_reply": self_reply}
             else:
-                req.system_override = answer_system_prompt_rally(st.today, answer_basis=self.cfg.rally.answer_basis)
+                notes = [i + 1 for i, n in enumerate(ra.notes) if n["self_reply"]]
+                req.system_override = answer_system_prompt_rally(st.today, answer_basis=self.cfg.rally.answer_basis,
+                                                                 self_reply_notes=notes)
             return req
         ex = st.explore
         if ex is None:
@@ -1337,7 +1380,7 @@ class Relay:
         cannot hold the segment.
         """
         rc = self.cfg.relay
-        echo = _Echo(req.segments if req.phase == "think" else ())
+        echo = _Echo(req.segments if req.phase == "think" else (), exempt=_quiet_shape if st.rally is not None else None)
         filt = _StreamFilter(phase=req.phase, echo=echo, sentinel=rc.sentinel,
                              final_marker=rc.final_marker, hard_cut_chars=rc.hard_cut_chars,
                              stop_at_marker=rc.answer_mode == "routed")
@@ -1403,7 +1446,7 @@ class Relay:
             st.count_call(att)
         att.raw = filt.raw
         if req.phase == "think":
-            att.text, att.answer, att.saw_sentinel, att.cut = _finalize_think(
+            att.text, att.answer, att.saw_sentinel, att.cut, att.full = _finalize_think(
                 filt.raw, echo, sentinel=rc.sentinel, final_marker=rc.final_marker,
                 hard_cut_chars=rc.hard_cut_chars)
             if att.answer is None and not att.saw_sentinel and att.finish in _TRUNCATED_FINISHES:
@@ -1442,7 +1485,9 @@ class Relay:
         flags = self._explore_commit(st, att, plan) if plan is not None and att.phase == "think" else None
         seg.explore = flags
         if st.rally is not None and att.phase == "think":
-            seg.rally = st.rally.add_note(att.index, att.model, att.text)
+            seg.rally = st.rally.add_note(att.index, att.model, att.text, full=att.full or att.text, cut=att.cut,
+                                          light=att.model in self.cfg.rally.light_schema_models)
+            st.rally.hand_over_ok(att.model)
         st.trace.segments.append(seg)
         if flags is not None and st.explore is not None:
             st.explore.note_committed(seg.index)  # the waiver streak is judged with this note in the record

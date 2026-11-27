@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from test_relay import MODELS, SENTINEL, FakeBackend, FakeRouter, collect, text_events
+from test_relay import MODELS, SENTINEL, FakeBackend, FakeRouter, FlakyError, collect, text_events
 
 from cutoffmix.config import AppConfig, RallyConfig, RelayConfig, RouterConfig
 from cutoffmix.relay import RallyTrace, Relay
@@ -59,7 +59,7 @@ async def test_models_write_in_ring_order_whatever_the_router_prefers():
     assert [e.data["probs"] for e in notes(events)] == [{"a": 1.0}, {"b": 1.0}, {"a": 1.0}, {"b": 1.0}]
     assert all(call["available"] == ["a", "b"] for call in router.decide_calls[:4])      # c is never offered
     starts = [e for e in events if e.type == "segment_start"]
-    assert starts[0].data["rally"] == {"kind": "open", "turn": 1, "ring": ["a", "b"]}
+    assert starts[0].data["rally"] == {"kind": "open", "turn": 1, "ring": ["a", "b"], "self_reply": False}
     assert starts[3].data["rally"]["turn"] == 4
     assert starts[1].topic_posterior and starts[1].scores                       # the router still reports topic and scores
 
@@ -199,3 +199,175 @@ async def test_without_the_rally_nothing_changes():
     assert not isinstance(trace, RallyTrace) and "rally" not in trace.to_dict()
     ring_trace = await make(dry_script)[0].run_to_trace("q")
     assert isinstance(ring_trace, RallyTrace) and ring_trace.to_dict()["rally"]["turns"] == 4
+
+
+# ---- review fixes: failed hand-overs, self-replies, cut notes, echo guard, light notes -----------------------------
+
+
+def think_calls(backend):
+    return [(m, r) for m, r in backend.calls if r.phase == "think"]
+
+
+async def test_a_dead_partner_ends_the_exchange_instead_of_turning_it_into_a_monologue():
+    def script(model, req, n):
+        if model == "b" and req.phase == "think":
+            return [FlakyError("HTTP 402", retryable=False)]
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script)
+    events = await collect(relay)
+    d = done(events)
+    rally = d["rally"]
+    assert d["status"] == "ok" and d["disabled"] == ["b"] and d["answer"] == "The answer. (single source)"
+    assert rally["stop_reason"] == "no_partner" and rally["turns"] == 2
+    assert [n["model"] for n in rally["notes"]] == ["a", "a"]
+    assert [n["self_reply"] for n in rally["notes"]] == [False, True] and rally["self_replies"] == 1
+    assert rally["notes"][1]["quiet"] is False
+    assert rally["skipped_hand_overs"] == [{"index": 1, "model": "b", "reason": "error"}]
+    # attempts: a (note 1), b (failed hand-over), a (note 2, replying to its own note)
+    assert [(e.model, e.data["rally"]["self_reply"]) for e in events if e.type == "segment_start"] == [
+        ("a", False), ("b", False), ("a", True)]
+    self_reply = think_calls(backend)[2][1]                                    # calls: a, b (failed), a
+    assert self_reply.metadata["self_reply"] is True and "could not take its turn" in self_reply.tail
+    assert "knowledge differs" not in self_reply.tail
+    answer = backend.calls[-1][1]
+    assert "Note 2 (counting the notes from 1" in answer.system_override
+
+
+async def test_a_partner_that_recovers_keeps_the_exchange_going():
+    state = {"b_calls": 0}
+
+    def script(model, req, n):
+        if model == "b" and req.phase == "think":
+            state["b_calls"] += 1
+            if state["b_calls"] <= 3:                                          # one hand-over: first call plus two retries
+                return [FlakyError("HTTP 503")]
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script)
+    d = done(await collect(relay))
+    rally = d["rally"]
+    assert d["disabled"] == [] and rally["stop_reason"] == "converged" and rally["turns"] == 4
+    assert [n["model"] for n in rally["notes"]] == ["a", "a", "b", "a"]
+    assert [n["self_reply"] for n in rally["notes"]] == [False, True, False, False] and rally["self_replies"] == 1
+    assert rally["skipped_hand_overs"] == [{"index": 1, "model": "b", "reason": "error"}]
+
+
+async def test_a_self_reply_never_closes_the_exchange():
+    def script(model, req, n):
+        if model == "b" and req.phase == "think" and len(req.segments) == 3:
+            return [FlakyError("HTTP 503")] * 1                                # b cannot take turn 4, a answers its own note 3
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script, rally_cfg(max_turns=6))
+    d = done(await collect(relay))
+    rally = d["rally"]
+    assert [n["model"] for n in rally["notes"]][:4] == ["a", "b", "a", "a"]
+    assert rally["notes"][3]["self_reply"] is True and rally["notes"][3]["quiet"] is False
+    assert rally["stop_reason"] != "converged" or len({n["model"] for n in rally["notes"][-2:]}) == 2
+
+
+async def test_when_no_ring_model_can_write_the_answer_comes_from_the_record():
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("answer from the record")
+        if req.segments:
+            return [FlakyError("HTTP 404", retryable=False)]
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script)
+    d = done(await collect(relay))
+    assert d["status"] == "ok" and d["rally"]["stop_reason"] == "no_partner" and d["rally"]["turns"] == 1
+    assert sorted(d["disabled"]) == ["a", "b"] and d["answer"] == "answer from the record"
+    assert backend.calls[-1][0] == "c"                                          # the ring is out: any model answers
+
+
+async def test_a_note_cut_by_the_hard_cut_is_read_from_its_whole_text():
+    body = "\n".join(f"Confirm: claim {i} holds (Jan 2026)." for i in range(8))
+    reply = body + "\nNewer: B shipped (May 2026).\nNewest I know: May 2026"      # ~340 characters, the cut is at 300
+
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("ok")
+        turn = len(req.segments) + 1
+        if turn == 1:
+            return text_events("Known: A (Feb 2026).\nNewest I know: February 2026" + SENTINEL)
+        if turn == 2:
+            return text_events(reply + SENTINEL)
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script, rally_cfg(relay={"hard_cut_chars": 300}))
+    events = await collect(relay)
+    note = done(events)["rally"]["notes"][1]
+    assert note["cut"] is True and note["labels"]["newer"] == 1 and note["quiet"] is False
+    assert note["newest"] == "2026-05"
+    committed_text = notes(events)[1].text
+    assert len(committed_text) <= 300 and "Newest I know" not in committed_text
+    assert "May 2026" in think_calls(backend)[2][1].tail                        # the next writer is told what the note said
+
+
+async def test_a_quiet_note_may_repeat_the_wording_of_an_earlier_quiet_note():
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("ok")
+        turn = len(req.segments) + 1
+        if turn == 1:
+            return text_events("Known: A happened (Feb 2026).\nNewest I know: February 2026" + SENTINEL)
+        if turn == 2:
+            return text_events("Update: A was replaced (Apr 2026).\nNewer: B shipped (May 2026).\n"
+                               "Newest I know: May 2026" + SENTINEL)
+        return text_events("Nothing newer: nothing after May 2026 on this.\nNewest I know: May 2026" + SENTINEL)
+    relay, backend, _ = make(script)
+    events = await collect(relay)
+    d = done(events)
+    assert d["dropped"] == [] and d["rally"]["stop_reason"] == "converged" and d["rally"]["turns"] == 4
+    assert notes(events)[2].text == notes(events)[3].text
+
+
+async def test_a_loud_repeat_of_an_earlier_note_is_still_dropped():
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("ok")
+        turn = len(req.segments) + 1
+        if turn == 1:
+            return text_events("Known: A happened (Feb 2026).\nNewest I know: February 2026" + SENTINEL)
+        return text_events("Update: A was replaced (Apr 2026).\nNewer: B shipped (May 2026).\n"
+                           "Newest I know: May 2026" + SENTINEL)
+    relay, backend, _ = make(script)
+    d = done(await collect(relay))
+    assert [row["reason"] for row in d["dropped"]] == ["empty", "empty"] and d["rally"]["stop_reason"] == "empty"
+    assert d["rally"]["turns"] == 2
+
+
+async def test_light_notes_for_a_model_carry_no_label_schema():
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("ok")
+        turn = len(req.segments) + 1
+        if model == "a":
+            if turn == 1:
+                return text_events("A happened in February 2026.\nNewest I know: February 2026" + SENTINEL)
+            return text_events(f"I know nothing more recent than May 2026 (pass {turn}).\n"
+                               "Newest I know: May 2026" + SENTINEL)
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script, rally_cfg(light_schema_models=("a",)))
+    d = done(await collect(relay))
+    rally = d["rally"]
+    assert rally["stop_reason"] == "converged" and rally["turns"] == 4          # a's label-free replies can be quiet
+    assert [n["light"] for n in rally["notes"]] == [True, False, True, False]
+    light = [r for m, r in think_calls(backend) if m == "a"]
+    full = [r for m, r in think_calls(backend) if m == "b"]
+    assert all("jointly working" in r.system_override and "hand one set" not in r.system_override for r in light)
+    assert all("'Confirm:'" not in r.tail and "does not accept a conclusion" in r.tail for r in light)
+    assert all(r.metadata["light"] is True for r in light) and all(r.metadata["light"] is False for r in full)
+    assert all("hand one set of working notes" in r.system_override and "'Confirm:'" in r.tail for r in full)
+    assert "Gemini" not in light[1].tail and "Model" not in light[1].tail      # the other analyst is not named
+
+
+async def test_an_approximate_newest_date_is_quoted_not_converted():
+    def script(model, req, n):
+        if req.phase == "answer":
+            return text_events("ok")
+        if len(req.segments) == 0:
+            return text_events("Known: A happened (Feb 2025).\nNewest I know: late 2025" + SENTINEL)
+        return dry_script(model, req, n)
+    relay, backend, _ = make(script)
+    await collect(relay)
+    tail = think_calls(backend)[1][1].tail
+    assert '"late 2025"' in tail and "January 2025" not in tail
+    assert "that the notes lack" in tail and "do not yet contain" in tail
