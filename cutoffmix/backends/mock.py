@@ -20,6 +20,13 @@ so tests, ``cutoffmix simulate`` and the ``--mock`` UI demo are reproducible:
   confirms and says ``Nothing newer:`` unless the writer knows a month the record does not have yet (``Update:`` and
   ``Newer:``); a model that is shown a note with newer items may recall one month more than it first declared, once.
   The answer phase marks single-source statements and, when asked, ends with ``Basis:`` and ``Not resolved:``.
+- Under the key experiment (DESIGN_keys.md; the probe request carries ``metadata["arm"]``) ``key``, ``full`` and
+  ``wrong_key`` start from the model's ordinary answer to the probe. ``key`` turns a miss into the right answer with
+  probability :data:`KEY_DARK_RECALL` when the event lies at most :data:`KEY_DARK_WINDOW_MONTHS` months after the
+  model's cutoff for the topic (a simulated dark memory: just past the cutoff, where a pointer can still help);
+  ``full`` answers with the name in the note (``metadata["donor_answer"]`` when the donor was wrong, else the right
+  answer) with probability :data:`FULL_COPY`; ``wrong_key`` is the ordinary answer. These numbers are chosen, not
+  measured: the mock exercises the pipeline and says nothing about the real models.
 """
 
 from __future__ import annotations
@@ -44,6 +51,11 @@ CHUNK_CHARS = 8
 _WINDOW_SEGMENTS = 3  # notes taken into account when picking the topic of a mock segment
 _MAX_QUESTION_TOPICS = 3  # a question is covered topic by topic for at most this many topics
 _SEGMENTS_PER_TOPIC = 3
+# key experiment (DESIGN_keys.md section 8): chosen constants of the simulated recipient, not measurements
+KEY_DARK_WINDOW_MONTHS = 4.0  # a miss on an event at most this many months after the cutoff can be a dark memory
+KEY_DARK_RECALL = 0.35  # P(a masked key turns such a miss into the right answer)
+FULL_COPY = 0.8  # P(the recipient answers with the name in a full note)
+KEY_ARMS = ("key", "full", "wrong_key")  # the arms that carry a note; "alone" is the plain probe
 
 
 @dataclass
@@ -616,6 +628,25 @@ class MockBackend:
             return self._stale_text(event), "outdated", p
         return "I don't know; I have no reliable information about that.", "abstain", p
 
+    def _keyed_answer(self, model: ModelSpec, truth: MockModelTruth, event: Event, arm: str, text: str,
+                      outcome: str, donor_answer: Any) -> tuple[str, str, str]:
+        """The answer under a note of the key experiment, from the model's ordinary ``(text, outcome)``; returns
+        ``(text, outcome, how)`` with ``how`` one of ``dark_memory`` / ``copied`` / ``own`` (DESIGN_keys.md
+        section 8). Deterministic per (seed, model, event, arm)."""
+        if arm == "wrong_key":  # a pointer to another paper: the model answers as it would alone
+            return text, outcome, "own"
+        rng = self._rng("arm", arm, model.key, event.id)
+        right = event.expected_current or (event.aliases[0] if event.aliases else event.fact)
+        if arm == "key":
+            t_event, tau = parse_fractional_month(event.date), truth.tau_for(event.topic)
+            if outcome != "correct" and tau < t_event <= tau + KEY_DARK_WINDOW_MONTHS and rng.random() < KEY_DARK_RECALL:
+                return f"{right.rstrip('.')}.", "correct", "dark_memory"
+            return text, outcome, "own"
+        if rng.random() < FULL_COPY:  # full: the value in the note is taken over
+            wrong = str(donor_answer).strip() if isinstance(donor_answer, str) and donor_answer.strip() else ""
+            return f"{(wrong or right).rstrip('.')}.", "incorrect" if wrong else "correct", "copied"
+        return text, outcome, "own"
+
     async def chat(self, model: ModelSpec, req: ChatRequest) -> ChatResult:
         """Answer a probe for a known event (``req.metadata`` has ``event_id`` and ``probe``) according to the
         model's truth; any other request gets a fixed placeholder reply. Deterministic per (seed, model, event,
@@ -627,6 +658,12 @@ class MockBackend:
             text, outcome, p = self._probe_answer(model, truth, event, str(meta["probe"]))
             raw = {"mock": True, "model": model.key, "event_id": event.id, "probe": meta["probe"],
                    "outcome": outcome, "p_correct": p}
+            arm = meta.get("arm")
+            if arm in KEY_ARMS and meta["probe"] != "mcq":
+                base = outcome
+                text, outcome, how = self._keyed_answer(model, truth, event, str(arm), text, outcome,
+                                                        meta.get("donor_answer"))
+                raw |= {"arm": arm, "base_outcome": base, "outcome": outcome, "keyed": how}
         else:
             text = f"Mock reply from {model.label()}: this request has no scripted answer."
             raw = {"mock": True, "model": model.key, "outcome": "unscripted"}

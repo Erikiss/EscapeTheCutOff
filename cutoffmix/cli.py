@@ -18,6 +18,11 @@
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
                         [--probe-map FROM=TO...] [--global-origins ORIGIN...]
                         [--priors KEY=MONTH...] [--note TEXT]
+    cutoffmix bench keys plan --events FILE --results FILE --out FILE [--models K,K,K] [--pairs A:B,...]
+                        [--both-right N] [--min-items N] [--seed N] [--today YYYY-MM-DD]
+    cutoffmix bench keys run --plan FILE --events FILE --out FILE [--mock] [--max-cost USD] [--concurrency N]
+                        [--limit N] [--judges KEY...]
+    cutoffmix bench keys report --plan FILE --results FILE [--json OUT] [--md OUT]
     cutoffmix router train [options of cutoffmix.router.train]
     cutoffmix simulate [--out DIR]
 
@@ -31,6 +36,10 @@ and the summary line adds the exploration metrics of the ``done`` event. ``--pre
 (DESIGN_rally.md): two or three models hand one record to each other in a fixed ring; the segment headers show the kind
 and the label counts of each note, and a summary after the run lists the turns, the stop reason and the (self-reported)
 frontier. ``--ring KEY,KEY[,KEY]`` sets the ring (and switches the rally on when no preset is given).
+``bench keys`` is the key-not-value experiment (DESIGN_keys.md, after Hazy Research's "Plato's Key"): ``plan`` builds
+the calls offline from stored graded results (does a donor's note with the answer masked make a recipient recall what
+it missed alone?) and prints the cost estimate; ``run`` sends them (``--max-cost`` is required for the real models);
+``report`` joins plan and results offline into rates, paired tests and adoption rates.
 """
 
 from __future__ import annotations
@@ -883,6 +892,130 @@ def _cmd_bench_fit(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- bench keys (DESIGN_keys.md) --------------------------------------------------------------------------------
+
+
+def _key_list(value: str) -> list[str]:
+    keys = [k.strip() for k in value.split(",") if k.strip()]
+    if not keys:
+        raise argparse.ArgumentTypeError(f"expected KEY,KEY[,KEY], got {value!r}")
+    return keys
+
+
+def _pair_list(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in (part.strip() for part in value.split(",")):
+        donor, sep, recipient = item.partition(":")
+        if not item or not sep or not donor.strip() or not recipient.strip() or donor.strip() == recipient.strip():
+            raise argparse.ArgumentTypeError(f"expected DONOR:RECIPIENT[,DONOR:RECIPIENT...] with two different keys, "
+                                             f"got {item!r}")
+        pairs.append((donor.strip(), recipient.strip()))
+    return pairs
+
+
+def _check_keys(cfg: AppConfig, keys: Sequence[str], option: str) -> None:
+    unknown = [k for k in keys if k not in cfg.model_keys()]
+    if unknown:
+        raise CLIError(f"{option}: unknown model(s) {', '.join(unknown)}; configured: {', '.join(cfg.model_keys())}")
+
+
+def _cmd_bench_keys_plan(args: argparse.Namespace) -> int:
+    import datetime as _dt
+
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import load_events, load_results, write_jsonl
+
+    cfg = _load_cfg(args)
+    if args.models:
+        _check_keys(cfg, args.models, "--models")
+    if args.pairs:
+        _check_keys(cfg, [k for pair in args.pairs for k in pair], "--pairs")
+    if args.both_right < 0 or args.min_items < 1:
+        raise CLIError("--both-right must be >= 0 and --min-items >= 1")
+    today = args.today or cfg.today
+    if today is not None:
+        try:
+            _dt.date.fromisoformat(today)
+        except ValueError:
+            raise CLIError(f"--today must be an ISO date (YYYY-MM-DD), got {today!r}") from None
+    events = load_events(args.events)
+    results = load_results(args.results)
+    try:
+        rows, summary = keys.build_plan(events, results, models=args.models or None, pairs=args.pairs or None,
+                                        both_right=args.both_right, min_items=args.min_items, seed=args.seed,
+                                        today=today)
+    except ValueError as e:
+        raise CLIError(str(e)) from e
+    write_jsonl(args.out, rows)
+    print(json.dumps(to_jsonable(summary), ensure_ascii=False, indent=2))
+    print(json.dumps(to_jsonable({"cost_estimate": keys.estimate_cost(rows, results)}), ensure_ascii=False, indent=2))
+    print(f"{len(rows)} planned calls -> {args.out} (nothing was sent; 'cutoffmix bench keys run' sends them)")
+    return 0
+
+
+def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
+    from cutoffmix.backends import make_backend
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import load_events, read_jsonl
+
+    cfg = _load_cfg(args)
+    if args.max_cost is not None and not args.max_cost > 0:
+        raise CLIError(f"--max-cost must be a positive number of dollars, got {args.max_cost}")
+    if args.limit is not None and args.limit < 0:
+        raise CLIError(f"--limit must be >= 0, got {args.limit}")
+    if args.concurrency < 1:
+        raise CLIError(f"--concurrency must be >= 1, got {args.concurrency}")
+    if not args.mock:
+        _require_key(cfg, "'cutoffmix bench keys run'")
+        if args.max_cost is None:
+            raise CLIError("--max-cost USD is required when the real models are called ('bench keys plan' prints the "
+                           "estimate); add --mock to run the simulated models")
+    plan = read_jsonl(args.plan)
+    if not plan:
+        raise CLIError(f"the plan {args.plan} has no calls")
+    events = load_events(args.events)
+    recipients = sorted({str(row.get("recipient")) for row in plan})
+    _check_keys(cfg, recipients, "the plan's recipients")
+    models = [cfg.model(k) for k in recipients]
+    judges = [_model_spec(cfg, k) for k in args.judges] or None
+    backend = make_backend(cfg, mock=args.mock, events=events)
+
+    async def go() -> list[dict[str, Any]]:
+        try:
+            return await keys.run_plan(backend, models, plan, args.out, events=events, concurrency=args.concurrency,
+                                       max_cost=args.max_cost, limit=args.limit, judges=judges,
+                                       progress=_progress(sys.stderr))
+        finally:
+            await _close(backend)
+
+    rows = asyncio.run(go())
+    grades: dict[str, int] = {}
+    for row in rows:
+        grades[str(row.get("grade"))] = grades.get(str(row.get("grade")), 0) + 1
+    print("  " + "  ".join(f"{g} {n}" for g, n in sorted(grades.items())))
+    print(f"{len(rows)} rows -> {args.out} · cost ${sum(keys.row_cost(r) for r in rows):.4f}"
+          + (" (simulated models)" if args.mock else ""))
+    return 0
+
+
+def _cmd_bench_keys_report(args: argparse.Namespace) -> int:
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import read_jsonl
+
+    plan, results = read_jsonl(args.plan), read_jsonl(args.results)
+    report = keys.build_report(plan, results)
+    text = keys.render_report(report)
+    print(text)
+    if args.json:
+        _write_json(args.json, report)
+    if args.md:
+        path = Path(args.md)
+        if path.parent != Path():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return 0
+
+
 def _cmd_router_train(args: argparse.Namespace, extra: Sequence[str]) -> int:
     from cutoffmix.router.train import main as train_main
 
@@ -1099,6 +1232,45 @@ def build_parser() -> argparse.ArgumentParser:
                          "per-topic table exists; the paper-specific difference lands in the ai_ml topic cell")
     bf.add_argument("--note", help="free text stored as meta.note (what the index is, what it may be used for)")
     bf.set_defaults(func=_cmd_bench_fit)
+
+    bk = bench_sub.add_parser("keys", help="key, not value (DESIGN_keys.md): does another model's note with the answer "
+                                          "masked unlock a model's own memory, or does it only copy?")
+    keys_sub = bk.add_subparsers(dest="keys_command", required=True, metavar="STEP")
+    kp = keys_sub.add_parser("plan", help="build the calls offline from stored graded results and print the counts and "
+                                          "the cost estimate (nothing is sent)")
+    kp.add_argument("--events", required=True, metavar="FILE")
+    kp.add_argument("--results", required=True, metavar="FILE",
+                    help="stored graded results (current_d and mcq) of the donors and recipients")
+    kp.add_argument("--out", required=True, metavar="FILE", help="plan JSONL, one row per call")
+    kp.add_argument("--models", type=_key_list, metavar="K,K,K", help="models to pair (default: all configured)")
+    kp.add_argument("--pairs", type=_pair_list, metavar="A:B,...",
+                    help="directed donor:recipient pairs (default: every pair of --models)")
+    kp.add_argument("--both-right", type=int, default=10, metavar="N",
+                    help="items per pair where donor and recipient were both right (harm check)")
+    kp.add_argument("--min-items", type=int, default=5, metavar="N", help="smallest dark set a pair is planned with")
+    kp.add_argument("--seed", type=int, default=0)
+    kp.add_argument("--today", metavar="YYYY-MM-DD", help="the date in the probe's system prompt (default: config or today)")
+    _add_config(kp)
+    kp.set_defaults(func=_cmd_bench_keys_plan)
+    krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers")
+    krun.add_argument("--plan", required=True, metavar="FILE")
+    krun.add_argument("--events", required=True, metavar="FILE")
+    krun.add_argument("--out", required=True, metavar="FILE", help="results JSONL (resumed if it exists)")
+    krun.add_argument("--mock", action="store_true", help="the simulated models (no key, no cost)")
+    krun.add_argument("--max-cost", type=float, metavar="USD",
+                      help="stop sending once the summed cost reaches this (required with the real models)")
+    krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
+    krun.add_argument("--concurrency", type=int, default=8)
+    krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
+                      help="judge models for answers the rules cannot grade (default: none)")
+    _add_config(krun)
+    krun.set_defaults(func=_cmd_bench_keys_run)
+    krep = keys_sub.add_parser("report", help="rates, paired tests and adoption rates from plan and results (offline)")
+    krep.add_argument("--plan", required=True, metavar="FILE")
+    krep.add_argument("--results", required=True, metavar="FILE")
+    krep.add_argument("--json", metavar="OUT", help="also write the report as JSON")
+    krep.add_argument("--md", metavar="OUT", help="also write the Markdown report to a file")
+    krep.set_defaults(func=_cmd_bench_keys_report)
 
     router = sub.add_parser("router", help="train the router's classifiers")
     router_sub = router.add_subparsers(dest="router_command", required=True, metavar="ACTION")

@@ -1040,3 +1040,23 @@ Surface (DESIGN_rally.md §7):
   exists) draws the frontier: one dot per note at the newest month its writer declared (coloured by model), the
   running maximum as a step line, the stop reason, hand-overs and gain, what each model added, and the text
   "self-reported". Dark mode and the 390 px layout hold (the stream grid is `minmax(0, 1fr)` so a long badge cannot widen it).
+
+## 9. Key experiment
+
+The key-not-value experiment (after Hazy Research's "Plato's Key": does another model's note with the answer masked
+make a model recall what it missed alone, or does it only copy?) has its own contract in
+[`DESIGN_keys.md`](DESIGN_keys.md): data and item sets (§2-3 there), the four arms and their prompts (§4), masking and
+the leak check (§5), plan, run and report (§6), pre-registered predictions (§7), mock (§8) and costs (§9). The
+experiment code is `cutoffmix/bench/keys.py`; nothing in the relay changes.
+
+Surface:
+
+- **CLI:** `cutoffmix bench keys plan` (offline: the planned calls as JSONL, counts per pair, set and arm, cost
+  estimate), `bench keys run` (resumable; `--max-cost USD` is required with the real models, `--mock` runs the simulated
+  ones, `--limit`, `--judges`), `bench keys report` (offline: Markdown on stdout, `--json` / `--md` files).
+- **Mock backend:** a probe request with `metadata["arm"]` `key`, `full` or `wrong_key` starts from the model's ordinary
+  answer; `key` turns a miss into the right answer with probability `KEY_DARK_RECALL` (0.35) when the event lies at
+  most `KEY_DARK_WINDOW_MONTHS` (4) months after the model's cutoff for the topic; `full` answers with the note's name
+  (`metadata["donor_answer"]` for a wrong donor, else the right answer) with probability `FULL_COPY` (0.8);
+  `wrong_key` is the ordinary answer. Chosen constants, deterministic per (seed, model, event, arm); requests without
+  `arm` are unchanged.

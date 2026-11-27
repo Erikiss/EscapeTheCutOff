@@ -46,6 +46,10 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle; mit den echten drei Modellen wurde das Preset
   **noch nicht** gelaufen (kein Schlüssel in der Entwicklungsumgebung). Offen sind vor allem, ob Fables Eingangsfilter
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
+- **Plato's-Key-Experiment („Schlüssel statt Antwort“): gebaut, offline geprüft, mit den echten Modellen noch nicht
+  gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob es
+  nur abschreibt; die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`). Der Pilot kostet etwa 2–3 $ und läuft erst
+  mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -341,6 +345,53 @@ und bestätigt hat.
   Das ist noch nicht gebaut und kostet echtes Geld, also nur mit Freigabe.
 - **Mit echten Modellen nicht gelaufen** (siehe „Ehrlicher Stand“). Die simulierten Modelle konvergieren, weil sie so
   gebaut sind. Das sagt nichts darüber, wie die echten schreiben.
+
+## Schlüssel statt Antwort: Plato's-Key-Experiment
+
+Vorlage ist der Blogbeitrag „Plato's Key“ von Hazy Research (Stanford, 25.11.2026): Bei Faktenwissen baut ein Modell in
+den frühen und mittleren Schichten einen *Schlüssel* zum Thema (etwa „Frankreich“), mit dem spätere Schichten den *Wert*
+(„Paris“) aus den Gewichten holen. Überträgt man den Schlüssel eines Modells (gedreht und skaliert) in ein anderes,
+nennt das Empfängermodell in median 41 % der Fälle die Antwort des Spenders. Von den Fakten, die der Empfänger allein
+verpasst, aber gespeichert hat („dunkle Erinnerungen“), holt der fremde Schlüssel 18 % zurück; Kontrollen höchstens
+1,1 %. Das braucht Zugriff auf die inneren Zustände, Fable, Sol und Neon geben über die API aber nur Text aus.
+
+Übertragen wird deshalb nur die Frage, auf Textebene: **Wenn Modell B eine Frage nicht beantworten kann, die Modell A
+richtig beantwortet, erinnert sich B dann an die Antwort, sobald es A's Notiz sieht, aus der die Antwort selbst
+entfernt ist?** Oder wird B nur besser, wenn es die Antwort abschreiben kann? Für das Relay und die Rally heißt das:
+Erinnert sich B wirklich, ist seine Zustimmung nach einer Übergabe eine unabhängige Bestätigung. Schreibt es nur ab, ist
+ein `Confirm:` nach einer vollen Notiz ein Echo und zählt als eine Quelle.
+
+| Arm | Was das Empfängermodell sieht |
+|---|---|
+| `alone` | nur die Frage, noch einmal gestellt (Rauschgrenze des erneuten Fragens) |
+| `key` | Frage und die Notiz des Spenders, Antwort durch `[withheld]` ersetzt |
+| `full` | Frage und die vollständige Notiz des Spenders |
+| `wrong_key` | Frage und die maskierte Notiz des Spenders zu einem **anderen** Paper (Kontrolle) |
+
+Daten: das AI-Paper-Probe-Set und seine bewerteten Antworten vom 25.11.2026 (bereits bezahlt). Fable weiß dort bei
+50 Fragen, was Neon nicht weiß, bei 96 Fragen, was Sol nicht weiß; Neon bei 47, was Sol nicht weiß. In die Gegenrichtung
+gibt es je nur eine Frage, die Richtungen sind also nicht messbar. Außerdem: Spender lag falsch (übernimmt der Empfänger
+den falschen Namen?), beide lagen richtig (stört die Notiz?) und erfundene Paper (übernimmt er eine Erfindung?).
+
+Vorab festgelegte Vorhersagen (`docs/DESIGN_keys.md`, Abschnitt 7):
+
+1. Bei den Fragen, die nur der Spender konnte, ist `key` besser als `alone` und `wrong_key` (gepaarter McNemar-Test).
+2. Die Erinnerung gelingt vor allem dort, wo der Empfänger die Antwort im Multiple-Choice-Test erkennt.
+3. `full` ist besser als `key`, und mit `full` übernimmt der Empfänger falsche Spender-Antworten weit häufiger als allein.
+4. Die Notiz stört selten eine richtige Antwort (unter 10 %).
+
+```bash
+cutoffmix bench keys plan --events data/events/papers_events.jsonl --results runs/papers_results_final.jsonl \
+    --out runs/keys_plan.jsonl                       # offline: Aufrufe, Zahlen pro Paar, Kostenschätzung
+cutoffmix bench keys run --plan runs/keys_plan.jsonl --events data/events/papers_events.jsonl \
+    --out runs/keys_results.jsonl --max-cost 4       # echte Modelle; --max-cost ist Pflicht (oder --mock)
+cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_results.jsonl --md runs/keys_report.md
+```
+
+Kosten: etwa 1.000 Aufrufe, die Empfänger sind Neon und Sol, also etwa 2–3 $ (die Planung druckt den genauen Wert).
+`run` setzt nach einer Unterbrechung fort und hört bei `--max-cost` auf. Mit `--mock` läuft alles offline gegen
+simulierte Modelle; deren Zahlen sind eingestellt, nicht gemessen. **Mit den echten Modellen ist das Experiment noch
+nicht gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 
