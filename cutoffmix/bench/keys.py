@@ -133,8 +133,16 @@ def _tokens(name: str) -> list[str]:
 
 def _loose(tokens: Sequence[str]) -> re.Pattern[str]:
     """A folded-text pattern for a name: a space or hyphen may appear or disappear inside and between its tokens
-    ("Jun-sol Kim" = "Junsol Kim" = "Jun Sol Kim"), as in the paper grader's loose forms."""
-    parts = [r"[\s\-]?".join(re.escape(ch) for ch in t) for t in tokens]
+    ("Jun-sol Kim" = "Junsol Kim" = "Jun Sol Kim"), as in the paper grader's loose forms. The dot of an initial is
+    optional inside the name ("M. Pióro" = "M Pióro") and never part of the match at its end, where it is usually
+    the full stop of the sentence ("... is Pióro M.")."""
+    parts = []
+    for i, token in enumerate(tokens):
+        core = token.rstrip(".")
+        if not core:
+            continue
+        part = r"[\s\-]?".join(re.escape(ch) for ch in core)
+        parts.append(part + (r"\.?" if token != core and i < len(tokens) - 1 else ""))
     return re.compile(r"(?<!\w)" + r"[\s\-]*".join(parts) + r"(?!\w)")
 
 
@@ -395,7 +403,6 @@ def build_plan(
         raise ValueError(f"min_items must be >= 1, got {min_items}")
     day = today or _dt.date.today().isoformat()
     _dt.date.fromisoformat(day)  # a malformed date fails here, not in the middle of a run
-    by_id = {e.id: e for e in events}
     cur, mcq, order = _index(results)
     keys = list(models) if models is not None else order
     if len(set(keys)) != len(keys):
@@ -435,7 +442,8 @@ def build_plan(
         summary_pairs[name] = info
 
         def add(set_: str, event: Event, *, notes: Mapping[str, tuple[str | None, str | None]],
-                donor_answer: str | None) -> None:
+                donor_answer: str | None, donor: str = donor, recipient: str = recipient,
+                info: dict[str, Any] = info) -> None:
             recognised_row = mcq.get((event.id, recipient))
             recognised = None if recognised_row is None else recognised_row.get("grade") == "correct"
             for arm in ARMS_BY_SET[set_]:

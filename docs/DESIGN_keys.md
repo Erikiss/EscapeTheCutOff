@@ -54,7 +54,10 @@ stored results; they need a donor run first (later step).
 | `control` | fake paper, A `incorrect` (it named an author for a paper that does not exist) | alone, full |
 
 `recognised` (dark items only): B's stored `mcq` grade for the event is `correct`. A pair with fewer than `--min-items`
-(default 5) `dark` items is planned for no set and reported as too small.
+(default 5) `dark` items loses its `dark` and `both_right` sets (`keyed: false` in the summary, listed under
+`excluded`); its `donor_wrong` and `control` items are still planned, because the model that is rarely a useful donor
+(Sol in this topic) gives most of the wrong answers and every confabulated control. A donor answer from which no name
+can be extracted drops its item (`no_name`); text in double quotes (titles of related papers) is skipped first.
 
 ## 4. Prompts
 
@@ -90,7 +93,11 @@ Calls: `ChatRequest(messages, max_tokens=4096, temperature=0.0, metadata={"event
   Every match becomes `[withheld]`; adjacent placeholders collapse into one.
 - The title (`subject`) becomes `[title]` (case-insensitive, punctuation between its words free).
 - Leak check: the masked note must not be graded `correct` by the paper rule grader (`grade_paper(event, "current_d",
-  note)`), and no answer token of 3 or more letters may remain. An item whose key leaks is excluded from `dark` and
+  note)`), no answer token of 3 or more letters and no accepted answer form may remain. Name tokens under 4 letters
+  are matched case-sensitively (the pronoun "he" survives a surname "He"); the dot of an initial is optional inside a
+  name. `[title]` also covers the part of the title before a colon when it has at least 4 letters ("SmolVLM:
+  ..."). Wrong-key notes additionally get the item's own title masked, and a wrong-key note that happens to contain
+  the item's own answer is not used. An item whose key leaks is excluded from `dark` and
   `both_right` (counted in the plan summary as `leaks`); its wrong-key note may still serve other items once masked
   with its own forms and checked.
 
@@ -107,8 +114,9 @@ cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_resu
 - `plan` (offline, deterministic for its inputs and seed) writes one row per call: `id` (stable hash of set, donor,
   recipient, event, arm), `set`, `donor`, `recipient`, `event_id`, `arm`, `recognised`, `donor_grade`, `donor_answer`
   (the name the donor asserted, for `donor_wrong` and `control`), `note`, `note_event` (the wrong key's source event),
-  `messages`. It prints the counts per pair, set and arm, the excluded pairs and leaks, and a cost estimate (stored mean
-  cost per `current_d` call per model, scaled by prompt length).
+  `messages`. `donor_answer` is the expected answer for `dark` and `both_right` (the donor was right) and the asserted
+  wrong name for `donor_wrong` and `control`. It prints the counts per pair, set and arm, the excluded pairs and
+  leaks, and a cost estimate (stored mean cost per `current_d` call per model, scaled by prompt length).
 - `run` sends the planned calls (resumable: an id that already has a row without `error` is skipped), grades each answer
   with the existing graders (`grade_response`: the paper rules, the judges only when `--judges` is given) and appends
   rows `{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, latency_s, usage, error}`.
@@ -133,6 +141,13 @@ Taken from the paper and stated so the pilot can refute them.
    `control`) far more often than `alone` does.
 4. The notes rarely break a correct recall (`both_right`, `key`): harm under 10 %.
 
+How the report decides (conservative; "not testable" when the numbers are too small): prediction 1 on the pair with the
+most items that have all four arms graded, at least 10 of them, both McNemar tests p < 0.05 in favour of `key`;
+prediction 2 with a higher `key` rate on recognised items, two-sided Fisher p < 0.05 and at least 5 graded rows per
+group; prediction 3 with `full` above `key` (pooled over pairs) and `full` adoption above `alone` adoption, both
+p < 0.05, at least 5 adoption items; prediction 4 with an observed harm rate under 10 % at n >= 10 (the interval is
+reported, not required to clear 10 %).
+
 If 1 fails while 3 holds, a model's agreement with a hand-over is copying, and the rally's confirmations after full
 notes must count as single source. If 1 holds, a blind key round in the rally is worth a test of its own.
 
@@ -146,7 +161,7 @@ numbers say nothing about the real models.
 
 ## 9. Costs
 
-Planned by default: `dark` 193 items x 4 arms, `donor_wrong` and `control` x 2, `both_right` 3 pairs x 10 x 2: about
-1,000 calls. Mean stored cost per `current_d` call: Fable 0.84 ct, Neon 0.51 ct, Sol 0.09 ct; the recipients are Neon
-and Sol, so the estimate is about 2 to 3 dollars (the plan prints the exact figure). Approval and an OpenRouter key are
-needed first.
+Planned by default on the real data (seed 0): 938 calls (`dark` 193 x 4, `donor_wrong` 45 x 2, `both_right` 30 x 2,
+`control` 8 x 2; recipients Sol 630, Neon 280, Fable 28), 0 leaks. Mean stored cost per `current_d` call: Fable 0.84
+ct, Neon 0.51 ct, Sol 0.09 ct; estimate 2.38 dollars (Neon 1.50, Sol 0.63, Fable 0.24). Approval and an OpenRouter
+key are needed first; `run` refuses real calls without `--max-cost`.
