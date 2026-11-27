@@ -48,9 +48,9 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
   noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
-  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach zwei Prüfrunden wurden
-  die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus wenige
-  Cent für den Judge und läuft erst mit Freigabe und Schlüssel.
+  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach drei Prüfrunden wurden
+  die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis
+  etwa 0,35 $ für den Judge und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -432,6 +432,15 @@ ersten echten Aufruf (Abschnitt 10, „Refinements“). Ein Beispiel: Nennt eine
 *anderen* Papers („der Erstautor des ursprünglichen Vidu-Papers war X“), gilt das nicht mehr als zu eigen gemacht,
 sondern als berichtet, und der Judge entscheidet.
 
+Zuletzt wurden alle Bereiche zusammen geprüft, ebenfalls vor dem ersten echten Aufruf. Dabei fiel eine Lücke im Arm
+`full` auf: Dort steht in der Notiz der richtige Name. Die Regeln werteten eine Antwort schon dann als richtig, wenn sie
+diesen Namen nur weitergibt oder sogar zurückweist („Die Notiz nennt X, ich glaube aber, es ist Y“, „Die Antwort der
+Notiz, X, ist falsch“). Das hätte die Trefferquote von `full` künstlich erhöht und damit Vorhersage 3a („`full` ist
+besser als `key`“) begünstigt. Jetzt gilt für den richtigen Namen dieselbe Unterscheidung wie für den falschen: Richtig
+ist eine `full`-Antwort nur, wenn sie sich den Namen zu eigen macht. Nennt sie ihn nur als Inhalt der Notiz, bleibt sie
+unbewertet und zählt als nicht richtig, bis der Judge entscheidet: zu eigen gemacht heißt richtig, nur berichtet oder
+zurückgewiesen heißt falsch.
+
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl \
     --results data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl   # offline, druckt die Kosten
@@ -441,11 +450,12 @@ cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_resu
 ```
 
 Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten:
-2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24), dazu wenige Cent bis etwa 0,15 $ für den Judge; die Planung druckt die
-Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und hört bei `--max-cost` auf (Exit-Code 3). Mit
-`--mock` läuft alles offline gegen simulierte Modelle, in eine eigene Datei (`--out runs/keys_results_mock.jsonl`).
-Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet sie als SIMULATED. **Mit den echten Modellen ist
-das Experiment noch nicht gelaufen.**
+2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24), dazu wenige Cent bis etwa 0,35 $ für den Judge (darin bis zu 136 Aufrufe für
+`full`-Antworten, die den richtigen Namen nur berichten; im ungünstigsten Fall etwa 0,55 $). Beides zusammen bleibt
+unter `--max-cost 3`. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und hört
+bei `--max-cost` auf (Exit-Code 3). Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene Datei
+(`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet sie als
+SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 

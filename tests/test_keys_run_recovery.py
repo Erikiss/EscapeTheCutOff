@@ -174,7 +174,7 @@ def test_an_unchanged_label_is_kept_and_a_label_that_cannot_be_computed_is_a_gra
     run(ScriptedBackend(copies_the_offer), rows, out, events)
     quiet = run(ScriptedBackend(copies_the_offer), [{**r, "donor_answer": "Nobody Else"} if r["set"] == "dark" else r
                                                     for r in rows], out, events)
-    assert quiet.regraded == 0                                                  # dark rows have no adoption
+    assert quiet.regraded == 0                          # no dark row is correct, so none carries a label to redo
 
     def label(response, name, event):
         raise RuntimeError("labelling broke")

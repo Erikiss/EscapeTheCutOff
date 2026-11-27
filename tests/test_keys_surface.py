@@ -501,11 +501,11 @@ def test_run_with_an_out_it_cannot_write_sends_nothing(tmp_path, capsys, keys, b
 
 
 def test_run_says_which_answers_could_not_be_graded(tmp_path, capsys, keys, backends, monkeypatch):
+    from cutoffmix.bench.grading import grade_paper
     from cutoffmix.bench.keys import text as text_mod
 
     plan, _ = _plan(tmp_path, capsys, "--pairs", PAIR)
     rows = read_jsonl(plan)
-    adoption = sum(1 for r in rows if r["set"] in ("donor_wrong", "control"))
     real = text_mod.adoption_label
 
     def broken(response, name, event):
@@ -514,15 +514,26 @@ def test_run_says_which_answers_could_not_be_graded(tmp_path, capsys, keys, back
     results = tmp_path / "keys_results_mock.jsonl"
     assert _run(plan, results, "--mock") == 0                                   # the run goes on: nothing is lost
     captured = capsys.readouterr()
-    assert len(backends.mock.calls) == len(rows) and adoption > 0
-    assert captured.err.endswith(f"\n{adoption} answers could not be graded (ValueError: labelling broke); they are "
-                                 "kept and counted in the cost, and the next run grades them again from the stored "
-                                 "responses, without a new call\n")
+    assert len(backends.mock.calls) == len(rows)
+    # labelled, so failed: every adoption row, and every full row of dark and both_right the rules grade correct
+    by_id = {e.id: e for e in load_events(EVENTS)}
+    stored = {r["id"]: r for r in read_jsonl(results)}
+    adoption = {r["id"] for r in rows if r["set"] in ("donor_wrong", "control")}
+    right_name = {r["id"] for r in rows if r["set"] in ("dark", "both_right") and r["arm"] == "full"
+                  and (grade_paper(by_id[r["event_id"]], "current_d", stored[r["id"]]["response"]) or ("",))[0]
+                  == "correct"}
+    failed = adoption | right_name
+    assert adoption and right_name and {i for i, r in stored.items() if r["error"]} == failed
+    assert captured.err.endswith(f"\n{len(failed)} answers could not be graded (ValueError: labelling broke); they "
+                                 "are kept and counted in the cost, and the next run grades them again from the "
+                                 "stored responses, without a new call\n")
     monkeypatch.setattr(text_mod, "adoption_label", real)
     assert _run(plan, results, "--mock") == 0
     captured = capsys.readouterr()
     assert backends.mock.calls == [] and "could not be graded" not in captured.err
     assert f"{len(rows)} planned calls: {len(rows)} already answered, 0 without a current answer; sending 0 now; " \
-           f"grading {adoption} stored answers again first, without a new call ({adoption} whose grading failed)" \
-           in captured.out
-    assert f"sent 0 calls, graded {adoption} stored answers again" in captured.out
+           f"grading {len(failed)} stored answers again first, without a new call ({len(failed)} whose grading " \
+           "failed)" in captured.out
+    assert f"sent 0 calls, graded {len(failed)} stored answers again" in captured.out
+    labelled = {r["id"]: r for r in read_jsonl(results)}
+    assert all(labelled[i]["adoption"] == "endorsed" and labelled[i]["grade"] == "correct" for i in right_name)

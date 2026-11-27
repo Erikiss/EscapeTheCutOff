@@ -1392,8 +1392,9 @@ def build_parser() -> argparse.ArgumentParser:
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
-                      help="judge models for answers the rules cannot grade and for adoption in reported speech; "
-                           "stored undecided rows are graded again first, without a new call (default: none)")
+                      help="judge models for answers the rules cannot grade and for names given only in reported "
+                           "speech (the donor's name, or the right name of a full note); stored undecided rows are "
+                           "graded again first, without a new call (default: none)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "
                            "settings changed); the newest row counts (default: stop)")

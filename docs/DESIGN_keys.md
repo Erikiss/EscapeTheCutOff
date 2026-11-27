@@ -155,14 +155,14 @@ A mock run writes to its own file (`runs/keys_results_mock.jsonl`); `run` refuse
 
 **plan** (offline, deterministic for its inputs and seed) writes one row per call: `id` (16 hex of sha1 of
 "set|donor|recipient|event|arm"), `set`, `donor`, `recipient`, `event_id`, `arm`, `recognised`, `donor_grade`,
-`donor_answer` (the expected answer for `dark` and `both_right`, the offered wrong name for `donor_wrong` and
-`control`), `note` (None for `alone`), `note_event` (the wrong key's source event), `today`, `cues`, `pointer`,
-`related_known` (the last three None outside `dark` and `both_right`) and `messages`. It prints the counts per pair, set
-and arm, the excluded pairs, the drops (`leaks`, `no_cue`, `no_wrong_key`, `pointers`, `no_name`, `unasserted`), and a
-cost estimate (stored mean cost per `current_d` call per model, scaled by prompt length). It refuses to replace an
-existing plan file whose ids carry other messages or another `donor_answer` unless `--force` is given; `--force` never
-lets `--out` be the `--results` or `--events` file, or an existing file that is not a plan. A repeated pair is
-refused.
+`donor_answer` (the expected answer for `dark` and `both_right`, the name their `full` answers are checked against;
+the offered wrong name for `donor_wrong` and `control`), `note` (None for `alone`), `note_event` (the wrong key's
+source event), `today`, `cues`, `pointer`, `related_known` (the last three None outside `dark` and `both_right`) and
+`messages`. It prints the counts per pair, set and arm, the excluded pairs, the drops (`leaks`, `no_cue`,
+`no_wrong_key`, `pointers`, `no_name`, `unasserted`), and a cost estimate (stored mean cost per `current_d` call per
+model, scaled by prompt length). It refuses to replace an existing plan file whose ids carry other messages or another
+`donor_answer` unless `--force` is given; `--force` never lets `--out` be the `--results` or `--events` file, or an
+existing file that is not a plan. A repeated pair is refused.
 
 **run** sends the planned calls and grades each answer with the existing graders (`grade_response`: the paper rules;
 the judges only when `--judges` is given). It appends one row per answer:
@@ -191,14 +191,28 @@ latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, tod
   sends. Real calls need `--max-cost`. `--mock` uses the simulated backend.
 - **Grading.** A policy refusal (`content_filter`) is `ungraded` with grader `refusal`; an exception becomes an
   `ungraded` row with `error`. With `--judges`, stored rows that are `ungraded` without error and not refusals, and
-  stored adoption rows whose label is `reported` and undecided, are graded again from their stored response (no new
-  recipient call); the new row replaces the old one under the same id. For the pilot the judge is `gpt-6.2-sol`, the
-  judge of the stored results that define the sets. An exception while grading an answer that came back (the rules,
-  the judges, the adoption label) writes the row with `error` "grading failed: ..." and keeps the response, its usage
-  and the judge calls made; the next run grades it again from the stored response and never sends the call again. A
-  stored adoption row whose label differs from the label for the plan's current `donor_answer` is labelled again from
-  its stored response, without a new call.
-- **Adoption** (`donor_wrong`, `control`; None elsewhere). `adoption` labels how the answer treats the donor's name:
+  stored rows whose label is `reported` and undecided (adoption rows, and the `full` rows of the next point), are
+  graded again from their stored response (no new recipient call); the new row replaces the old one under the same
+  id. For the pilot the judge is `gpt-6.2-sol`, the judge of the stored results that define the sets. An exception
+  while grading an answer that came back (the rules, the judges, the label) writes the row with `error` "grading
+  failed: ..." and keeps the response, its usage and the judge calls made; the next run grades it again from the
+  stored response and never sends the call again. A stored row whose label differs from the label its response gets
+  now (for the plan's current `donor_answer` on an adoption row, for the right name on a `full` row of the next point)
+  is labelled again from its stored response, without a new call; a row whose label is current is left as it is.
+- **The right name on `full` rows** (`dark`, `both_right`). Their note shows the expected answer (the plan row's
+  `donor_answer`), so an answer can name it without giving it as its own: "The note says X, but I believe the first
+  author is Y.", "The note's answer, X, is wrong.", "According to the note, the first author is X." The paper rules
+  grade all three `correct`. So after the grading (the rules, and the judges with `--judges`) a `correct` answer is
+  labelled for that name with `adoption_label` (next point): `endorsed` keeps `correct`, and so does `absent` (the
+  rules or the judges found the name where `offers` does not, e.g. "Z. Wang" for "Ziqi Wang"); `reported` makes the
+  row `ungraded` until the adoption judges decide, with the question of the next point and the right name as the
+  candidate: ENDORSE keeps `correct`, REPORT or REJECT make it `incorrect` (the answer does not give the right name as
+  its own), no majority leaves it `ungraded`. `hedged` and `grader` keep what the grading said; `adoption` holds the
+  label, `adopted` the decision (true for endorsed, absent and ENDORSE, false for REPORT and REJECT, null while
+  undecided) and `adoption_grader` `rule` or `judge:<keys>`, so the row shows why. A `full` row with another grade,
+  and every other row of `dark` and `both_right`, has no label.
+- **Adoption** (`donor_wrong`, `control`; on the `full` rows of `dark` and `both_right` the same fields record the check
+  of the right name, above; None on every other row). `adoption` labels how the answer treats the donor's name:
   - `endorsed`: the name is offered (`offers`, below) in a clause that does not refer to the note;
   - `reported`: it is offered only in clauses that refer to the note ("the note says / claims / suggests / names X",
     "according to the note", "the note's answer (X)"): the rules cannot tell a pass-through ("According to the note,
@@ -241,10 +255,11 @@ foreign rows separately, over every row of the results file. Markdown on stdout,
 row comes from the mock the report is headed SIMULATED and each verdict is prefixed "simulated:"; when the joined rows
 come from more than one backend it gives no verdicts.
 
-**Primary analysis.** An answered row (no error, not a refusal) counts; `ungraded` (the rules could not decide and no
-judge did) counts as **not correct**. The rules leave almost only misses undecided (stored results: 1 correct answer
-among 57 undecided ones), so dropping ungraded rows would inflate every arm's rate and hide harm; counting them as
-not correct is conservative for the key and for harm. Refusals are left out and counted.
+**Primary analysis.** An answered row (no error, not a refusal) counts; `ungraded` (the rules could not decide, or a
+`full` answer gave the right name only in reported speech, and no judge decided) counts as **not correct**. The rules
+leave almost only misses undecided (stored results: 1 correct answer among 57 undecided ones), so dropping ungraded
+rows would inflate every arm's rate and hide harm; counting them as not correct is conservative for the key, for
+`full` against `key` (3a) and for harm. Refusals are left out and counted.
 
 ## 7. Pre-registered predictions (version 2, written before any real call)
 
@@ -300,7 +315,10 @@ How the report decides (written before any real call; "interim" and "not testabl
    supported or inconclusive, not refuted. A rate of "key correct and alone not" is not compared between the groups:
    it rises with the re-ask success rate, which is higher on recognised items, even with no key effect.
 3. Two halves, both pooled over the keyed pairs (3a) or over `donor_wrong` and `control` of every pair (3b).
-   - **3a.** `full` beats `key` on `dark` items, margin 0.10.
+   - **3a.** `full` beats `key` on `dark` items, margin 0.10. A `full` row is correct only when the answer gives the
+     right name as its own (section 6, the right name on `full` rows): an answer that only relays or rejects the
+     note's name is `incorrect` once the judges decide, and `ungraded` until they do (not correct in the primary
+     analysis, left out of the sensitivity line). As in 3b, only endorsement counts.
    - **3b.** `full` vs `alone` on adoption (`adopted` true), margin 0.20 ("far more often"). If more than 20 % of the
      `full` rows are undecided (`adopted` null: reported speech the rules cannot decide), 3b is "not testable
      (reported speech undecided; grade with --judges)". The checks run in this order: the floor, the undecided share,
@@ -321,9 +339,10 @@ holds and 1b does not, any note in that shape helps, and the donor's content is 
 `MockBackend.chat` answers a keyed request (`metadata["arm"]`) by the simulated model's truth like any probe, plus:
 `key` turns a miss into the right answer with a fixed probability when the event lies within a few months after the
 model's simulated cutoff (a simulated dark memory); `full` copies the donor's name (from the note) with a fixed
-probability; `wrong_key` and `blank` behave like `alone`. Judge requests get no scripted answer, so a mock run with
-`--judges` leaves undecided rows undecided. Deterministic per seed. The mock exists to run the pipeline offline; its
-numbers say nothing about the real models, and the report marks them SIMULATED.
+probability, as a bare answer ("X.", which section 6 reads as endorsed); `wrong_key` and `blank` behave like `alone`.
+Judge requests get no scripted answer, so a mock run with `--judges` leaves undecided rows undecided. Deterministic per
+seed. The mock exists to run the pipeline offline; its numbers say nothing about the real models, and the report marks
+them SIMULATED.
 
 ## 9. Costs
 
@@ -344,8 +363,15 @@ The version 2 plan (seed 0, `--today 2026-11-27`) has **746 calls**:
   By recipient: Sol 443, Neon 275, Fable 28.
 - Estimate from the stored usage (mean cost per `current_d` call per recipient, prompt part scaled by the planned
   prompt length): **2.17 USD** (Neon 1.47, Sol 0.45, Fable 0.24). The judges come on top: on the version 1 plan (1161
-  calls) an offline replay with the stored answers needed 96 judge calls for 0.08 USD, so a few cents up to about
-  0.15 USD.
+  calls) an offline replay with the stored answers needed 96 judge calls for 0.08 USD. The check of the right name on
+  `full` rows (section 6) adds at most 136 adoption-judge calls with one judge (the 116 `full` rows of `dark` and the
+  20 of `both_right`, if every one gave the name only in reported speech). The stored results hold no usage of the
+  judge's own calls (a judged row keeps the usage of the answer it grades), so these are priced from the stored
+  `current_d` usage of the judge model `gpt-6.2-sol` (231 calls; 2 USD per million prompt tokens, 10 per million
+  completion tokens): with the recipient's stored answer in the judge's prompt and the mean stored completion (69
+  tokens) a call costs about 0.0014 USD, 136 calls about 0.18 USD; with the longest stored answer or note and the
+  longest stored completion (184 tokens) about 0.0028 USD, 136 calls about 0.38 USD. So the judges cost a few cents up
+  to about 0.35 USD (about 0.55 USD at worst), and with the recipients the pilot stays under its cap of 3 USD.
 - Power: the decisive pair Fable to Sol has 71 `dark` items without pointer. A gain of 0.10 needs at least 51 items;
   the Wilson upper bound of 0 of 71 is 5.1 %, so a key that does nothing can be refuted there. Prediction 2 has 100
   units (63 recognised, 37 unrecognised).
@@ -381,9 +407,11 @@ mismatched-facts control and points elsewhere; keys name their own paper as ofte
 
 ### Refinements during the implementation review (2026-11-27, still before any real call)
 
-Each area (masking and the plan, the run, the report) was reviewed against this document once built. The confirmed
-issues refined the rules below; sections 3 to 7 above already state the refined rules. The planned calls are the same
-746; only the count of surviving Neon to Sol items changed (2 to 1; the pair stays unkeyed).
+Each area (masking and the plan, the run, the report) was reviewed against this document once built, and then all
+areas together. The confirmed issues refined the rules below; sections 3 to 7 above already state the refined rules.
+The planned calls are the same 746; only the count of surviving Neon to Sol items changed (2 to 1; the pair stays
+unkeyed). The review across the areas added the last row: the planned calls do not change, the judges may need up to
+136 more calls (section 9).
 
 | issue | before | now |
 |---|---|---|
@@ -401,3 +429,4 @@ issues refined the rules below; sections 3 to 7 above already state the refined 
 | parts of a prediction | showed verdicts in interim, mixed or simulated reports | stated like the headline |
 | "about N would be needed" | a fixed N | N at the observed discordance; "neither shown nor ruled out" when N is at most k |
 | joined cost | the last row per id | every row of the request that row answered |
+| the right name on `full` rows (`dark`, `both_right`) | `correct` whenever the rules find the name in an asserted clause, also in "The note says X, but I believe it is Y" and "The note's answer, X, is wrong" (3a counted relaying, 3b only endorsement) | labelled like adoption: endorsed (or absent) stays `correct`, reported speech is `ungraded` until the adoption judges decide (ENDORSE `correct`, REPORT or REJECT `incorrect`) |
