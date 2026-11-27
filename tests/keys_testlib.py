@@ -39,14 +39,22 @@ def result(event_id: str, model: str, grade: str, response: str = "", probe: str
 
 
 NAMES = ["Alba Quist", "Bodo Rinne", "Cora Sell", "Dario Tamm", "Edda Ulm", "Femke Vos", "Gil Wendt"]
+# one co-author per paper: every key carries a cue (the co-author's name) and no two keys are the same note, so each
+# item finds a wrong key that differs from its key (design section 3)
+COAUTHORS = ["Yara Okafor", "Ines Brandt", "Ugo Ferrante", "Mira Kovac", "Lene Haugen", "Omar Saleh"]
 
 
 def fixture_data():
+    """Events ``paper:1`` to ``paper:7`` (real) and ``paper:20`` (fake) and stored rows of two models: ``a`` answers
+    papers 1 to 6 correctly (each note names another co-author), ``b`` misses papers 1 to 4 and knows 5 and 6; ``a``
+    gives a wrong name for paper 7 and invents an author for the fake paper. With ``pairs=[("a", "b")]`` and
+    ``min_items=3``: four ``dark`` items, one ``donor_wrong``, a ``both_right`` sample of papers 5 and 6, one
+    ``control``."""
     events = [paper(i + 1, name) for i, name in enumerate(NAMES)]
     events.append(paper(20, control=True, subject="Quantum Llamas: Teaching Alpacas to Tunnel"))
     results = []
     for i, name in enumerate(NAMES[:6]):
-        results.append(result(f"paper:{i + 1}", "a", "correct", f"The first author is {name}, with Zed Quillon."))
+        results.append(result(f"paper:{i + 1}", "a", "correct", f"The first author is {name}, with {COAUTHORS[i]}."))
     for i in range(4):
         results.append(result(f"paper:{i + 1}", "b", "abstain", "I don't know."))
     for i in (4, 5):
@@ -57,4 +65,3 @@ def fixture_data():
     results.append(result("paper:20", "b", "correct", "I cannot find that paper."))
     results += [result(f"paper:{i}", "b", "correct" if i % 2 else "incorrect", "A", probe="mcq") for i in range(1, 5)]
     return events, results
-
