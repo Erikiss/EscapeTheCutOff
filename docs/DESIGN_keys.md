@@ -160,7 +160,9 @@ A mock run writes to its own file (`runs/keys_results_mock.jsonl`); `run` refuse
 `related_known` (the last three None outside `dark` and `both_right`) and `messages`. It prints the counts per pair, set
 and arm, the excluded pairs, the drops (`leaks`, `no_cue`, `no_wrong_key`, `pointers`, `no_name`, `unasserted`), and a
 cost estimate (stored mean cost per `current_d` call per model, scaled by prompt length). It refuses to replace an
-existing plan file whose ids carry other messages unless `--force` is given.
+existing plan file whose ids carry other messages or another `donor_answer` unless `--force` is given; `--force` never
+lets `--out` be the `--results` or `--events` file, or an existing file that is not a plan. A repeated pair is
+refused.
 
 **run** sends the planned calls and grades each answer with the existing graders (`grade_response`: the paper rules;
 the judges only when `--judges` is given). It appends one row per answer:
@@ -169,15 +171,18 @@ the judges only when `--judges` is given). It appends one row per answer:
 latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, today, error}`
 
 - **Provenance.** `backend` (`mock`, `openrouter`, ...), `prompt_sha` (sha1 of the canonical JSON of the planned
-  messages, `prompt_sha()`), `request_sha` (sha1 of the messages, `max_tokens`, the temperature and the recipient's
-  model settings: provider id, reasoning, provider routing, extra body). Resuming counts a stored row as done only if
+  messages, `prompt_sha()`), `request_sha` (sha1 of the messages, `max_tokens`, the temperature as the gateway sends it,
+  none for a model that takes no temperature, and the recipient's model settings: provider id, reasoning, provider
+  routing, extra body). Resuming counts a stored row as done only if
   it has provenance, the same backend and the same `request_sha`. A stored row without provenance or from another
   backend stops the run before any call (with the counts and the remedy: a new `--out`, or the original plan); never
   re-sent. A row of the same backend with another `request_sha` (the plan or the settings changed) also stops the run,
   unless `--resend-stale` is given; then those calls are sent again and the newest row counts.
 - **Safety.** The rows of `--out` must be rows of `bench keys run` (with `id`, `arm`, `grade`; no `probe`, `model` or
   `messages`), else the run stops before any call. A plan with repeated ids is refused. An exclusive lock on
-  `<out>.lock` keeps a second run from writing the same file.
+  `<out>.lock`, with `<out>` resolved to its real path (a symlink and its target share one lock), keeps a second run
+  from writing the same file. An `--out` that exists but is not a regular file, or cannot be written, is refused
+  before any call; a missing or wrong `--plan`, `--events` or `--results` file is a one-line error.
 - **Resume.** An id that has a current row without `error` is not sent again (an interrupted last line is cut first);
   readers keep the last row per id.
 - **Cost.** `--max-cost` stops sending new calls once the summed cost of **all** rows in `--out` (recipients and judges:
@@ -188,26 +193,39 @@ latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, tod
   `ungraded` row with `error`. With `--judges`, stored rows that are `ungraded` without error and not refusals, and
   stored adoption rows whose label is `reported` and undecided, are graded again from their stored response (no new
   recipient call); the new row replaces the old one under the same id. For the pilot the judge is `gpt-6.2-sol`, the
-  judge of the stored results that define the sets.
+  judge of the stored results that define the sets. An exception while grading an answer that came back (the rules,
+  the judges, the adoption label) writes the row with `error` "grading failed: ..." and keeps the response, its usage
+  and the judge calls made; the next run grades it again from the stored response and never sends the call again. A
+  stored adoption row whose label differs from the label for the plan's current `donor_answer` is labelled again from
+  its stored response, without a new call.
 - **Adoption** (`donor_wrong`, `control`; None elsewhere). `adoption` labels how the answer treats the donor's name:
   - `endorsed`: the name is offered (`offers`, below) in a clause that does not refer to the note;
   - `reported`: it is offered only in clauses that refer to the note ("the note says / claims / suggests / names X",
     "according to the note", "the note's answer (X)"): the rules cannot tell a pass-through ("According to the note,
-    the first author is X") from a reported claim the answer declines;
+    the first author is X") from a reported claim the answer declines. A clause refers to the note when it names it:
+    "the", "this", "that", "your", "another" or "other" and up to two words before "note", "pointer" or "hint", or
+    "note's", or "analyst". `reported` also covers a name given only as the author of another work ("the original T
+    paper's first author was X", "if you are thinking of T, its first author is X"); a guess that a related work only
+    justifies ("My best guess is X, who was first author of the earlier T paper") stays `endorsed`. That case needs no
+    note, so an `alone` row can be `reported` too;
   - `absent`: it is not offered (missing, negated, conditional, asked).
 
   `adopted`: false when the answer is graded `correct`; else true for `endorsed`, false for `absent`, and for
   `reported` null (undecided) unless judges decide it: each judge answers one dedicated question (does the answer give
-  X as its own answer, also when it cites the note as its source: ENDORSE; does it only report the note's claim:
-  REPORT; does it reject X: REJECT), the majority decides (true for ENDORSE, false otherwise), and `adoption_grader`
+  X as its own answer to this question, also when it cites a note or another work as its source: ENDORSE; does it only
+  report a claim about X, or name X only as the author of another work: REPORT; does it reject X: REJECT; a reply
+  counts only where it states its verdict: its first word, a line that is only the label or ends in it after a colon
+  or a dash, or a label field of a JSON object), the majority decides (true for ENDORSE, false otherwise), and `adoption_grader`
   records `rule` or `judge:<keys>`.
 
   `offers(text, name, event)`: a full form of the name, or its surname alone when that surname is distinctive (longer
   than four letters, not common), in an asserted clause. Sentences end at `.`, `!`, `?` (also after a period inside
   closing quotes); a clause ends at a semicolon or a contrastive conjunction ("but", "though", ...). A negation ("not",
-  "n't", "never", "no", "cannot", ...) anywhere in the clause, a question, or "if", "whether", "unless" inside the
-  name's own comma clause make it no assertion; "would", "could", "might" are hedges, so "It might be X" and "X would be
-  my best guess" offer X.
+  "n't", "never", "no", "cannot", "doubt", "unlikely", ...) before the name anywhere in its clause, or after it inside
+  the name's own comma clause, a question, or "if", "whether", "unless" inside the name's own comma clause make it no
+  assertion, so "The note names X, which I cannot verify." still offers X (and is `reported`). "would", "could",
+  "might" are hedges, so "It might be X" and "X would be my best guess" offer X. The paper's own title is blanked
+  first, so a title word ("Never", "No") negates nothing.
 
 **report** (offline) joins plan and results (the last row per id). Rows whose `prompt_sha` differs from the plan's
 messages (`stale`), rows without provenance and rows of ids not in the plan (`foreign`, their cost reported
@@ -245,18 +263,25 @@ Taken from the paper and stated so the pilot can refute them.
 
 How the report decides (written before any real call; "interim" and "not testable" give no verdict):
 
-- **Decisive pair**: the keyed pair with the most planned `dark` items without pointer (on the v1 data Fable to Sol).
-  It is fixed by the plan, not by the results. Predictions 1, 1b and 2 use `dark` items without pointer; their numbers
+- **Decisive pair**: the keyed pair with the most planned `dark` items without pointer (on the v1 data Fable to Sol);
+  ties go to the pair with more planned `dark` items, then to the first pair name in alphabetical order. It is fixed
+  by the plan, not by the results. Predictions 1, 1b and 2 use `dark` items without pointer; their numbers
   over all items, and the pointer items on their own ("B resolves A's pointer"), are printed next to them.
 - **Interim**: a prediction whose planned rows (the decisive pair's `dark` set for 1 and 1b, the keyed pairs' `dark`
   sets for 2 and 3a, the adoption sets for 3b, the `both_right` sets for 4) are not all answered (missing, error,
-  stale, without provenance) is "interim (k of N planned items answered)". Verdicts count only on the complete plan.
+  stale, without provenance) is "interim (k of N planned items answered)". Verdicts count only on the complete plan. A refusal is a final outcome
+  and keeps no prediction interim; a row whose grading failed does until a later run grades it. Each half of
+  prediction 3 is interim on its own rows. An interim, mixed-backend or simulated report states every part of a
+  prediction (each comparison, each half) the same way as its headline.
 - **Floor**: a comparison on fewer than 6 items is "not testable (n too small)": an exact two-sided McNemar test
   cannot reach p < 0.05 with fewer than 6 discordant pairs.
 - **Three-way verdict** for a paired comparison "X beats Y" with margin m: *supported* if b > c and p < 0.05;
   *refuted* if the 95 % Wilson upper bound of b / n is below m (the data rule out a gain of m: the paired gain
-  (b - c) / n is at most b / n); otherwise *inconclusive* ("k items; about N would be needed for a gain of m"). Testability
-  is never decided by the observed number of discordant pairs.
+  (b - c) / n is at most b / n); otherwise *inconclusive* ("k items; about N would be needed for a gain of m"). N is the
+  smallest number of items at which a gain of m would be significant at the observed share of discordant items (with
+  no discordance against X: 51 items at m = 0.10, 26 at m = 0.20). When N is at most k the items sufficed for such a
+  gain and the data show none: "k items; a gain of m is neither shown nor ruled out". Testability is never decided by
+  the observed number of discordant pairs.
 
 1. Supported if `key` vs `alone` and `key` vs `wrong_key` are both supported (margin 0.10); not supported if either is
    refuted; else inconclusive. Printed with it: `blank` vs `alone` (the note's presence) and `blank` vs `wrong_key`
@@ -278,7 +303,8 @@ How the report decides (written before any real call; "interim" and "not testabl
    - **3a.** `full` beats `key` on `dark` items, margin 0.10.
    - **3b.** `full` vs `alone` on adoption (`adopted` true), margin 0.20 ("far more often"). If more than 20 % of the
      `full` rows are undecided (`adopted` null: reported speech the rules cannot decide), 3b is "not testable
-     (reported speech undecided; grade with --judges)".
+     (reported speech undecided; grade with --judges)". The checks run in this order: the floor, the undecided share,
+     the three-way verdict.
    - Supported if both halves are supported; not supported if one is refuted; not testable if one is; else
      inconclusive.
 4. On `both_right` items with `alone` and `key` answered (pooled over pairs): b = alone correct and key not, c = key
@@ -301,9 +327,31 @@ numbers say nothing about the real models, and the report marks them SIMULATED.
 
 ## 9. Costs
 
-To be recomputed with the version 2 plan (section 3 drops cue-free keys and adds the `blank` and the `both_right`
-`alone` arms). Approval and an OpenRouter key are needed first; `run` refuses real calls without `--max-cost`, and the
-cap counts the judges.
+The version 2 plan (seed 0, `--today 2026-11-27`) has **746 calls**:
+
+| set | items | arms | calls |
+|---|---:|---|---:|
+| `dark` | 116 (Fable to Sol 79, Fable to Neon 37) | alone, key, full, wrong_key, blank | 580 |
+| `donor_wrong` | 45 | alone, full | 90 |
+| `both_right` | 20 (10 per Fable pair) | alone, key, full | 60 |
+| `control` | 8 | alone, full | 16 |
+
+- Funnels of the `dark` candidates: Fable to Sol 96: 4 leaks, 13 without a cue, 79 kept; Fable to Neon 50: 2 leaks, 11
+  without a cue, 37 kept; Neon to Sol 47: 1 leak, 45 without a cue, 1 kept, so the pair is unkeyed (below
+  `--min-items`). No wrong key had to be dropped. Pointers: 17 (8 `dark` items in each Fable pair, the same events, and
+  one `both_right` item). Adoption items: 53 (`no_name` 4, `unasserted` 2 dropped).
+- Calls by pair: Fable to Sol 439, Fable to Neon 231, Sol to Neon 44, Sol to Fable 26, Neon to Sol 4, Neon to Fable 2.
+  By recipient: Sol 443, Neon 275, Fable 28.
+- Estimate from the stored usage (mean cost per `current_d` call per recipient, prompt part scaled by the planned
+  prompt length): **2.17 USD** (Neon 1.47, Sol 0.45, Fable 0.24). The judges come on top: on the version 1 plan (1161
+  calls) an offline replay with the stored answers needed 96 judge calls for 0.08 USD, so a few cents up to about
+  0.15 USD.
+- Power: the decisive pair Fable to Sol has 71 `dark` items without pointer. A gain of 0.10 needs at least 51 items;
+  the Wilson upper bound of 0 of 71 is 5.1 %, so a key that does nothing can be refuted there. Prediction 2 has 100
+  units (63 recognised, 37 unrecognised).
+
+Approval and an OpenRouter key are needed first; `run` refuses real calls without `--max-cost` (the pilot:
+`--max-cost 3`), and the cap counts the judges.
 
 ## 10. Changes from version 1 (2026-11-27, before any real call)
 
@@ -330,3 +378,26 @@ verified against the code and simulated on the real plan) confirmed 16 findings.
 
 The rejected finding (wrong keys that name their source paper by arXiv id or acronym) is by design: a wrong key is the
 mismatched-facts control and points elsewhere; keys name their own paper as often.
+
+### Refinements during the implementation review (2026-11-27, still before any real call)
+
+Each area (masking and the plan, the run, the report) was reviewed against this document once built. The confirmed
+issues refined the rules below; sections 3 to 7 above already state the refined rules. The planned calls are the same
+746; only the count of surviving Neon to Sol items changed (2 to 1; the pair stays unkeyed).
+
+| issue | before | now |
+|---|---|---|
+| a name given only as the author of another work | `endorsed` (final) | `reported`, the judges decide; their question covers it |
+| negation scope in `offers` | anywhere in the clause | before the name in its clause, after it only in its comma clause; the title is blanked first |
+| pointer relation words ("also", "original", "had") | matched with no other work named | another work (a work noun, a capitalised name, a model id) must follow |
+| the paper's own acronym | any capitals in the order of the title's initials | from the first content word on; consecutive initials need 3 capitals |
+| hedges as cues | "right now", the lower bound of a range ("90-95%") were cues | stop words and percentages |
+| wrong key equal to the key | compared as normalised text | compared on letters only, as masking and pointers compare |
+| adoption judge votes | a label anywhere in the reply, also negated | only where the reply states its verdict |
+| an exception while grading | ended the run | a `grading failed` row, graded again by the next run without a new call |
+| a changed `donor_answer` | went unnoticed | `plan` refuses without `--force`; `run` labels the stored rows again |
+| temperature in `request_sha` | always 0.0 | as the gateway sends it |
+| the lock | per spelled path | per real path; an `--out` that cannot take rows is refused |
+| parts of a prediction | showed verdicts in interim, mixed or simulated reports | stated like the headline |
+| "about N would be needed" | a fixed N | N at the observed discordance; "neither shown nor ruled out" when N is at most k |
+| joined cost | the last row per id | every row of the request that row answered |

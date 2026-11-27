@@ -188,8 +188,9 @@ def test_every_row_records_its_provenance(tmp_path):
     assert wrong and all(r["note_event"] and r["note_event"] != r["event_id"] for r in wrong)
     named = run(ScriptedBackend(), rows[:1], tmp_path / "named.jsonl", events, backend_name="openrouter")
     assert named.rows[0]["backend"] == "openrouter" and named.start.backend == "openrouter"
-    _, plain = fixture_plan()
-    assert run(ScriptedBackend(), plain[:1], tmp_path / "plain.jsonl", events).rows[0]["today"] is None
+    _, planned_rows = fixture_plan()
+    plain = [{k: v for k, v in planned_rows[0].items() if k != "today"}]       # a plan row without the field
+    assert run(ScriptedBackend(), plain, tmp_path / "plain.jsonl", events).rows[0]["today"] is None
 
 
 def test_request_sha_covers_the_messages_the_budget_and_the_model_settings():

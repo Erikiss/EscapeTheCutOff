@@ -46,10 +46,11 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle; mit den echten drei Modellen wurde das Preset
   **noch nicht** gelaufen (kein Schlüssel in der Entwicklungsumgebung). Offen sind vor allem, ob Fables Eingangsfilter
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
-- **Plato's-Key-Experiment („Schlüssel statt Antwort“): gebaut, offline geprüft, mit den echten Modellen noch nicht
-  gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob es
-  nur abschreibt; die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`). Der Pilot kostet etwa 2–3 $ und läuft erst
-  mit Freigabe und Schlüssel.
+- **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
+  noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
+  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach zwei Prüfrunden wurden
+  die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus wenige
+  Cent für den Judge und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -388,32 +389,63 @@ ein `Confirm:` nach einer vollen Notiz ein Echo und zählt als eine Quelle.
 | `alone` | nur die Frage, noch einmal gestellt (Rauschgrenze des erneuten Fragens) |
 | `key` | Frage und die Notiz des Spenders, Antwort durch `[withheld]` ersetzt |
 | `full` | Frage und die vollständige Notiz des Spenders |
-| `wrong_key` | Frage und die maskierte Notiz des Spenders zu einem **anderen** Paper (Kontrolle) |
+| `wrong_key` | Frage und die maskierte Notiz des Spenders zu einem **anderen** Paper (Kontrolle: falscher Fakt) |
+| `blank` | Frage und eine inhaltsleere Notiz in derselben Form (Kontrolle: hilft schon, dass da eine Notiz steht?) |
 
-Daten: das AI-Paper-Probe-Set und seine bewerteten Antworten vom 25.11.2026 (bereits bezahlt). Fable weiß dort bei
-50 Fragen, was Neon nicht weiß, bei 96 Fragen, was Sol nicht weiß; Neon bei 47, was Sol nicht weiß. In die Gegenrichtung
-gibt es je nur eine Frage, die Richtungen sind also nicht messbar. Außerdem: Spender lag falsch (übernimmt der Empfänger
-den falschen Namen?), beide lagen richtig (stört die Notiz?) und erfundene Paper (übernimmt er eine Erfindung?).
+Daten: das AI-Paper-Probe-Set und seine bewerteten Antworten vom 25.11.2026 (bereits bezahlt, versioniert unter
+`data/results/papers_probes_2026-11-25.jsonl`). Fable weiß dort bei 50 Fragen, was Neon nicht weiß, und bei 96, was Sol
+nicht weiß; Neon bei 47, was Sol nicht weiß. Neon antwortet aber in einem Satz, nach dem Maskieren bleibt davon nur „Der
+Erstautor von [title] ist [withheld]“. Solche Notizen tragen keinen Hinweis und fallen heraus, damit fällt die Richtung
+Neon → Sol weg. Nach Lecks und Notizen ohne Hinweis bleiben 79 Fragen für Fable → Sol (die entscheidende Richtung) und
+37 für Fable → Neon. In die Gegenrichtungen gibt es je nur eine Frage, sie sind nicht messbar. Außerdem gemessen:
+Spender lag falsch (übernimmt der Empfänger den falschen Namen?), beide lagen richtig (stört die Notiz?) und erfundene
+Paper (übernimmt er eine Erfindung?).
 
-Vorab festgelegte Vorhersagen (`docs/DESIGN_keys.md`, Abschnitt 7):
+Vorab festgelegte Vorhersagen (`docs/DESIGN_keys.md`, Abschnitt 7, Version 2):
 
-1. Bei den Fragen, die nur der Spender konnte, ist `key` besser als `alone` und `wrong_key` (gepaarter McNemar-Test).
-2. Die Erinnerung gelingt vor allem dort, wo der Empfänger die Antwort im Multiple-Choice-Test erkennt.
-3. `full` ist besser als `key`, und mit `full` übernimmt der Empfänger falsche Spender-Antworten weit häufiger als allein.
-4. Die Notiz stört selten eine richtige Antwort (unter 10 %).
+1. Bei den Fragen, die nur der Spender konnte, ist `key` besser als `alone` und `wrong_key`; 1b: auch besser als
+   `blank`, es zählt also der Inhalt der Notiz und nicht nur, dass es eine gibt.
+2. Der Gewinn durch den Schlüssel ist dort größer, wo der Empfänger die Antwort im Multiple-Choice-Test erkennt.
+3. `full` ist besser als `key`, und mit `full` macht sich der Empfänger falsche Spender-Antworten weit häufiger zu eigen
+   als allein.
+4. Die Notiz stört selten eine richtige Antwort: weniger als 10 Prozentpunkte über dem Rauschen des erneuten Fragens.
+
+Jede Vorhersage hat drei mögliche Ausgänge: gestützt, widerlegt (die Daten schließen den vorhergesagten Effekt aus) oder
+unentschieden. Ein unvollständiger Lauf ergibt „vorläufig“ statt eines Urteils.
+
+**Version 2 nach einem Review.** Drei unabhängige Prüfer haben die erste Fassung angegriffen. Jeder Fund wurde
+gegengeprüft und auf dem echten Plan nachgerechnet; 16 Funde haben sich bestätigt. Die Regeln wurden geändert, bevor
+ein einziger echter Aufruf lief (Abschnitt 10 der Design-Doku). Die wichtigsten Punkte:
+
+- Als „übernommen“ zählte auch ein Name, den der Empfänger nur zitiert („Die Notiz nennt X, das kann ich nicht
+  bestätigen“). Jetzt wird unterschieden: zu eigen gemacht, nur berichtet oder nicht genannt. Berichtete Fälle
+  entscheidet ein Judge.
+- Vorhersage 2 verglich, wie oft der Schlüssel trifft. Erkannte Fragen gelingen aber auch beim bloßen Nachfragen
+  öfter. Jetzt zählt der Gewinn gegenüber `alone`.
+- Notizen ohne Hinweis, Hinweise auf andere Paper desselben Autors und Masken, die einen Namensteil eines Koautors
+  verraten („Mengdi [withheld]“), werden erkannt und aussortiert bzw. getrennt ausgewertet.
+- Jede Ergebniszeile trägt ihre Herkunft (Backend, Prompt-Hash). Mock- und Echtzeilen lassen sich nicht mehr mischen,
+  Judge-Kosten zählen zum Kostendeckel, und eine zweite Instanz auf derselben Datei wird abgewiesen.
+
+Danach wurde auch die Umsetzung Bereich für Bereich gegen die Design-Doku geprüft und nachgebessert, ebenfalls vor dem
+ersten echten Aufruf (Abschnitt 10, „Refinements“). Ein Beispiel: Nennt eine Antwort einen Namen nur als Autor eines
+*anderen* Papers („der Erstautor des ursprünglichen Vidu-Papers war X“), gilt das nicht mehr als zu eigen gemacht,
+sondern als berichtet, und der Judge entscheidet.
 
 ```bash
-cutoffmix bench keys plan --events data/events/papers_events.jsonl --results runs/papers_results_final.jsonl \
-    --out runs/keys_plan.jsonl                       # offline: Aufrufe, Zahlen pro Paar, Kostenschätzung
+cutoffmix bench keys plan --events data/events/papers_events.jsonl \
+    --results data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl   # offline, druckt die Kosten
 cutoffmix bench keys run --plan runs/keys_plan.jsonl --events data/events/papers_events.jsonl \
-    --out runs/keys_results.jsonl --max-cost 4       # echte Modelle; --max-cost ist Pflicht (oder --mock)
+    --out runs/keys_results.jsonl --judges gpt-6.2-sol --max-cost 3     # echte Modelle; --max-cost ist Pflicht
 cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_results.jsonl --md runs/keys_report.md
 ```
 
-Kosten: etwa 1.000 Aufrufe, die Empfänger sind Neon und Sol, also etwa 2–3 $ (die Planung druckt den genauen Wert).
-`run` setzt nach einer Unterbrechung fort und hört bei `--max-cost` auf. Mit `--mock` läuft alles offline gegen
-simulierte Modelle; deren Zahlen sind eingestellt, nicht gemessen. **Mit den echten Modellen ist das Experiment noch
-nicht gelaufen.**
+Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten:
+2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24), dazu wenige Cent bis etwa 0,15 $ für den Judge; die Planung druckt die
+Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und hört bei `--max-cost` auf (Exit-Code 3). Mit
+`--mock` läuft alles offline gegen simulierte Modelle, in eine eigene Datei (`--out runs/keys_results_mock.jsonl`).
+Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet sie als SIMULATED. **Mit den echten Modellen ist
+das Experiment noch nicht gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 

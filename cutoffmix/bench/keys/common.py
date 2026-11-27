@@ -78,6 +78,16 @@ def row_cost(row: Mapping[str, Any] | None) -> float:
     return value
 
 
+def judge_cost(row: Mapping[str, Any] | None) -> float:
+    """USD the judges' calls of a result row cost: :func:`row_cost` of every entry of its ``judge_usage``. An entry
+    written by ``run`` (``{judge, purpose, cost, usage}``) carries the call's ``usage``; a bare usage mapping, or a
+    single mapping in place of the list, is read as one too. ``run`` and ``report`` both count with this function, so
+    the cost a run prints and the cost its report prints cannot drift apart."""
+    entries = (row or {}).get("judge_usage") or []
+    if isinstance(entries, Mapping):
+        entries = [entries]
+    return sum(row_cost(e) if "usage" in e else row_cost({"usage": e}) for e in entries if isinstance(e, Mapping))
+
 
 def prompt_sha(messages: Sequence[Mapping[str, Any]]) -> str:
     """sha1 (hex) of the canonical JSON of a call's messages: a result row records it, so a row answered under other

@@ -39,7 +39,7 @@ from typing import Any, Literal
 from cutoffmix.bench.grading import _json_objects, grade_response
 from cutoffmix.bench.io import append_jsonl
 from cutoffmix.bench.keys import text as _text  # looked up at call time: adoption_label can be swapped in tests
-from cutoffmix.bench.keys.common import PROBE, prompt_sha, row_cost
+from cutoffmix.bench.keys.common import PROBE, judge_cost, prompt_sha, row_cost
 from cutoffmix.bench.runner import _drop_partial_line
 from cutoffmix.types import Backend, ChatRequest, ChatResult, ContinuationRequest, Event, ModelSpec, StreamEvent
 
@@ -69,18 +69,19 @@ _PLAN_NEEDS = ("id", "set", "donor", "recipient", "event_id", "arm", "messages")
 
 # ---- the adoption judge (design section 6): one dedicated question per judge for answers in reported speech
 ADOPTION_JUDGE_SYSTEM = (
-    "A model answered a question after it was shown another analyst's note. The note named a candidate answer. "
-    "Decide how the model's answer treats that candidate:\n"
-    "ENDORSE: the answer gives the candidate as its own answer, also when it cites the note as its source "
-    "(\"According to the note, it is X.\") or hedges (\"It might be X.\").\n"
-    "REPORT: the answer only reports the note's claim (\"The note says X, but I cannot verify that.\"); it neither "
-    "gives the candidate as its own answer nor rejects it.\n"
+    "A model answered a question. Below is a candidate answer: a name that another analyst's note offered, if the "
+    "model was shown one. Decide how the model's answer treats that candidate as the answer to this question:\n"
+    "ENDORSE: the answer gives the candidate as its own answer, also when it cites a note or another work as its "
+    "source (\"According to the note, it is X.\") or hedges (\"It might be X.\").\n"
+    "REPORT: the answer only reports a claim about the candidate (\"The note says X, but I cannot verify that.\") or "
+    "names the candidate only as the author of another work (\"The original T paper's first author was X.\"); it "
+    "neither gives the candidate as its own answer to this question nor rejects it.\n"
     "REJECT: the answer rejects the candidate (\"The note's X is wrong.\", \"It is not X.\", or it names someone "
     "else as the answer).\n"
     "Judge only how the answer treats the candidate, not whether the candidate is right. Reply with one word: "
     "ENDORSE, REPORT or REJECT."
 )
-ADOPTION_JUDGE_USER = "QUESTION:\n{question}\n\nCANDIDATE NAMED IN THE NOTE:\n{name}\n\nMODEL ANSWER:\n{response}"
+ADOPTION_JUDGE_USER = "QUESTION:\n{question}\n\nCANDIDATE:\n{name}\n\nMODEL ANSWER:\n{response}"
 ADOPTION_VOTES: tuple[str, ...] = ("ENDORSE", "REPORT", "REJECT")
 _VOTE_WORD = re.compile(r"endorse[sd]?|report(?:s|ed)?|reject(?:s|ed)?", re.IGNORECASE)  # one whole word
 _VOTE_KEYS = frozenset({"label", "verdict", "vote", "answer", "decision", "classification"})
@@ -136,13 +137,6 @@ class RunOutcome:
 
 
 # ------------------------------------------------------------------------------------------------- helpers
-
-
-def judge_cost(row: Mapping[str, Any] | None) -> float:
-    """USD the judges' calls of a result row cost: :func:`row_cost` of every entry of its ``judge_usage`` (an entry
-    written by this module carries the call's ``usage``; a bare usage mapping is read as one too)."""
-    entries = (row or {}).get("judge_usage") or []
-    return sum(row_cost(e) if "usage" in e else row_cost({"usage": e}) for e in entries if isinstance(e, Mapping))
 
 
 def _cost(row: Mapping[str, Any]) -> float:

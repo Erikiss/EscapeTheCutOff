@@ -216,8 +216,15 @@ def test_plan_on_the_stored_paper_results(tmp_path, capsys, keys):
                                            (("claude-fable-5.2", "gpt-6.2-sol"), 96),
                                            (("gemini-4-neon", "gpt-6.2-sol"), 47)):
         info = summary["pairs"][f"{donor}->{recipient}"]
-        assert info["dark_candidates"] == candidates
-        assert len(dark[(donor, recipient)]) == info["dark"] >= candidates - info["leaks"]
+        funnel = info["funnel"]["dark"]
+        assert info["dark_candidates"] == funnel["candidates"] == candidates
+        assert candidates == funnel["leaks"] + funnel["no_cue"] + funnel["no_wrong_key"] + funnel["kept"]
+        if info["keyed"]:
+            assert len(dark[(donor, recipient)]) == info["dark"] == funnel["kept"] >= 5
+        else:                                                                   # too few items survive the filters
+            assert (donor, recipient) not in dark and info["dark"] == 0 and funnel["kept"] < 5
+    # Neon answers in one sentence: masked, its notes carry no cue, so Neon->Sol is unkeyed (design section 2)
+    assert summary["pairs"]["gemini-4-neon->gpt-6.2-sol"]["keyed"] is False
     assert ("gemini-4-neon", "claude-fable-5.2") not in dark                  # 1 item: below --min-items
     for row in rows:
         assert row["arm"] in keys.ARMS_BY_SET[row["set"]]

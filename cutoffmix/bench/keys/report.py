@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
 
-from cutoffmix.bench.keys.common import ARMS_BY_SET, SETS, prompt_sha, row_cost
+from cutoffmix.bench.keys.common import ARMS_BY_SET, SETS, judge_cost, prompt_sha, row_cost
 from cutoffmix.bench.keys.stats import (
     items_needed,
     mcnemar_exact,
@@ -164,19 +164,6 @@ def _status(result: Mapping[str, Any] | None, sha: str) -> str:
     return _ANSWERED
 
 
-def _judge_cost(row: Mapping[str, Any]) -> float:
-    """USD of a row's judge calls: :func:`row_cost` of each ``judge_usage`` entry (an entry ``{judge, purpose, cost,
-    usage}`` as ``run`` writes it, or a bare usage mapping)."""
-    entries = row.get("judge_usage") or []
-    if isinstance(entries, Mapping):
-        entries = [entries]
-    total = 0.0
-    for entry in entries:
-        if isinstance(entry, Mapping):
-            total += row_cost(entry) if "usage" in entry else row_cost({"usage": entry})
-    return total
-
-
 def _request(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
     """The request a result row answered: its ``backend``, ``prompt_sha`` and ``request_sha``. ``run`` copies them
     from the answer it grades again (a re-grade of ``run --judges`` or after a failed grading: ``usage`` None, the new
@@ -188,7 +175,7 @@ def _request(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
 def _cost(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     chosen = list(rows)
     recipients = sum(row_cost(r) for r in chosen)
-    judges = sum(_judge_cost(r) for r in chosen)
+    judges = sum(judge_cost(r) for r in chosen)
     return {"rows": len(chosen), "recipients_usd": round(recipients, 6), "judges_usd": round(judges, 6),
             "total_usd": round(recipients + judges, 6)}
 
