@@ -42,6 +42,7 @@ from cutoffmix.bench.keys.text import (
     mask_note,
     mask_title,
     offers,
+    offers_another,
 )
 
 # ---- plan and cost (plan.py)
@@ -98,6 +99,7 @@ __all__ = [
     "mask_title",
     "mcnemar_exact",
     "offers",
+    "offers_another",
     "prompt_sha",
     "render_report",
     "request_sha",

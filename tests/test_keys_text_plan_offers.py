@@ -8,7 +8,7 @@ import pytest
 from keys_testlib import EVENTS, FABLE, NEON, RESULTS, paper
 
 from cutoffmix.bench.io import load_events, read_jsonl
-from cutoffmix.bench.keys import ADOPTION_LABELS, adoption_label, asserted_name, mask_title, offers
+from cutoffmix.bench.keys import ADOPTION_LABELS, adoption_label, asserted_name, mask_title, offers, offers_another
 
 EVENT = paper(30, "Ada Lovelace")
 X = "Jiabo Ye"
@@ -51,6 +51,12 @@ def test_offered(text):
     "I doubt that X wrote it.",
     "I don't know.",
     "",
+    # the words of a rejection (final review): the paper rules grade these correct, offers() must not read an offer
+    "X is incorrect.",
+    "X is wrong; the first author is Wei Chen.",
+    "I disagree with X.",
+    "The note mistakenly names X.",
+    "The claim that X is the first author is inaccurate.",
 ])
 def test_not_offered(text):
     assert not offers(text.replace("X", X), X, EVENT)
@@ -118,6 +124,13 @@ def test_a_short_main_title_is_blanked_too():
     "I think the note is right: the first author is X.",              # one clause that cites the note
     "The note says X, but X is not the first author.",                # a reported claim the answer declines
     "It is probably X (I can't verify the note).",                    # the clause cites the note
+    # the note in other words (final review): these were endorsed, which is final
+    "The provided text says X, but I do not know who the first author is.",
+    "The given answer is X.",
+    "The snippet suggests X, which I can't confirm.",
+    "According to the excerpt, the first author is X.",
+    "The other model's answer is X, but I believe it is Wei Chen.",
+    "Another assistant named X.",
 ])
 def test_reported(text):
     """Reported speech: the rules cannot tell a pass-through from a claim the answer declines; judges decide."""
@@ -230,3 +243,27 @@ def test_asserted_name_reads_she_as_a_surname():
             'System for Edge Devices", but please verify this on the arXiv listing.')
     assert asserted_name(text, event) == "Jianshu She" and offers(text, "Jianshu She", event)
     assert asserted_name("She is a researcher; I do not know her name.", event) is None
+
+
+@pytest.mark.parametrize(("text", "another"), [
+    ("X is a co-author, but the first author is Wei Chen.", True),
+    ("The first author is X, with co-authors Yara Okafor and Ines Brandt.", True),
+    ("It is X; Wei Huang is also possible.", True),                     # a near spelling is another person
+    ("It is X, not Wei Chen.", False),                                  # the other person is negated
+    ("The first author is X.", False),
+    ("The first author is X (J. Ye).", False),                          # an initial of the same person
+    ("The first author is X, also written Ye Jiabo.", True),            # another order: the judges decide
+    ("Is it Wei Chen? I believe it is X.", False),                      # asked, not offered
+])
+def test_offers_another(text, another):
+    """An endorsement decides by rule only when the answer offers nobody else (final review, design section 6)."""
+    assert offers_another(text.replace("X", X), X, EVENT) is another
+
+
+def test_offers_another_counts_the_events_own_names():
+    # on an adoption row the candidate is the donor's wrong name: the expected answer and a distractor are others
+    event = paper(34, "Ada Lovelace", rejects=("Bob Stone",))
+    assert offers_another("It is Jiabo Ye or Ada Lovelace.", X, event)
+    assert offers_another("It is Jiabo Ye; Bob Stone is also possible.", X, event)
+    assert not offers_another("It is Ada Lovelace.", "Ada Lovelace", event)    # the candidate itself
+    assert not offers_another("It is A. Lovelace.", "Ada Lovelace", event)

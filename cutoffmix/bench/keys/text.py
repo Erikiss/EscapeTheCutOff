@@ -4,7 +4,7 @@ The masking helpers (:func:`mask_title`, :func:`mask_note`) work on the original
 casefolded copy whose characters keep their positions in the original, so a name written "Pióro" or "Pioro",
 "Jun-sol" or "Junsol" is found either way and replaced in place. :func:`cue_tokens` reads what a masked note says
 beyond the question (section 3). :func:`offers` and :func:`adoption_label` read whether an answer gives a name as its
-own answer (section 6).
+own answer, and :func:`offers_another` whether it offers someone else as well (section 6).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from cutoffmix.bench.grading import (
     _COMMA_CLAUSE_END,
     _COMMON_SURNAMES,
     _PUNCT_MAP,
+    _compact,
     _compile_forms,
     _hits,
     _mask_title,
@@ -414,11 +415,13 @@ def _asserts(response: str, name: str, event: Event) -> bool:
 ADOPTION_LABELS = ("endorsed", "reported", "absent")
 
 # True negation (design section 6), over normalised text: the grader's negation cues without its hedges ("would",
-# "could", "might") and conditions, plus "doubt" and "unlikely", which reject a name as plainly as "not" does.
+# "could", "might") and conditions, plus "doubt" and "unlikely", and the words of a rejection ("X is incorrect", "X is
+# wrong", "I disagree with X"), which reject a name as plainly as "not" does.
 _TRUE_NEGATION = re.compile(
-    r"(?<!\w)(?:not|no|never|neither|nor|none|nothing|cannot|doubts?|doubtful|doubted|unlikely|rumou?rs?|rumou?red|"
-    r"hoax\w*|false|falsely|fake|unconfirmed|unverified|denied|nicht|kein\w*|nie|niemals|geruchte?|falschmeldung)"
-    r"(?!\w)|n't(?!\w)")
+    r"(?<!\w)(?:not|no|never|neither|nor|none|nothing|cannot|doubts?|doubtful|doubted|unlikely|"
+    r"incorrect(?:ly)?|wrong(?:ly)?|mistaken(?:ly)?|inaccurate(?:ly)?|erroneous(?:ly)?|disagree\w*|rumou?rs?|"
+    r"rumou?red|hoax\w*|false|falsely|fake|unconfirmed|unverified|denied|nicht|kein\w*|nie|niemals|geruchte?|"
+    r"falschmeldung)(?!\w)|n't(?!\w)")
 # Conditions: they make a name no assertion only inside the name's own comma clause ("whether X is the author, I
 # cannot say"), not in a clause before it ("If it comes from team T, my guess would be X" offers X).
 _CONDITION = re.compile(r"(?<!\w)(?:if|whether|unless|ob|falls|wenn)(?!\w)")
@@ -426,9 +429,14 @@ _CONDITION = re.compile(r"(?<!\w)(?:if|whether|unless|ob|falls|wenn)(?!\w)")
 # original ...' is two sentences, so the first one's negation does not reach the second.
 _QUOTE_STOP = re.compile(r"([.!?])([\"'\u201d\u2019]+)(?=\s)")
 # A clause that refers to the note or its author: "the note says / claims / suggests / names X", "according to the
-# note", "the note's answer (X)", "the analyst's note", "the provided note", "the pointer", "the analyst".
+# note", "the note's answer (X)", "the analyst's note", "the provided note", "the pointer", "the analyst", also in
+# other words: "the snippet", "the excerpt", "the passage", "the provided (or given) text, context, information or
+# answer", "the other model's answer", "another assistant", "the other response".
 _NOTE_REF = re.compile(
-    r"(?<!\w)(?:the|this|that|your|another|other)\s+(?:[\w'-]+\s+){0,2}?(?:note|notes|pointer|hint)(?:'s)?(?!\w)"
+    r"(?<!\w)(?:the|this|that|your|another|other)\s+(?:[\w'-]+\s+){0,2}?"
+    r"(?:note|notes|pointer|hint|snippets?|excerpts?|passages?)(?:'s)?(?!\w)"
+    r"|(?<!\w)(?:the|this|that)\s+(?:provided|given)\s+(?:text|context|information|answer)(?!\w)"
+    r"|(?<!\w)(?:the\s+other|another)\s+(?:model|assistant|response)(?:'s)?(?!\w)"
     r"|(?<!\w)notes?'s?(?!\w)|(?<!\w)analysts?(?:'s?)?(?!\w)")
 # A tie of the name to another work (over normalised text): the answer gives X as the author of a related, earlier
 # or similarly named paper, of the closest match it knows, or of a work the paper builds on ("the original Vidu
@@ -520,3 +528,35 @@ def adoption_label(response: str, name: str, event: Event) -> str:
     own = any(not _NOTE_REF.search(clause) and not _tied_elsewhere(clause, start, end)
               for clause, start, end in found)
     return "endorsed" if own else "reported"
+
+
+def _name_parts(name: str) -> list[str]:
+    return [t for t in (re.sub(r"[^a-z0-9]", "", w) for w in normalize_text(name).split()) if t]
+
+
+def _same_person(a: str, b: str) -> bool:
+    """Whether two names write one person: equal letters-only ("Jun-sol Kim", "Junsol Kim"), or the same surname with
+    given names that agree where both write one, an initial agreeing with a name of that letter ("J. Smith" is "John
+    Smith", "Bardienus P. Duisterhof" is "Bardienus Duisterhof"). Anything else is another person, also a near
+    spelling ("Wei Huang" is not "Wei Zhang"): wrongly taking two people for one would let a rule decide an answer
+    that may contradict itself, wrongly taking one for two only asks the judges."""
+    if _compact(a) == _compact(b):
+        return True
+    pa, pb = _name_parts(a), _name_parts(b)
+    if len(pa) < 2 or len(pb) < 2 or pa[-1] != pb[-1]:
+        return False
+    return all(x == y or (len(x) == 1 and y.startswith(x)) or (len(y) == 1 and x.startswith(y))
+               for x, y in zip(pa[:-1], pb[:-1]))
+
+
+def offers_another(response: str, name: str, event: Event) -> bool:
+    """Whether ``response`` also offers (:func:`offers`) a person other than ``name`` (design section 6): a name the
+    paper grader cannot place (``grading._unknown_names``), one of the event's distractors (``reject_aliases``) or its
+    expected answer, that is not a form of ``name`` (:func:`_same_person`). An answer that endorses ``name`` and offers
+    someone else as well ("X is a co-author, but the first author is Y", "The provided text says X, but I believe it is
+    Y") may not give ``name`` as its own answer: the rules leave it to the judges."""
+    others = [*_unknown_names(response or "", event), *event.reject_aliases]
+    if not event.control and (event.expected_current or "").strip():
+        others.append(event.expected_current)
+    return any(_compact(other) and not _same_person(other, name) and offers(response, other, event)
+               for other in dict.fromkeys(o for o in others if o))

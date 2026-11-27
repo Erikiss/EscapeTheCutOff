@@ -39,7 +39,7 @@ ALPHA = 0.05  # two-sided
 FLOOR_ITEMS = 6  # a paired comparison on fewer items is "not testable (n too small)"
 KEY_MARGIN = 0.10  # predictions 1, 1b and 3a: the gain the data must rule out for a refutation
 ADOPTION_MARGIN = 0.20  # prediction 3b ("far more often")
-UNDECIDED_LIMIT = 0.20  # prediction 3b is not testable when a larger share of the full rows is undecided
+UNDECIDED_LIMIT = 0.20  # 3a and 3b are not testable when a larger share of their full rows is undecided
 MIN_UNITS = 10  # prediction 2: units per group (recognised, unrecognised)
 PERMUTATIONS = 20_000  # prediction 2: the stratified permutation test ...
 PERMUTATION_SEED = 0  # ... with a fixed seed
@@ -58,7 +58,7 @@ UNIT_RULE = ("distinct (recipient, event) over the keyed pairs' dark items witho
              "wrong_key answered; among those rows, an event dark in two pairs with the same recipient keeps the "
              "decisive pair's row, else the row of the pair with more planned dark items (then the first pair name)")
 NOT_TESTABLE_N = "not testable (n too small)"
-UNDECIDED_VERDICT = "not testable (reported speech undecided; grade with --judges)"
+UNDECIDED_VERDICT = "not testable (undecided answers; grade with --judges)"
 CONFOUNDED = "supported (confounded: the wrong key misleads)"
 _ANSWERED, _REFUSAL, _ERROR, _STALE, _NO_PROVENANCE, _MISSING = (
     "answered", "refusal", "error", "stale", "no_provenance", "missing")
@@ -610,39 +610,50 @@ def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str
             "all_items": _brief(every), "pointer_items": _brief(pointed)}
 
 
+def _gated(comparison: Mapping[str, Any], undecided: Mapping[str, Any]) -> str:
+    """A half of prediction 3 (design section 7): the floor, then the undecided share of its full rows (more than
+    :data:`UNDECIDED_LIMIT`: :data:`UNDECIDED_VERDICT`), then the three-way verdict."""
+    if comparison["verdict"] == NOT_TESTABLE_N:
+        return NOT_TESTABLE_N
+    if _share_above(undecided["undecided"], undecided["full_rows"], UNDECIDED_LIMIT):
+        return UNDECIDED_VERDICT
+    return _combine([comparison["verdict"]])
+
+
+def _fmt_undecided(undecided: Mapping[str, Any]) -> str:
+    share = undecided["share"]
+    return (f"{undecided['undecided']} of {undecided['full_rows']} "
+            f"({'n/a' if share is None else f'{100 * share:.1f} %'}, limit 20 %)")
+
+
 def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 3 (design section 7): 3a full vs key pooled over the keyed pairs' dark items (margin 0.10), 3b full
-    vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20). Each half is interim
-    on its own rows; the prediction is interim when one half is (k and N summed over both)."""
+    vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20). Each half checks the
+    floor, then the undecided share of its full rows (3a: the right-name check of the dark full rows, 3b: adoption;
+    more than 20 % undecided is not testable, since an undecided row counts as a miss), then the three-way verdict.
+    Each half is interim on its own rows; the prediction is interim when one half is (k and N summed over both)."""
     done_a, planned_a = _completed(ctx.of("dark", ctx.keyed))
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
     done_b, planned_b = _completed(adoption_items)
     interim_a, interim_b = _interim(done_a, planned_a), _interim(done_b, planned_b)
     a = _three_way(pooled["full_vs_key"], KEY_MARGIN)
     b = _three_way(pooled["adoption_full_vs_alone"], ADOPTION_MARGIN)
-    undecided = pooled["adoption_full_undecided"]
-    raw_a = _combine([a["verdict"]])
-    if b["verdict"] == NOT_TESTABLE_N:
-        raw_b = NOT_TESTABLE_N
-    elif _share_above(undecided["undecided"], undecided["full_rows"], UNDECIDED_LIMIT):
-        raw_b = UNDECIDED_VERDICT
-    else:
-        raw_b = _combine([b["verdict"]])
+    undecided_a, undecided = pooled["full_undecided"], pooled["adoption_full_undecided"]
+    raw_a, raw_b = _gated(a, undecided_a), _gated(b, undecided)
     interim = (f"interim ({done_a + done_b} of {planned_a + planned_b} planned items answered)"
                if interim_a or interim_b else None)
     half_a, half_b = voice.verdict(raw_a, interim_a), voice.verdict(raw_b, interim_b)
     label_a, label_b = _stated(a, voice, interim_a), _stated(b, voice, interim_b)
-    share = undecided["share"]
-    evidence = (f"3a full vs key, the keyed pairs' dark items: {_fmt_verdict(a, label_a)} -> {half_a}; 3b adoption "
-                f"(adopted true) full vs alone, donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> "
-                f"{half_b}; full rows undecided {undecided['undecided']} of {undecided['full_rows']}"
-                f" ({'n/a' if share is None else f'{100 * share:.1f} %'}, limit 20 %); adopted: full "
-                f"{_fmt_rate(pooled['adoption_arms'].get('full'))}, alone "
-                f"{_fmt_rate(pooled['adoption_arms'].get('alone'))}")
+    evidence = (f"3a full vs key, the keyed pairs' dark items: {_fmt_verdict(a, label_a)} -> {half_a}; dark full "
+                f"rows whose right name is undecided {_fmt_undecided(undecided_a)}; 3b adoption (adopted true) full "
+                f"vs alone, donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> {half_b}; full rows "
+                f"undecided {_fmt_undecided(undecided)}; adopted: full {_fmt_rate(pooled['adoption_arms'].get('full'))}"
+                f", alone {_fmt_rate(pooled['adoption_arms'].get('alone'))}")
     return {"id": 3, "text": "full beats key on dark items (3a, margin 0.10), and full makes the recipient endorse a "
                              "wrong donor answer far more often than alone (3b, adopted true, margin 0.20).",
             "verdict": voice.verdict(_combine([raw_a, raw_b]), interim), "evidence": evidence,
-            "halves": {"3a": {"verdict": half_a, "comparison": a, "answered": done_a, "planned": planned_a},
+            "halves": {"3a": {"verdict": half_a, "comparison": a, "answered": done_a, "planned": planned_a,
+                              "undecided": undecided_a},
                        "3b": {"verdict": half_b, "comparison": b, "answered": done_b, "planned": planned_b,
                               "undecided": undecided}}}
 
@@ -787,8 +798,14 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
     full_rows = [it.rows["full"] for it in adoption_items if "full" in it.rows and it.rows["full"].answered]
     undecided = sum(1 for r in full_rows if r.undecided)
+    # 3a's gate: the keyed pairs' answered dark full rows whose check of the right name is undecided (a label, adopted
+    # None: the rules left the name to the judges, and no judge decided)
+    dark_full = [it.rows["full"] for it in ctx.of("dark", keyed) if "full" in it.rows and it.rows["full"].answered]
+    undecided_dark = sum(1 for r in dark_full if r.get("adoption") is not None and r.undecided)
     pooled = {
         "full_vs_key": _compare(ctx.of("dark", keyed), "full", "key"),
+        "full_undecided": {"undecided": undecided_dark, "full_rows": len(dark_full),
+                           "share": undecided_dark / len(dark_full) if dark_full else None},
         "adoption_full_vs_alone": _compare(adoption_items, "full", "alone", _adopted, _undecided),
         "adoption_full_undecided": {"undecided": undecided, "full_rows": len(full_rows),
                                     "share": undecided / len(full_rows) if full_rows else None},
@@ -995,15 +1012,16 @@ def render_report(report: Mapping[str, Any]) -> str:
 
     lines += ["", "## Adoption of the donor's wrong name", "",
               "adopted: the answer gives the name as its own (undecided counted as not adopted); reported: offered "
-              "only in clauses that refer to the note.", "",
-              "| pair | set | arm | answered | endorsed | reported (undecided) | absent | adopted | full vs alone |",
-              "|---|---|---|---:|---:|---|---:|---|---|"]
+              "only in clauses that refer to the note; undecided: left to the judges (reported speech, or an "
+              "endorsement the answer contradicts) and not decided.", "",
+              "| pair | set | arm | answered | endorsed | reported | absent | undecided | adopted | full vs alone |",
+              "|---|---|---|---:|---:|---:|---:|---:|---|---|"]
     for pair, sets in report["adoption"].items():
         for set_, entry in sets.items():
             for arm, a in entry["arms"].items():
                 test = _fmt_test(entry["full_vs_alone"]) if arm == "full" else ""
-                lines.append(f"| {pair} | {set_} | {arm} | {a['answered']} | {a['endorsed']} | {a['reported']} "
-                             f"({a['reported_undecided']}) | {a['absent']} | {_fmt_rate(a)} | {test} |")
+                lines.append(f"| {pair} | {set_} | {arm} | {a['answered']} | {a['endorsed']} | {a['reported']} | "
+                             f"{a['absent']} | {a['undecided']} | {_fmt_rate(a)} | {test} |")
     pooled = report["pooled"]
     und = pooled["adoption_full_undecided"]
     lines += ["", f"Pooled full vs alone (adopted true): {_fmt_test(pooled['adoption_full_vs_alone'])}; full rows "

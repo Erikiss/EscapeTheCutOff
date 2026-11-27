@@ -48,9 +48,10 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
   noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
-  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach drei Prüfrunden wurden
+  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach vier Prüfrunden wurden
   die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis
-  etwa 0,35 $ für den Judge und läuft erst mit Freigabe und Schlüssel.
+  etwa 0,41 $ für den Judge (im ungünstigsten Fall 0,77 $, zusammen 2,94 $) und läuft erst mit Freigabe und
+  Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -412,7 +413,8 @@ Vorab festgelegte Vorhersagen (`docs/DESIGN_keys.md`, Abschnitt 7, Version 2):
 
 Die möglichen Ausgänge hängen von der Vorhersage ab. Die Vorhersagen 1, 1b und 3 sind gestützt, nicht gestützt (ein
 Vergleich schließt den vorhergesagten Gewinn aus: 10 Prozentpunkte, bei 3b 20), unentschieden oder nicht testbar (unter
-6 Fragen in einem Vergleich; bei 3b auch, wenn mehr als 20 % der `full`-Antworten unentschieden bleiben). Vorhersage 2
+6 Fragen in einem Vergleich; bei 3a und 3b auch, wenn mehr als 20 % ihrer `full`-Antworten unentschieden bleiben).
+Vorhersage 2
 wird nur geprüft, wenn 1 gestützt ist und jede Gruppe mindestens 10 Einheiten hat (sonst nicht testbar), und ist dann
 nur gestützt oder unentschieden, nie widerlegt. Vorhersage 4 ist gestützt oder nicht gestützt, je nachdem, ob der
 gemessene Mehrschaden unter der festen Schwelle von 10 Prozentpunkten liegt (ein Punktwert, kein statistischer
@@ -438,7 +440,7 @@ ersten echten Aufruf (Abschnitt 10, „Refinements“). Ein Beispiel: Nennt eine
 *anderen* Papers („der Erstautor des ursprünglichen Vidu-Papers war X“), gilt das nicht mehr als zu eigen gemacht,
 sondern als berichtet, und der Judge entscheidet.
 
-Zuletzt wurden alle Bereiche zusammen geprüft, ebenfalls vor dem ersten echten Aufruf. Dabei fiel eine Lücke im Arm
+Dann wurden alle Bereiche zusammen geprüft, ebenfalls vor dem ersten echten Aufruf. Dabei fiel eine Lücke im Arm
 `full` auf: Dort steht in der Notiz der richtige Name. Die Regeln werteten eine Antwort schon dann als richtig, wenn sie
 diesen Namen nur weitergibt oder sogar zurückweist („Die Notiz nennt X, ich glaube aber, es ist Y“, „Die Antwort der
 Notiz, X, ist falsch“). Das hätte die Trefferquote von `full` künstlich erhöht und damit Vorhersage 3a („`full` ist
@@ -446,6 +448,18 @@ besser als `key`“) begünstigt. Jetzt gilt für den richtigen Namen dieselbe U
 ist eine `full`-Antwort nur, wenn sie sich den Namen zu eigen macht. Nennt sie ihn nur als Inhalt der Notiz, bleibt sie
 unbewertet und zählt als nicht richtig, bis der Judge entscheidet: zu eigen gemacht heißt richtig, nur berichtet oder
 zurückgewiesen heißt falsch.
+
+Eine letzte Prüfung aller Bereiche vor dem Pilot hat die Regeln noch einmal verschärft. Die festen Regeln entscheiden
+jetzt nur noch die klaren Fälle („Der Erstautor ist X.“). Alles andere entscheidet der Judge: eine andere Schreibweise
+des Namens („Z. Wang“ statt „Ziqi Wang“), Zweifel („Ich bezweifle, dass es X ist“), eine Zurückweisung („X ist
+falsch“, „X ist nur Koautor, Erstautor ist Y“), eine Notiz, die mit anderen Worten zitiert wird („der bereitgestellte
+Text nennt X“) und jede Antwort, die neben dem Namen noch eine andere Person nennt. Beim falschen Namen des Spenders
+(3b) zählt eine Antwort nur dann als übernommen, wenn die Bewertung sie auch als falsche Antwort liest; sonst
+entscheidet der Judge. Bleiben bei 3a mehr als 20 % der `full`-Antworten unentschieden (etwa weil alle Judge-Aufrufe
+fehlschlugen), ist 3a nicht testbar statt widerlegt. Außerdem: Ein HTTP 403 betrifft beim Gateway oft nur eine einzelne
+Anfrage (etwa eine Moderationssperre) und hält den Lauf nicht mehr an; ein 401 oder 402 hält ihn an, auch bei einem
+Judge-Aufruf; das erste Strg-C wirkt sofort, auch vor dem ersten Aufruf; eine abgerissene letzte Zeile wird auch dann
+abgeschnitten, wenn sie mitten in einem Zeichen wie „ß“ endet. Die 746 geplanten Aufrufe sind dieselben geblieben.
 
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl \
@@ -456,13 +470,17 @@ cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_resu
 ```
 
 Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten:
-2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24), dazu wenige Cent bis etwa 0,35 $ für den Judge (darin bis zu 136 Aufrufe für
-`full`-Antworten, die den richtigen Namen nur berichten; im ungünstigsten Fall etwa 0,55 $). Beides zusammen bleibt
-unter `--max-cost 3`. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort und endet
-mit Exit-Code 3 bei `--max-cost`, mit 4, wenn Aufrufe fehlschlugen (der nächste Lauf schickt sie erneut) oder ein
-Fehler auftrat, den kein neuer Versuch behebt (HTTP 401, 402 oder 403: Schlüssel, Guthaben, Zugang; dann startet er
-keinen Aufruf mehr), und mit 130 nach Strg-C, wobei das erste Strg-C die laufenden Aufrufe zu Ende laufen und speichern
-lässt und erst ein zweites sofort abbricht. Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene
+2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24). Dazu kommt der Judge: etwa 0,14 $ für die Antworten, die die Regeln nicht
+bewerten können, bis etwa 0,41 $, wenn er jede `full`-Antwort prüfen muss (bis zu 136 Aufrufe für den richtigen Namen,
+53 für den falschen), im ungünstigsten Fall etwa 0,77 $. Zusammen sind das im ungünstigsten Fall etwa 2,94 $, also nur
+etwa 6 Cent unter `--max-cost 3`. Der Deckel zählt den Judge mit, mehr wird also nicht ausgegeben; hält der Lauf am
+Deckel an, schickt ein weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein
+vorab freigegebener höherer Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach
+einer Unterbrechung fort und endet mit Exit-Code 3 bei `--max-cost`, mit 4, wenn Aufrufe fehlschlugen (auch bei
+`--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler auftrat, den kein neuer Versuch behebt (HTTP 401 oder
+402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf; dann startet er keinen Aufruf mehr), und mit 130 nach
+Strg-C, wobei das erste Strg-C die laufenden Aufrufe zu Ende laufen und speichern lässt und erst ein zweites sofort
+abbricht. Mit `--mock` läuft alles offline gegen simulierte Modelle, in eine eigene
 Datei (`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet
 sie als SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht gelaufen.**
 

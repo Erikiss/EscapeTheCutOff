@@ -41,10 +41,11 @@ the calls offline from stored graded results (does a donor's note with the answe
 it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
 and never a file that is not a plan);
 ``run`` sends them (``--max-cost`` is required for the real models and counts the judges; a run the cap stops exits
-with status 3, a run with failed calls or one stopped by an error no retry can fix (HTTP 401, 402, 403) with status 4,
-and the first Ctrl-C lets the calls in flight finish and exits with status 130; a results file holds one backend's
-rows, so a mock run writes to its own file); ``report`` joins plan and results offline into rates, paired tests and
-adoption rates (it never writes its ``--json`` or ``--md`` over its inputs).
+with status 3, a run with failed calls (also at ``--limit``) or one stopped by an error no retry can fix (HTTP 401 or
+402, on a recipient's call or a judge's) with status 4, and the first Ctrl-C lets the calls in flight finish and exits
+with status 130; a results file holds one backend's rows, so a mock run writes to its own file); ``report`` joins plan
+and results offline into rates, paired tests and adoption rates (it never writes its ``--json`` or ``--md`` over its
+inputs).
 """
 
 from __future__ import annotations
@@ -984,12 +985,16 @@ def _plan_conflict(path: Path, rows: Sequence[Mapping[str, Any]] | None, *, forc
 def _first_sigint_sets(stop: asyncio.Event, notice: Callable[[], None]) -> Callable[[], None]:
     """Make the first SIGINT (Ctrl-C) set ``stop`` instead of aborting (DESIGN_keys.md section 6: the run starts no new
     call, and the calls in flight finish and write their rows), and return the function that undoes it. That first
-    SIGINT also calls ``notice`` and puts the previous handler back, so a second one aborts at once, as before. Called
-    inside the running loop. POSIX only (``loop.add_signal_handler``, main thread, SIGINT handled by Python);
-    elsewhere nothing changes and a SIGINT aborts at once."""
+    SIGINT also puts the previous handler back, so a second one aborts at once, as before, and has the loop call
+    ``notice``. Called inside the running loop. The handler is a Python signal handler, so it runs in the main thread
+    right after the signal arrives, between two bytecodes, not on a later turn of the loop: ``stop`` is set before the
+    run checks it again, also when the signal comes before the first call has started (the run then starts none).
+    Nothing awaits ``stop`` (the run reads it before it starts each item), so setting it there is safe; ``notice``
+    prints, so it runs on the loop instead. POSIX only, in the main thread, with SIGINT handled by Python; elsewhere
+    nothing changes and a SIGINT aborts at once."""
     loop = asyncio.get_running_loop()
     previous = signal.getsignal(signal.SIGINT)
-    if not callable(previous):  # SIGINT ignored, or left to the system: keep it so
+    if os.name != "posix" or not callable(previous):  # not POSIX; or SIGINT ignored or left to the system: keep it so
         return lambda: None
     armed = False
 
@@ -997,17 +1002,16 @@ def _first_sigint_sets(stop: asyncio.Event, notice: Callable[[], None]) -> Calla
         nonlocal armed
         if armed:
             armed = False
-            loop.remove_signal_handler(signal.SIGINT)
             signal.signal(signal.SIGINT, previous)  # from now on a SIGINT aborts as it would have
 
-    def first() -> None:
+    def first(_signum: int, _frame: Any) -> None:
         disarm()
         stop.set()
-        notice()
+        loop.call_soon_threadsafe(notice)  # wakes the loop; printing inside a signal handler could hit a busy stream
 
     try:
-        loop.add_signal_handler(signal.SIGINT, first)
-    except (NotImplementedError, RuntimeError, ValueError):  # not POSIX, or not the main thread
+        signal.signal(signal.SIGINT, first)
+    except (ValueError, OSError):  # not the main thread
         return lambda: None
     armed = True
     return disarm
@@ -1024,7 +1028,7 @@ def _keys_run_start(start: Any, limit: int | None) -> str:
         line += f" (--limit {limit})"
     if start.regrade:
         why = [f"{n} {what}" for n, what in ((start.failed, "whose grading failed"),
-                                             (start.relabel, "whose adoption label changed"),
+                                             (start.relabel, "whose label is out of date"),
                                              (start.regrade - start.failed - start.relabel, "for the judges")) if n]
         line += f"; grading {start.regrade} stored answers again first, without a new call ({', '.join(why)})"
     return line + f"; cost so far ${start.cost_usd:.4f} ({start.backend})"
@@ -1164,9 +1168,15 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
     if outcome.judge_failed:
         print(f"{outcome.judge_failed} judge calls failed (first error: {outcome.judge_error}); an answer they leave "
               "undecided stays undecided, and the next run with --judges asks again", file=sys.stderr)
-    left = f"{outcome.not_sent} of {outcome.planned} planned calls not sent"
+    # the planned calls without a current answer: those whose last row is a send error were sent and failed
+    never = outcome.not_sent - len(errors)
+    left = f"{never} of {outcome.planned} planned calls not sent"
+    if errors:
+        left = f"{len(errors)} of {outcome.planned} planned calls failed and {never} not sent"
     if outcome.not_regraded:
-        left += f" and {outcome.not_regraded} stored answers not graded again"
+        left += f", {outcome.not_regraded} stored answers not graded again"
+    # the exit status of the stop that first kept planned work from starting (DESIGN_keys.md section 6), then 4 for
+    # failed calls (also at --limit), else 0
     if outcome.stopped_by == "interrupted":
         print(f"interrupted: {left}; rerun to resume", file=sys.stderr)
         return 130
@@ -1175,12 +1185,11 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 3
     if outcome.stopped_by == "error":
-        print(f"stopped after an error that no retry can fix ({outcome.error}): {left}; fix its cause (the API key, "
-              "the credits or the access to the model) and rerun to send them", file=sys.stderr)
+        print(f"stopped after an error that no retry can fix ({outcome.error}): {left}; fix its cause (the API key "
+              "or the credits) and rerun to resume", file=sys.stderr)
         return 4
     if outcome.stopped_by == "limit":
         print(f"stopped at --limit {args.limit}: {left}; rerun to send the next ones", file=sys.stderr)
-        return 0
     if errors:
         print(f"{len(errors)} of {outcome.planned} planned calls failed (first error: {errors[0]['error']}); rerun "
               "to send them again", file=sys.stderr)
@@ -1487,10 +1496,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config(kp)
     kp.set_defaults(func=_cmd_bench_keys_plan)
     krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers",
-                               epilog="exit status: 0 done (or stopped by --limit), 2 refused before any call, 3 "
-                                      "stopped by --max-cost, 4 planned calls failed or an error no retry can fix "
-                                      "(HTTP 401, 402, 403) stopped the run, 130 interrupted (the first Ctrl-C lets "
-                                      "the calls in flight finish, a second aborts at once)")
+                               epilog="exit status: 0 done (or stopped by --limit without a failed call), 2 "
+                                      "refused before any call, 3 stopped by --max-cost, 4 planned calls failed (also "
+                                      "at --limit) or an error no retry can fix (HTTP 401 or 402, a recipient's or a "
+                                      "judge's) stopped the run, 130 interrupted (the first Ctrl-C lets the calls in "
+                                      "flight finish, a second aborts at once); stops that meet rank Ctrl-C, then the "
+                                      "error, then the cap")
     krun.add_argument("--plan", required=True, metavar="FILE")
     krun.add_argument("--events", required=True, metavar="FILE")
     krun.add_argument("--out", required=True, metavar="FILE",
@@ -1502,9 +1513,10 @@ def build_parser() -> argparse.ArgumentParser:
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
-                      help="judge models for answers the rules cannot grade and for names given only in reported "
-                           "speech (the donor's name, or the right name of a full note); stored undecided rows are "
-                           "graded again first, without a new call (default: none)")
+                      help="judge models for answers the rules cannot grade and for the names the rules leave to "
+                           "them (the donor's name, or the right name of a full note: reported speech, another "
+                           "spelling, an answer that names someone else too); stored undecided rows are graded again "
+                           "first, without a new call (default: none)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "
                            "settings changed); the newest row counts (default: stop)")

@@ -1,8 +1,8 @@
 """Key, not value (docs/DESIGN_keys.md section 6, Grading): the right name on the ``full`` rows of ``dark`` and
 ``both_right``. Their note shows the expected answer, so the paper rules alone graded an answer correct that only relays
-or even rejects the note's name. A ``correct`` grade now stands only where the answer gives the name as its own
-(endorsed, or absent where the rules found the name and ``offers`` does not); reported speech is ``ungraded`` until the
-adoption judges decide (ENDORSE ``correct``, REPORT or REJECT ``incorrect``). The phrasings are those the cross-area
+or even rejects the note's name. A ``correct`` grade now stands by rule only where the answer gives the name as its own
+(endorsed, with nobody else offered); every other correct answer (reported speech, absent, endorsed next to another
+person) is ``ungraded`` until the adoption judges decide (ENDORSE ``correct``, REPORT or REJECT ``incorrect``). The phrasings are those the cross-area
 review confirmed on the real plan (Fable -> Sol, paper:2404.08636, "Mohamed El Banani"), on a ``both_right`` item as
 well; ``run --judges`` decides the stored undecided rows without a new call, and a row whose label is current is never
 labelled again."""
@@ -161,7 +161,6 @@ def test_an_answer_the_rules_leave_ungraded_gets_no_label(tmp_path, real, templa
     (EL_BANANI, "{X}.", "endorsed"),
     (EL_BANANI, "The first author is {X}.", "endorsed"),
     (GUO, "I believe it is {X}.", "endorsed"),
-    (WANG, "The first author is Z. Wang.", "absent"),                          # the rules' form, not offers()'
 ])
 def test_a_name_given_as_the_answers_own_stays_correct(tmp_path, real, event_id, template, label):
     events, _ = real
@@ -172,6 +171,97 @@ def test_a_name_given_as_the_answers_own_stays_correct(tmp_path, real, event_id,
     assert full["grade"] == "correct" and full["grader"] == "rule"
     assert (full["adoption"], full["adopted"], full["adoption_grader"]) == (label, True, "rule")
     assert calls(backend, "adoption_judge") == [] and full["judge_usage"] == []
+
+
+# ---- the rules decide only an answer that gives the right name as its own, and nobody else (final review) ----------
+
+# Correct answers whose label the rules cannot read as the answer's own (final review, on the real rows): a rejection
+# only offers() reads ("doubt", "unlikely": the paper rules do not negate with them), an alias form the rules accept
+# that the answer only relays or rejects ("Z. Wang", "Wang Ziqi" for "Ziqi Wang"), the note named in other words, a
+# rejection without "not" ("incorrect", "wrong", "disagree"), and an endorsement next to another person. Each was kept
+# correct by rule, with no judge asked: (event, answer, label).
+UNREAD = [
+    (EL_BANANI, "I doubt the note's answer, {X}, is right.", "absent"),
+    (EL_BANANI, "{X} is unlikely to be the first author; I believe it is Wei Zhang.", "absent"),
+    (GUO, "It is unlikely that {X} is the first author.", "absent"),
+    (WANG, "The note says Z. Wang, but I believe the first author is Wei Zhang.", "absent"),
+    (WANG, "The note's answer, Wang Ziqi, is wrong.", "absent"),
+    (EL_BANANI, "The provided text says {X}, but I do not know who the first author is.", "reported"),
+    (EL_BANANI, "The snippet suggests {X}, which I can't confirm; I believe the first author is Wei Zhang.",
+     "reported"),
+    (GUO, "The other model's answer is {X}, but I believe the first author is Wei Zhang.", "reported"),
+    (EL_BANANI, "{X} is incorrect; the first author is Wei Zhang.", "absent"),
+    (GUO, "{X} is wrong.", "absent"),
+    (EL_BANANI, "I disagree with {X}; the first author is Wei Zhang.", "absent"),
+    (GUO, "{X} is a co-author, but the first author is Wei Zhang.", "endorsed"),
+]
+
+
+def decision(row: dict[str, Any]) -> tuple[Any, ...]:
+    return row["grade"], row["grader"], row["adoption"], row["adopted"], row["adoption_grader"]
+
+
+@pytest.mark.parametrize(("event_id", "template", "label"), UNREAD)
+def test_a_correct_full_answer_the_rules_cannot_read_as_its_own_goes_to_the_judges(tmp_path, real, event_id,
+                                                                                    template, label):
+    events, _ = real
+    rows = items(real, event_id)
+    full = by_arm(run(judged(answering(template)), rows, tmp_path / "keys.jsonl", events))[(event_id, "full")]
+    # the rules grade it correct (grader rule, so it gets a label), but leave the right name to the judges
+    assert decision(full) == ("ungraded", "rule", label, None, "rule") and full["judge_usage"] == []
+    backend = judged(answering(template), votes={"j1": "REJECT"})
+    full = by_arm(run(backend, rows, tmp_path / "judged.jsonl", events, judges=[J1]))[(event_id, "full")]
+    assert decision(full) == ("incorrect", "rule", label, False, "judge:j1")
+    assert [e["purpose"] for e in full["judge_usage"]] == ["adoption_judge"] and calls(backend, "judge") == []
+
+
+def test_an_alias_form_given_as_the_answers_own_is_correct_once_the_judges_endorse_it(tmp_path, real):
+    # "Z. Wang" for "Ziqi Wang": the rules accept the form, offers() does not read it (absent); the judges decide
+    events, _ = real
+    rows = items(real, WANG)
+    reply = answering("The first author is Z. Wang.")
+    out = tmp_path / "keys.jsonl"
+    assert decision(by_arm(run(judged(reply), rows, out, events))[(WANG, "full")]) == \
+        ("ungraded", "rule", "absent", None, "rule")
+    backend = judged(reply, votes={"j1": "ENDORSE"})
+    full = by_arm(run(backend, rows, out, events, judges=[J1]))[(WANG, "full")]
+    assert decision(full) == ("correct", "rule", "absent", True, "judge:j1")
+    assert calls(backend) == [] and len(calls(backend, "adoption_judge")) == 1      # the stored row, no new call
+
+
+def test_a_correct_answer_that_lists_co_authors_goes_to_the_judges_and_a_bare_one_does_not(tmp_path, real):
+    events, _ = real
+    rows = items(real, EL_BANANI)
+    listed = answering("The first author is {X}, with co-authors Yara Okafor and Ines Brandt.")
+    backend = judged(listed, votes={"j1": "ENDORSE"})
+    full = by_arm(run(backend, rows, tmp_path / "listed.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
+    assert decision(full) == ("correct", "rule", "endorsed", True, "judge:j1")
+    assert len(calls(backend, "adoption_judge")) == 1
+    bare = judged(answering("The first author is {X}."), votes={"j1": "REJECT"})
+    full = by_arm(run(bare, rows, tmp_path / "bare.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
+    assert decision(full) == ("correct", "rule", "endorsed", True, "rule") and calls(bare, "adoption_judge") == []
+
+
+def test_a_row_the_old_rule_kept_correct_is_labelled_again_and_then_judged(tmp_path, real):
+    # a results file written before the final review: "absent" kept correct by rule (adopted true, no judge)
+    events, _ = real
+    rows, lines = stored_items(real)
+    item = next(r for r in rows if (r["event_id"], r["arm"]) == (EL_BANANI, "full"))
+    text = "I doubt the note's answer, Mohamed El Banani, is right."
+    lines[(EL_BANANI, "full")] = stored(item, text, "correct", adoption="absent", adopted=True,
+                                        adoption_grader="rule")
+    out = tmp_path / "keys.jsonl"
+    write_jsonl(out, list(lines.values()))
+    seen = []
+    backend = ScriptedBackend()
+    got = by_arm(run(backend, rows, out, events, on_start=seen.append))
+    assert backend.calls == [] and seen[0].relabel == 1 == seen[0].regrade      # the old decision, not the label
+    assert decision(got[(EL_BANANI, "full")]) == ("ungraded", "rule", "absent", None, "rule")
+    assert run(ScriptedBackend(), rows, out, events).regraded == 0              # current now
+    backend = judged(lambda req: DONT_KNOW, votes={"j1": "REJECT"})
+    got = by_arm(run(backend, rows, out, events, judges=[J1]))
+    assert decision(got[(EL_BANANI, "full")]) == ("incorrect", "rule", "absent", False, "judge:j1")
+    assert calls(backend) == [] and got[(WANG, "full")] == lines[(WANG, "full")]  # a judge's decision stands
 
 
 # ---- later runs: the judges decide stored rows, and current labels stay --------------------------------------------
@@ -289,7 +379,8 @@ def test_a_full_row_is_labelled_again_when_its_label_for_the_right_name_differs(
     seen = []
     got = by_arm(run(ScriptedBackend(), renamed, out, events, on_start=seen.append))
     assert seen[0].relabel == 1                                                 # the El Banani row only
-    assert fields(got[(EL_BANANI, "full")]) == ("correct", False, "rule", "absent", True, "rule")
+    # the answer does not name "Wei Zhang" (absent) although the rules grade it correct: the judges decide
+    assert fields(got[(EL_BANANI, "full")]) == ("ungraded", False, "rule", "absent", None, "rule")
     assert run(ScriptedBackend(), renamed, out, events).regraded == 0
     back = by_arm(run(ScriptedBackend(), rows, out, events))                    # the original name again
     assert fields(back[(EL_BANANI, "full")]) == fields(lines[(EL_BANANI, "full")])

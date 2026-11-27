@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from keys_testlib import EVENTS, FABLE, NEON, RESULTS, ROOT, TODAY, paper, result
-from test_keys_run import MODELS, ScriptedBackend, fixture_plan, run
+from test_keys_run import MODELS, ScriptedBackend, fixture_plan, refused, run
 from test_keys_run_judges import J1, UNDECIDED
 
 from cutoffmix.backends.base import BackendError
@@ -209,6 +209,38 @@ def test_a_torn_last_line_is_cut_with_a_warning(tmp_path, caplog):
     assert "skipping truncated last line 4 (interrupted append)" in caplog.text
 
 
+def test_a_torn_last_line_cut_inside_a_character_is_cut_too(tmp_path, caplog):
+    """Rows are written with ensure_ascii=False, so an append cut at an arbitrary byte can end inside a character: the
+    whole file then failed to decode, and run and report refused it (final review)."""
+    from cutoffmix.bench.keys.run import read_results
+
+    events, rows = fixture_plan()
+    out = tmp_path / "keys.jsonl"
+    run(ScriptedBackend(lambda m, req: "Ich weiß es nicht."), rows[:2], out, events)
+    torn = ('{"id": "' + rows[2]["id"] + '", "response": "Ich weiß').encode("utf-8")[:-1]   # ends inside "ß"
+    assert torn[-1:] == b"\xc3"
+    with out.open("ab") as f:
+        f.write(torn)
+    backend = ScriptedBackend()
+    with caplog.at_level(logging.WARNING):
+        run(backend, rows[:3], out, events)                                     # cut, with the warning, and resumed
+    assert _recipient_calls(backend) == [rows[2]["id"]] and len(read_jsonl(out)) == 3
+    assert f"{out}: cutting truncated last line 3 (interrupted append)" in caplog.text
+    caplog.clear()
+    with out.open("ab") as f:
+        f.write(torn)
+    with caplog.at_level(logging.WARNING):
+        assert [r["id"] for r in read_results(out)] == [r["id"] for r in rows[:3]]   # the report skips it
+    assert "skipping truncated last line 4 (interrupted append)" in caplog.text
+    # a bad byte inside a complete line is still no text file: refused, nothing cut or sent
+    bad = tmp_path / "bad.jsonl"
+    data = out.read_bytes()
+    bad.write_bytes(data[: data.rfind(b"\n") + 1].replace("weiß".encode(), b"wei\xff", 1))
+    with pytest.raises(UnicodeDecodeError):
+        read_results(bad)
+    refused(ScriptedBackend(), rows[:3], bad, events, "is not a text file")
+
+
 # ---- D: failed calls, an error no retry can fix, failed judge calls -----------------------------------------------
 
 
@@ -237,8 +269,9 @@ def _http(status: int, *, retryable: bool = False, retry_after: float | None = N
 
 
 @pytest.mark.parametrize("error, stops", [
-    (_http(401), True), (_http(402), True), (_http(403), True),                 # no key, no credits, no access
+    (_http(401), True), (_http(402), True),                                     # no key, no credits
     (_http(402, retryable=True, retry_after=5.0), False),                       # the gateway's temporary budget limit
+    (_http(403), False),                                                        # on the gateway, maybe one request's
     (_http(400), False), (_http(500, retryable=True), False), (RuntimeError("socket closed"), False),
 ])
 def test_an_error_no_retry_can_fix_stops_the_run_and_the_calls_in_flight_finish(tmp_path, error, stops):
@@ -311,9 +344,9 @@ def test_run_stops_after_an_error_no_retry_can_fix_and_exits_4(tmp_path, capsys,
     assert len(gateway.backend.calls) == 1 and len(read_jsonl(out)) == 1        # no call after the 401
     assert captured.out.splitlines()[1] == "  errors 1"
     assert captured.err.endswith("stopped after an error that no retry can fix (BackendError: [401] OpenRouter HTTP "
-                                 "401 for google/gemini-4-neon: No auth credentials found): 30 of 30 planned calls not "
-                                 "sent; fix its cause (the API key, the credits or the access to the model) and rerun "
-                                 "to send them\n")
+                                 "401 for google/gemini-4-neon: No auth credentials found): 1 of 30 planned calls "
+                                 "failed and 29 not sent; fix its cause (the API key or the credits) and rerun to "
+                                 "resume\n")
 
 
 def test_run_says_how_many_judge_calls_failed(tmp_path, capsys, gateway, fable_neon):
@@ -326,6 +359,167 @@ def test_run_says_how_many_judge_calls_failed(tmp_path, capsys, gateway, fable_n
     assert capsys.readouterr().err.endswith(f"\n{failed} judge calls failed (first error: RuntimeError: judge down); "
                                             "an answer they leave undecided stays undecided, and the next run with "
                                             "--judges asks again\n")
+
+
+def _completion(text: str) -> httpx.Response:
+    return httpx.Response(200, json={"id": "gen", "choices": [{"index": 0, "finish_reason": "stop", "message": {
+        "role": "assistant", "content": text}}], "usage": {"cost": 0.001}})
+
+
+@pytest.mark.parametrize("error_type", ["content_policy_violation", None])
+def test_one_moderation_403_fails_only_its_call(tmp_path, capsys, gateway, fable_neon, error_type):
+    """The real OpenRouterBackend over an httpx.MockTransport: the gateway's moderation flags one request (HTTP 403,
+    with or without error.metadata.error_type). A 403 stopped the run as an error no retry can fix, so every rerun
+    stopped again at that call and the pilot could not finish (final review); now it is that call's error row."""
+    plan = first_calls(tmp_path, fable_neon, 12)
+    rows = read_jsonl(plan)
+    flagged = json.dumps(rows[3]["messages"], sort_keys=True)
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.dumps(json.loads(request.content)["messages"], sort_keys=True)
+        sent.append(messages)
+        if messages != flagged:
+            return _completion("I don't know.")
+        meta = {"reasons": ["violence"], "flagged_input": "...", "provider_name": "Google",
+                "model_slug": "google/gemini-4-neon"}
+        if error_type:
+            meta["error_type"] = error_type
+        return httpx.Response(403, json={"error": {"code": 403, "message": "google/gemini-4-neon requires moderation "
+                                                   "on OpenRouter. Your input was flagged.", "metadata": meta}})
+    gateway.backend = OpenRouterBackend(api_key="test-key", retry_base_delay=0, max_retries=1,
+                                        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    out = tmp_path / "keys_results.jsonl"
+    assert _run(plan, out, "--concurrency", "1") == 4
+    stored = read_jsonl(out)
+    assert len(sent) == len(rows) == len(stored) and sent.count(flagged) == 1     # every call sent once
+    assert [r["id"] for r in stored if r["error"]] == [rows[3]["id"]]
+    err = capsys.readouterr().err
+    assert "stopped after" not in err
+    assert err.endswith("1 of 12 planned calls failed (first error: BackendError: [403"
+                        + (f" {error_type}" if error_type else "") + "] OpenRouter HTTP 403 for google/gemini-4-neon: "
+                        "google/gemini-4-neon requires moderation on OpenRouter. Your input was flagged.); rerun to "
+                        "send them again\n")
+
+
+@pytest.mark.parametrize("status", [401, 402])
+def test_an_error_no_retry_can_fix_on_a_judge_call_stops_the_regrades(tmp_path, capsys, gateway, fable_neon,
+                                                                       status):
+    """A re-grade run (the remedy the report prints for undecided rows) with a revoked key or no credits: the judge
+    calls' 401 or 402 was a missing vote, so the run sent every judge call, appended a still undecided row for each
+    and exited 0 (final review). Now it starts no new re-grade and exits 4."""
+    events, rows = fixture_plan()
+    out = tmp_path / "keys.jsonl"
+    run(ScriptedBackend(lambda m, req: UNDECIDED), rows, out, events)           # every answer left to the judges
+    message = "No auth credentials found" if status == 401 else "Insufficient credits"
+    failing = ScriptedBackend(lambda m, req: BackendError(f"OpenRouter HTTP {status} for judge/j1: {message}",
+                                                          status=status))
+    got = run(failing, rows, out, events, judges=[J1], concurrency=2)
+    assert got.stopped_by == "error" and f"[{status}]" in str(got.error)
+    assert got.regraded == 2 and got.not_regraded == len(rows) - 2 and _recipient_calls(failing) == []
+    assert len(read_jsonl(out)) == len(rows) + 2
+    # through the CLI: exit status 4, and the line names the error
+    plan = first_calls(tmp_path, fable_neon, 30)
+    results = tmp_path / "keys_results.jsonl"
+    gateway.backend = ScriptedBackend(lambda m, req: UNDECIDED)
+    assert _run(plan, results) == 0
+    gateway.backend = ScriptedBackend(lambda m, req: BackendError(
+        f"OpenRouter HTTP {status} for openai/gpt-6.2-sol: {message}", status=status) if req.metadata.get("purpose")
+        else UNDECIDED)
+    capsys.readouterr()
+    assert _run(plan, results, "--judges", "gpt-6.2-sol", "--concurrency", "3") == 4
+    err = capsys.readouterr().err
+    assert len(read_jsonl(results)) == 30 + 3 and _recipient_calls(gateway.backend) == []
+    assert (f"stopped after an error that no retry can fix (BackendError: [{status}] OpenRouter HTTP {status} for "
+            f"openai/gpt-6.2-sol: {message}): 0 of 30 planned calls not sent, 27 stored answers not graded again; fix "
+            "its cause (the API key or the credits) and rerun to resume\n") in err
+
+
+def test_a_judge_call_without_credits_stops_new_calls(tmp_path):
+    events, rows = fixture_plan()
+    backend = ScriptedBackend(lambda m, req: _http(402) if req.metadata.get("purpose") else UNDECIDED)
+    got = run(backend, rows, tmp_path / "keys.jsonl", events, judges=[J1], concurrency=1)
+    assert got.stopped_by == "error" and got.error == f"BackendError: {_http(402)}"
+    assert len(_recipient_calls(backend)) == 1 and got.sent == 1 and got.not_sent == len(rows) - 1
+
+
+def test_failed_calls_at_the_limit_exit_4_and_are_counted_apart(tmp_path, capsys, gateway, fable_neon):
+    """--limit returned 0 before it looked at the errors, and the stop line called the failed calls not sent (final
+    review): a dead gateway went unnoticed when the pilot is sent in chunks."""
+    plan = first_calls(tmp_path, fable_neon, 10)
+    out = tmp_path / "keys_results.jsonl"
+    gateway.backend = ScriptedBackend(lambda m, req: RuntimeError("upstream 503"))
+    assert _run(plan, out, "--limit", "3") == 4
+    assert capsys.readouterr().err.endswith(
+        "stopped at --limit 3: 3 of 10 planned calls failed and 7 not sent; rerun to send the next ones\n"
+        "3 of 10 planned calls failed (first error: RuntimeError: upstream 503); rerun to send them again\n")
+    gateway.backend = ScriptedBackend()
+    assert _run(plan, out, "--limit", "3") == 0                                 # the failed ones are sent first
+    assert _recipient_calls(gateway.backend) == [r["id"] for r in read_jsonl(plan)[:3]]
+    assert capsys.readouterr().err.endswith("stopped at --limit 3: 7 of 10 planned calls not sent; rerun to send the "
+                                            "next ones\n")
+
+
+def test_a_judge_call_retried_without_json_mode_is_no_failed_call(tmp_path, capsys, gateway, fable_neon):
+    """The grading asks a judge again without JSON mode after a 400: the first attempt is no missing vote (final
+    review: it was counted as a failed judge call although the retry voted)."""
+    events, rows = fixture_plan()
+    rows = [r for r in rows if r["set"] == "dark" and r["arm"] != "full"][:4]
+
+    def no_json_mode(model, req):
+        if req.metadata.get("purpose") != "judge":
+            return UNDECIDED
+        if req.response_format is not None:
+            return BackendError("OpenRouter HTTP 400 for judge/j1: response_format is not supported", status=400)
+        return '{"label": "abstain", "hedged": false}'
+    got = run(ScriptedBackend(no_json_mode), rows, tmp_path / "keys.jsonl", events, judges=[J1])
+    assert got.judge_failed == 0 and got.judge_error is None
+    for row in got.rows:
+        assert (row["grade"], row["grader"]) == ("abstain", "judge:j1")
+        first, second = row["judge_usage"]
+        assert first["retried"] is True and first["error"].startswith("BackendError: [400]") and "error" not in second
+    # a retry that fails too is one missing vote, not two
+    failing = ScriptedBackend(lambda m, req: UNDECIDED if req.metadata.get("purpose") != "judge" else BackendError(
+        "OpenRouter HTTP 400 for judge/j1: bad request", status=400))
+    got = run(failing, rows, tmp_path / "failing.jsonl", events, judges=[J1])
+    assert got.judge_failed == len(rows) and all(len(r["judge_usage"]) == 2 for r in got.rows)
+    # through the CLI: no "judge calls failed" line
+    gateway.backend = ScriptedBackend(no_json_mode)
+    capsys.readouterr()
+    assert _run(first_calls(tmp_path, fable_neon, 6), tmp_path / "keys_results.jsonl", "--judges", "gpt-6.2-sol") == 0
+    assert "judge calls failed" not in capsys.readouterr().err
+
+
+class _ErrorAndCap:
+    """Two calls in flight: the second answers at once and reaches the cap, the first then fails with a 401."""
+
+    def __init__(self):
+        self.calls, self.gate = [], asyncio.Event()
+
+    async def chat(self, model, req):
+        self.calls.append(req.metadata["item"])
+        if len(self.calls) == 1:
+            await self.gate.wait()
+            raise BackendError("OpenRouter HTTP 401 for x: No auth credentials found", status=401)
+        self.gate.set()
+        return ChatResult(text="I don't know.", usage={"cost": 1.0}, finish_reason="stop", latency_s=0.1)
+
+    def stream_continuation(self, model, req):  # pragma: no cover - not used here
+        raise NotImplementedError
+
+
+def test_an_error_no_retry_can_fix_and_the_cap_at_one_check_exit_4(tmp_path, capsys, gateway, fable_neon):
+    """Stops that meet at one check rank Ctrl-C, then the error, then the cap (design section 6): raising the cap
+    would only meet the error again."""
+    plan = first_calls(tmp_path, fable_neon, 10)
+    gateway.backend = _ErrorAndCap()
+    out = tmp_path / "keys_results.jsonl"
+    assert _run(plan, out, "--max-cost", "0.5", "--concurrency", "2") == 4
+    assert len(gateway.backend.calls) == 2 and len(read_jsonl(out)) == 2
+    assert capsys.readouterr().err.endswith(
+        "stopped after an error that no retry can fix (BackendError: [401] OpenRouter HTTP 401 for x: No auth "
+        "credentials found): 1 of 10 planned calls failed and 8 not sent; fix its cause (the API key or the credits) "
+        "and rerun to resume\n")
 
 
 # ---- E: a completion that failed inside an HTTP 200, a native refusal, an empty answer ----------------------------
@@ -434,6 +628,7 @@ def test_the_stop_event_lets_the_items_in_flight_finish_with_their_judges(tmp_pa
 CHILD = '''"""'bench keys run' against a slow scripted gateway, as a subprocess the test can interrupt."""
 import asyncio
 import json
+import os
 import signal
 import sys
 
@@ -441,32 +636,52 @@ signal.signal(signal.SIGINT, signal.default_int_handler)  # as in a terminal, al
 
 import cutoffmix.backends as backends
 from cutoffmix import cli
+from cutoffmix.bench.keys import run as keys_run
 from cutoffmix.types import ChatResult
 
 log, delay = sys.argv[1], float(sys.argv[2])
+answer = os.environ.get("ANSWER", "I don't know.")
+# COSTLY_FIRST=S: the first call answers at once and costs 1 USD, every later one takes S seconds and costs 0.001
+costly_first = os.environ.get("COSTLY_FIRST")
 
 
 class Slow:
+    calls = 0
+
     async def chat(self, model, req):
         with open(log, "a", encoding="utf-8") as f:  # every call, logged as it is sent
             f.write(json.dumps({"item": req.metadata.get("item"), "purpose": req.metadata.get("purpose")}) + "\\n")
-        await asyncio.sleep(delay)
-        return ChatResult(text="I don't know.", usage={"cost": 0.001}, finish_reason="stop", latency_s=delay)
+        Slow.calls += 1
+        wait, cost = delay, 0.001
+        if costly_first:
+            wait, cost = (0.05, 1.0) if Slow.calls == 1 else (float(costly_first), 0.001)
+        await asyncio.sleep(wait)
+        return ChatResult(text=answer, usage={"cost": cost}, finish_reason="stop", latency_s=wait)
 
     def stream_continuation(self, model, req):
         raise NotImplementedError
 
+
+if os.environ.get("SIGINT_BEFORE_FIRST_CALL"):  # Ctrl-C after the run's checks, right before its first call
+    checked = keys_run._check_writable
+
+    def check_then_interrupt(path):
+        checked(path)
+        os.kill(os.getpid(), signal.SIGINT)
+    keys_run._check_writable = check_then_interrupt
 
 backends.make_backend = lambda cfg, **kw: Slow()
 sys.exit(cli.main(sys.argv[3:]))
 '''
 
 
-def _child(tmp_path: Path, plan: Path, out: Path, log: Path, delay: float, *extra: str, **popen) -> subprocess.Popen:
+def _child(tmp_path: Path, plan: Path, out: Path, log: Path, delay: float, *extra: str,
+           env_extra: dict[str, str] | None = None, **popen) -> subprocess.Popen:
     script = tmp_path / "child.py"
     script.write_text(CHILD, encoding="utf-8")
     env = dict(os.environ, OPENROUTER_API_KEY="sk-test-not-used",
-               PYTHONPATH=os.pathsep.join([str(ROOT), *filter(None, [os.environ.get("PYTHONPATH")])]))
+               PYTHONPATH=os.pathsep.join([str(ROOT), *filter(None, [os.environ.get("PYTHONPATH")])]),
+               **(env_extra or {}))
     argv = ["bench", "keys", "run", "--plan", str(plan), "--events", str(EVENTS), "--out", str(out), "--max-cost", "5",
             *extra]
     return subprocess.Popen([sys.executable, str(script), str(log), str(delay), *argv], cwd=tmp_path, env=env,
@@ -525,6 +740,55 @@ def test_a_second_ctrl_c_aborts_at_once(tmp_path, fable_neon):
         assert proc.wait(timeout=20) == 130 and time.monotonic() - started < 20  # not after the 30 s calls
     assert err.read_text("utf-8").endswith("cutoffmix: interrupted\n")
     assert len(_logged(log)) == 2 and (not out.exists() or read_jsonl(out) == [])   # aborted: nothing written
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the first Ctrl-C is handled on POSIX only")
+def test_a_ctrl_c_before_the_first_call_starts_none(tmp_path, fable_neon):
+    """The child sends itself SIGINT right after the run's checks, before its first call. The handler ran on a later
+    turn of the loop, after --concurrency calls (or re-grades with their judge calls) had started and been paid
+    (final review); now it sets the stop at once."""
+    plan = first_calls(tmp_path, fable_neon, 10)
+    out, log = tmp_path / "keys_results.jsonl", tmp_path / "calls.jsonl"
+    proc = _child(tmp_path, plan, out, log, 0.5, env_extra={"SIGINT_BEFORE_FIRST_CALL": "1"}, stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE)
+    _, stderr = proc.communicate(timeout=60)
+    assert proc.returncode == 130, stderr
+    assert _logged(log) == [] and (not out.exists() or read_jsonl(out) == [])
+    assert "interrupted: no new calls are started" in stderr
+    assert stderr.endswith("interrupted: 10 of 10 planned calls not sent; rerun to resume\n")
+    # a resumed run with judges: the stored answers due for the judges are not graded again either
+    first = _child(tmp_path, plan, out, log, 0.0, env_extra={"ANSWER": UNDECIDED}, stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE)
+    assert first.wait(timeout=60) == 0 and len(read_jsonl(out)) == 10
+    log.unlink()
+    proc = _child(tmp_path, plan, out, log, 0.5, "--judges", "gpt-6.2-sol",
+                  env_extra={"SIGINT_BEFORE_FIRST_CALL": "1", "ANSWER": UNDECIDED}, stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE)
+    _, stderr = proc.communicate(timeout=60)
+    assert proc.returncode == 130, stderr
+    assert _logged(log) == [] and len(read_jsonl(out)) == 10                    # no judge call, no new row
+    assert stderr.endswith("interrupted: 0 of 10 planned calls not sent, 10 stored answers not graded again; rerun "
+                           "to resume\n")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the first Ctrl-C is handled on POSIX only")
+def test_a_ctrl_c_after_the_cap_keeps_exit_status_3(tmp_path, fable_neon):
+    """The cap stops the run first, then Ctrl-C arrives while a call is in flight: that call writes its row and the
+    run ends with the status of the cap, the stop that kept planned work from starting (design section 6)."""
+    plan = first_calls(tmp_path, fable_neon, 10)
+    out, log = tmp_path / "keys_results.jsonl", tmp_path / "calls.jsonl"
+    proc = _child(tmp_path, plan, out, log, 0.0, "--max-cost", "0.5", "--concurrency", "2",
+                  env_extra={"COSTLY_FIRST": "3.0"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _wait(lambda: len(_logged(log)) >= 2 and out.exists() and len(read_jsonl(out)) >= 1, proc)
+    assert proc.poll() is None
+    time.sleep(0.2)                                                            # the cap is checked once the first ends
+    os.kill(proc.pid, signal.SIGINT)
+    _, stderr = proc.communicate(timeout=60)
+    assert proc.returncode == 3, stderr
+    assert len(_logged(log)) == 2 and len(read_jsonl(out)) == 2                 # the call in flight wrote its row
+    assert "interrupted: no new calls are started" in stderr
+    assert stderr.endswith("stopped at --max-cost $0.5: 8 of 10 planned calls not sent; rerun with a higher "
+                           "--max-cost to resume\n")
 
 
 # ---- G: a wrong key is never the key itself -------------------------------------------------------------------------
