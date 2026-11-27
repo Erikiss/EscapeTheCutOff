@@ -51,6 +51,10 @@ from cutoffmix.bench.keys.plan import (
 
 # ---- run (run.py)
 from cutoffmix.bench.keys.run import (
+    RunOutcome,
+    RunStart,
+    judge_cost,
+    request_sha,
     run_plan,
 )
 
