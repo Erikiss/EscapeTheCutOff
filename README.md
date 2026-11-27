@@ -327,6 +327,25 @@ Das Preset ändert nur den Ablauf. Die Reihenfolge bestimmt der Ring, nicht der 
 Antwortmodell unter den Ring-Modellen und meldet Thema und Scores wie immer. Mit `rally.answer_from_ring: false`
 darf auch ein Modell außerhalb des Rings antworten. Nicht kombinierbar mit `--preset explore`.
 
+**Was passiert, wenn ein Partner ausfällt.** Kann das nächste Modell seinen Zug nicht machen (Fehler, Verweigerung, leere
+Notiz), schreibt das vorige Modell weiter. Diese Notiz ist eine **Selbstantwort**: Sie bekommt eine eigene Anweisung
+(„die Notiz davor ist deine eigene, bestätige dich nicht selbst“), zählt nie als ruhig, kann die Schaukel nicht
+beenden, und die Antwort erfährt, welche Notizen das waren. Ein Partner, der zweimal hintereinander mit einem Fehler
+ausfällt (bei einem nicht wiederholbaren Fehler sofort), ist für den Lauf raus; Verweigerungen zählen über
+`relay.disable_after_refusals` (Preset: 3). Die Schaukel endet dann mit `no_partner`, statt zum Selbstgespräch zu
+werden, und die Antwort wird aus den bisherigen Notizen geschrieben. Übersprungene Übergaben stehen in den Kennzahlen.
+
+**Fable bekommt die leichte Variante.** Im Explore-Modus hat Anthropics Eingangsfilter Fable bei Prompts mit vielen
+Labels gesperrt (siehe oben). Die Rally-Anweisung hat noch mehr Labels und ist live nicht geprüft, deshalb steht Fable
+im Preset unter `rally.light_schema_models`: der normale System-Prompt, eine Anweisung in Prosa ohne Label-Liste, das
+andere Modell wird nicht beim Namen genannt. Fables Notizen werden dann ohne Labels gelesen (ruhig ist eine Antwort ohne
+Labels, wenn ihr „Newest I know:“ nicht über dem bisherigen Stand liegt). Nach einem kurzen Live-Test (4–6 Aufrufe)
+lässt sich die Liste leeren, falls die volle Anweisung durchgeht.
+
+**Robust gegen Abschneiden und Wiederholung.** Eine Notiz wird aus dem vollständigen Text gelesen, bevor die
+Längengrenze greift; die Grenze liegt im Preset bei 1500 Zeichen, damit die letzte Zeile („Newest I know:“) selten
+verloren geht. Eine ruhige Notiz darf fast wortgleich mit der vorigen sein, ohne als Echo verworfen zu werden.
+
 **Kennzahlen** stehen in `done.rally` (CLI-Zusammenfassung und UI-Streifen „Rally“): Notizen und Stopp-Grund
 (`converged`, `max_turns`, `no_partner`, `max_segments`, `empty`, `error`), pro Notiz die Label-Zahlen und der
 angegebene neueste Monat, die **Frontier-Kurve** (laufendes Maximum dieser Monate) mit `gain_months` (wie weit sie über
@@ -345,6 +364,9 @@ und bestätigt hat.
   Das ist noch nicht gebaut und kostet echtes Geld, also nur mit Freigabe.
 - **Mit echten Modellen nicht gelaufen** (siehe „Ehrlicher Stand“). Die simulierten Modelle konvergieren, weil sie so
   gebaut sind. Das sagt nichts darüber, wie die echten schreiben.
+- **Geprüft:** ein unabhängiges Review mit Gegenprüfung fand 17 echte Probleme im Kern (u. a. Selbstbestätigung nach
+  einem Ausfall, verlorene letzte Zeile durch die Längengrenze, ein künftiger Monat, der als gültiges Jahr durchrutschte,
+  ein Regex, der bei langen Leerzeichenfolgen Sekunden brauchte). Alle sind behoben und mit Tests abgedeckt.
 
 ## Schlüssel statt Antwort: Plato's-Key-Experiment
 
