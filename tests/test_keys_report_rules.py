@@ -3,13 +3,15 @@ scenarios of the review of version 1 (V1 to V7, robust-2). The rows are built di
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from test_keys_report import Study, name
 
-from cutoffmix.bench.keys import fisher_exact, render_report, wilson
+from cutoffmix.bench.keys import build_report, fisher_exact, render_report, wilson
 
 SOL_NEON = ("neon", "sol")
+FABLE_NEON = ("fable", "neon")
 
 
 def verdicts_of(report: dict[str, Any]) -> dict[Any, str]:
@@ -68,7 +70,82 @@ def test_a_partial_adoption_run_is_interim():
     report = study.report()
     v = verdicts_of(report)
     assert v[3] == "interim (27 of 40 planned items answered)" and v[1] == "supported"
-    assert report["predictions"][3]["halves"]["3b"]["verdict"] == "interim (7 of 20 planned items answered)"
+    three = report["predictions"][3]
+    halves = three["halves"]
+    # each half on its own rows: 3a is complete and keeps its verdict; 3b (7 of 7 adopted) shows no verdict at all
+    interim = "interim (7 of 20 planned items answered)"
+    assert halves["3b"]["verdict"] == halves["3b"]["comparison"]["verdict"] == interim
+    assert halves["3a"]["verdict"] == halves["3a"]["comparison"]["verdict"] == "supported"
+    assert "n=7, b=7, c=0, p=0.01562 [Wilson upper bound of b/n 1.000] -> interim (7 of 20 planned items answered)" \
+        in three["evidence"]
+
+
+def all_verdicts(node: Any) -> list[str]:
+    """Every ``verdict`` in a part of a report: the predictions', their comparisons' and their halves'."""
+    if isinstance(node, dict):
+        return [v for k, v in node.items() if k == "verdict" and isinstance(v, str)] + \
+            [x for k, v in node.items() if k != "verdict" for x in all_verdicts(v)]
+    if isinstance(node, list):
+        return [x for v in node for x in all_verdicts(v)]
+    return []
+
+
+VERDICT_WORDS = ("supported", "refuted", "inconclusive", "confounded")
+
+
+def verdict_words(report: dict[str, Any]) -> list[str]:
+    """The verdict words in the JSON (the key of prediction 1's withheld confound, null, aside) and the Markdown."""
+    texts = (json.dumps(report).replace('"confounded": null', ""), render_report(report))
+    return [w for text in texts for w in VERDICT_WORDS if w in text]
+
+
+def test_an_interim_report_states_no_verdict_anywhere():
+    # 12 of 96 dark items answered, every one recovered; parts of the adoption and both_right sets: no "supported" in
+    # the parts either, in the JSON or the Markdown (no optional stopping: robust-2)
+    study = Study().dark(96, correct={"key": range(96)}).adoption(30, full="endorsed").both_right(20)
+    study.results = [r for r in study.results if int(r["event_id"][1:]) < {"dark": 12}.get(r["set"], 10)]
+    report = study.report()
+    assert {p["id"]: p["verdict"] for p in report["predictions"]} == {
+        1: "interim (12 of 96 planned items answered)", "1b": "interim (12 of 96 planned items answered)",
+        2: "interim (12 of 96 planned items answered)", 3: "interim (22 of 126 planned items answered)",
+        4: "interim (10 of 20 planned items answered)"}
+    parts = all_verdicts(report["predictions"])
+    assert len(parts) == 12 and all(v.startswith("interim (") for v in parts)
+    one = report["predictions"][0]
+    assert one["comparisons"]["key_vs_alone"]["verdict"] == one["verdict"] and one["confounded"] is None
+    assert "key vs alone n=12, b=12, c=0, p=0.0004883 [Wilson upper bound of b/n 1.000]" in one["evidence"]
+    assert verdict_words(report) == []
+
+
+def test_a_mixed_backend_report_states_no_verdict_anywhere():
+    study = Study().dark(40, correct={"key": range(20), "blank": range(20)})          # confounded, were it stated
+    study.adoption(30, full=lambda i: "endorsed" if i < 15 else "absent").both_right(20)
+    for row in study.results[: len(study.results) // 2]:
+        row["backend"] = "mock"
+    report = study.report()
+    mixed = "not testable (mixed backends: mock, openrouter)"
+    parts = all_verdicts(report["predictions"])
+    assert len(parts) == 12 and set(parts) == {mixed}
+    assert report["predictions"][0]["confounded"] is None
+    three = report["predictions"][3]
+    assert f"[Wilson upper bound of b/n 0.648] -> {mixed}; 3b" in three["evidence"]
+    assert verdict_words(report) == []
+
+
+def test_a_simulated_report_marks_every_verdict_and_its_parts():
+    study = Study().dark(40, correct={"key": range(20)})
+    study.adoption(30, full=lambda i: "endorsed" if i < 15 else "absent").both_right(20)
+    for row in study.results:
+        row["backend"] = "mock"
+    report = study.report()
+    parts = all_verdicts(report["predictions"])
+    assert len(parts) == 12 and all(v.startswith("simulated: ") for v in parts)
+    three = report["predictions"][3]
+    assert three["halves"]["3a"]["verdict"] == three["halves"]["3a"]["comparison"]["verdict"] == "simulated: supported"
+    assert "[simulated: supported; Wilson upper bound of b/n 0.648] -> simulated: supported; 3b" in three["evidence"]
+    assert "key vs alone n=40, b=20, c=0, p=1.907e-06 [simulated: supported; Wilson" in \
+        report["predictions"][0]["evidence"]
+    assert "gate: prediction 1 simulated: supported" in report["predictions"][2]["evidence"]
 
 
 def test_a_complete_plan_without_recoveries_is_not_supported():
@@ -83,8 +160,41 @@ def test_fewer_than_six_items_are_not_testable():
 
 
 def test_between_support_and_refutation_is_inconclusive():
-    v = verdicts_of(Study().dark(20, correct={"key": (0, 1, 2)}).report())    # b = 3: p = 0.25, upper bound 36 %
-    assert v[1] == v["1b"] == "inconclusive (20 items; about 51 would be needed for a gain of 0.10)"
+    # b = 3, c = 0: p = 0.25, upper bound 36 %; at that discordance (3 of 20) a gain of 0.10 needs about 71 items
+    report = Study().dark(20, correct={"key": (0, 1, 2)}).report()
+    v = verdicts_of(report)
+    assert v[1] == v["1b"] == "inconclusive (20 items; about 71 would be needed for a gain of 0.10)"
+    assert report["predictions"][0]["comparisons"]["key_vs_alone"]["items_needed"] == 71
+    # no discordant pair: the fewest items at which a gain of 0.10 can be significant at all
+    none_discordant = verdicts_of(Study().dark(20).report())[1]
+    assert none_discordant == "inconclusive (20 items; about 51 would be needed for a gain of 0.10)"
+
+
+def test_an_inconclusive_verdict_on_enough_items_says_so():
+    # the decisive pair's 71 items: key vs alone b = 8, c = 3 (p = 0.23, upper bound 21 %). A gain of 0.10 at this
+    # discordance needs 71 items, which were there: the data neither show nor rule it out (version 1 said "about 51
+    # would be needed", fewer than were used)
+    rest = range(60, 63)
+    report = Study().dark(71, correct={"key": range(8), "alone": rest, "wrong_key": rest, "blank": rest}).report()
+    one = report["predictions"][0]
+    ka = one["comparisons"]["key_vs_alone"]
+    assert (ka["n_items"], ka["b"], ka["c"], ka["items_needed"]) == (71, 8, 3, 71)
+    assert one["verdict"] == verdicts_of(report)["1b"] == \
+        "inconclusive (71 items; a gain of 0.10 is neither shown nor ruled out)"
+    # 3b on the plan's 53 adoption items: 8 adoptions under full against 3 under alone
+    three = keyed_dark(Study(), 116).adoption(53, full=lambda i: "endorsed" if i < 8 else "absent",
+                                              alone=lambda i: "endorsed" if i >= 50 else "absent").report()
+    assert three["predictions"][3]["halves"]["3b"]["verdict"] == \
+        "inconclusive (53 items; a gain of 0.20 is neither shown nor ruled out)"
+
+
+def test_a_key_that_hurts_is_not_supported():
+    # alone (and the controls) right on 20 of 40 dark items, the key on none: c = 20, p < 0.05, but b > c fails
+    report = Study().dark(40, correct={"alone": range(20), "wrong_key": range(20), "blank": range(20)}).report()
+    ka = report["predictions"][0]["comparisons"]["key_vs_alone"]
+    assert (ka["b"], ka["c"]) == (0, 20) and ka["p"] < 0.05
+    v = verdicts_of(report)
+    assert v[1] == v["1b"] == "not supported"
 
 
 def test_prediction_1_needs_both_comparisons():
@@ -139,6 +249,48 @@ def test_the_decisive_pair_counts_planned_dark_items_without_pointer():
     assert tie.report()["decisive_pair"] == "a->x"                             # then the first name
 
 
+def test_each_prediction_reads_its_preregistered_scope():
+    # two keyed pairs: fable->sol decides (40 dark items, 4 of them pointer items), fable->neon has 20; the key
+    # recovers half of the items on both
+    study = Study().dark(40, correct={"key": range(20)}, pointer=range(36, 40))
+    study.dark(20, pair=FABLE_NEON, prefix="n", correct={"key": range(10)})
+    report = study.report()
+    v = verdicts_of(report)
+    assert report["decisive_pair"] == name() and v[1] == v["1b"] == "supported"
+    half = report["predictions"][3]["halves"]["3a"]
+    assert half["verdict"] == "supported" and half["comparison"]["n_items"] == 60       # 3a pools the keyed pairs
+
+    def without(**match: str) -> dict[Any, str]:
+        kept = [r for r in study.results if any(r[k] != value for k, value in match.items())]
+        return verdicts_of(build_report(study.plan, kept))
+
+    # a row missing on the other pair: 1 and 1b (the decisive pair's dark set) keep their verdicts; 2 and 3a read the
+    # dark sets of every keyed pair
+    v = without(recipient="neon", event_id="n0", arm="alone")
+    assert v[1] == v["1b"] == "supported"
+    assert v[2] == v[3] == "interim (59 of 60 planned items answered)"
+    # a missing alone row of a pointer item of the decisive pair: 1 and 1b read its whole dark set, pointer included
+    v = without(recipient="sol", event_id="d36", arm="alone")
+    assert v[1] == v["1b"] == "interim (39 of 40 planned items answered)"
+
+
+def test_the_confound_is_read_on_the_items_without_pointer():
+    # the blank beats the wrong key on the 8 pointer items only (b = 8, p = 0.008 over all items)
+    report = Study().dark(40, correct={"key": range(20), "blank": range(32, 40)}, pointer=range(32, 40)).report()
+    every = report["paired"][name()]["all"]["blank_vs_wrong_key"]
+    assert (every["b"], every["c"]) == (8, 0) and every["p"] < 0.05
+    one = report["predictions"][0]
+    assert one["comparisons"]["blank_vs_wrong_key"]["b"] == 0
+    assert one["verdict"] == "supported" and one["confounded"] is False
+
+
+def test_3a_uses_the_margin_of_a_tenth():
+    # full beats key on 5 of 60 dark items: the Wilson upper bound of b/n (18 %) rules out a gain of 0.20, not of 0.10
+    half = Study().dark(60, correct={"full": range(5)}).report()["predictions"][3]["halves"]["3a"]
+    assert (half["comparison"]["b"], half["comparison"]["c"]) == (5, 0) and 0.10 < half["comparison"]["upper"] < 0.20
+    assert half["verdict"] == "inconclusive (60 items; a gain of 0.10 is neither shown nor ruled out)"
+
+
 def test_pointer_items_carrying_every_success_do_not_support_prediction_1():
     related = [{"event_id": "paper:other", "current_d": "correct", "mcq": "correct"}]
     study = Study().dark(40, correct={"key": range(8)}, pointer=range(8), related=related)
@@ -158,6 +310,27 @@ def test_pointer_items_carrying_every_success_do_not_support_prediction_1():
     assert "With the pointer items: 40 units" in render_report(report)
 
 
+def test_predictions_1_1b_and_2_print_the_pointer_items_on_their_own():
+    # design section 7: next to 1, 1b and 2, their numbers over all items and on the pointer items alone; here the 8
+    # pointer items carry every key success (B resolves A's pointer)
+    report = Study().dark(40, correct={"key": range(8)}, pointer=range(8), recognised=lambda i: i % 2 == 0).report()
+    one, one_b, two = report["predictions"][:3]
+    assert one["pointer_items"]["key_vs_alone"]["b"] == one["pointer_items"]["key_vs_wrong_key"]["b"] == 8
+    assert "pointer items (B resolves A's pointer; 8 items): key vs alone n=8, b=8, c=0" in one["evidence"]
+    pointed_b = one_b["pointer_items"]
+    assert pointed_b["items"] == 8 and (pointed_b["key_vs_blank"]["b"], pointed_b["key_vs_blank"]["c"]) == (8, 0)
+    assert (pointed_b["key"]["k"], pointed_b["blank"]["k"]) == (8, 0)
+    assert "pointer items (B resolves A's pointer; 8 items): key vs blank n=8, b=8, c=0" in one_b["evidence"]
+    assert one_b["all_items"]["key_vs_blank"]["b"] == 8 and one_b["comparisons"]["key_vs_blank"]["b"] == 0
+    pointed = report["units"]["pointer_items"]
+    assert pointed["units"] == two["pointer_items"]["units"] == 8 and "list" not in pointed
+    assert (pointed["groups"]["recognised"]["b"], pointed["groups"]["unrecognised"]["b"]) == (4, 4)
+    assert two["all_items"]["units"] == 40 and two["units"] == 32
+    assert "pointer items on their own (B resolves A's pointer): 8 units (recognised 4, unrecognised 4), key vs " \
+        "alone recognised b=4, c=0, unrecognised b=4, c=0" in two["evidence"]
+    assert "The pointer items on their own (B resolves A's pointer): 8 units" in render_report(report)
+
+
 # ---- prediction 1b and the confound (V4) ----------------------------------------------------------------------------
 
 
@@ -175,7 +348,7 @@ def test_prediction_1b_verdicts():
     v = verdicts_of(Study().dark(40, correct={"key": range(20)}).report())
     assert v[1] == v["1b"] == "supported"                   # blank never right: no confound, the content works
     v = verdicts_of(Study().dark(20, correct={"key": (0, 1), "blank": (5,)}).report())
-    assert v["1b"] == "inconclusive (20 items; about 51 would be needed for a gain of 0.10)"
+    assert v["1b"] == "inconclusive (20 items; about 71 would be needed for a gain of 0.10)"
     v = verdicts_of(Study().dark(5, correct={"key": range(5)}).report())
     assert v["1b"] == "not testable (n too small)"
 
@@ -218,10 +391,60 @@ def test_a_gain_concentrated_on_recognised_units_supports_prediction_2():
 
 
 def test_prediction_2_is_never_refuted_and_needs_ten_units_per_group():
-    v = verdicts_of(gain_study(4, 0, 2, 16).report())          # the gain sits on unrecognised units
+    # the gain sits on unrecognised units: (a) fails (recognised b = c = 0) and the statistic is negative
+    v = verdicts_of(gain_study(4, 0, 2, 16).report())
     assert v[1] == "supported" and v[2].startswith("inconclusive (stratified difference of d -0.400")
     v = verdicts_of(gain_study(4, 16, 2, 0, n_unrec=9).report())
     assert v[1] == "supported" and v[2] == "not testable (n too small)"
+
+
+def _two(report: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    two = report["predictions"][2]
+    return two, two["groups"]["recognised"], two["tests"]
+
+
+def test_prediction_2_needs_a_positive_statistic():
+    # (a) holds (recognised b = 12, c = 0) and both statistics are significant, but negative: the key gains more on
+    # unrecognised units (0.85 against 0.30)
+    n = 40
+    report = Study().dark(2 * n, correct={"alone": range(2), "key": set(range(14)) | set(range(n, n + 34))},
+                          recognised=lambda i: i < n).report()
+    two, rec, tests = _two(report)
+    assert verdicts_of(report)[1] == "supported" and (rec["b"], rec["c"]) == (12, 0) and rec["p"] < 0.05
+    assert tests["d"]["statistic"] < 0 and tests["d"]["p"] < 0.05
+    assert tests["d_w"]["statistic"] < 0 and tests["d_w"]["p"] < 0.05
+    assert two["verdict"] == "inconclusive (stratified difference of d -0.550, p=5e-05; of d_w -0.500, p=5e-05)"
+
+
+def test_prediction_2_needs_the_same_on_d_w():
+    # (a) and (b) hold, but against the wrong key the key gains 0.3 in both groups: an effect of any note is not
+    # recovery (V2, BETTER_FIX point 6)
+    n = 40
+    report = Study().dark(2 * n, correct={"alone": set(range(4)) | set(range(n, n + 14)),
+                                          "key": set(range(20)) | set(range(n, n + 14)),
+                                          "wrong_key": set(range(8)) | {n, n + 1}}, recognised=lambda i: i < n).report()
+    two, rec, tests = _two(report)
+    assert verdicts_of(report)[1] == "supported" and (rec["b"], rec["c"]) == (16, 0)
+    assert tests["d"]["difference"] == 0.4 and tests["d"]["p"] < 0.05
+    assert (rec["mean_d_w"], two["groups"]["unrecognised"]["mean_d_w"]) == (0.3, 0.3)
+    assert two["verdict"] == "inconclusive (stratified difference of d +0.400, p=5e-05; of d_w +0.000, p=1)"
+
+
+def test_prediction_2_needs_recognised_units_to_gain():
+    # two keyed pairs. fable->sol (decisive, 40 items) recovers 4 recognised and 4 unrecognised items: prediction 1
+    # holds (b = 8, c = 0) and its stratum adds nothing. On fable->neon (30) the key loses 12 unrecognised items that
+    # alone and the wrong key get right: (b) and (c) hold, but on recognised units the key gains on 5 only (p = 0.0625)
+    study = Study().dark(40, correct={"key": {0, 1, 2, 3, 20, 21, 22, 23}}, recognised=lambda i: i < 20)
+    study.dark(30, pair=FABLE_NEON, prefix="n", recognised=lambda i: i < 10,
+               correct={"key": {0}, "alone": range(10, 22), "wrong_key": range(10, 22)})
+    report = study.report()
+    two, rec, tests = _two(report)
+    assert report["decisive_pair"] == name() and verdicts_of(report)[1] == "supported"
+    unrec = two["groups"]["unrecognised"]
+    assert (rec["units"], unrec["units"], rec["b"], rec["c"], rec["p"]) == (30, 40, 5, 0, 0.0625)
+    for statistic in ("d", "d_w"):
+        assert tests[statistic]["statistic"] > 0 and tests[statistic]["p"] < 0.05
+    assert two["verdict"] == "inconclusive (stratified difference of d +0.280, p=0.01805; of d_w +0.280, p=0.01805)"
 
 
 def test_prediction_2_units_are_distinct_recipient_events():
@@ -263,6 +486,28 @@ def test_reported_speech_alone_cannot_support_3b():
         .report()["predictions"][3]
     assert three["halves"]["3b"]["undecided"] == {"undecided": 5, "full_rows": 40, "share": 0.125}
     assert three["verdict"] == "not supported"
+
+
+def test_3b_counts_adopted_not_the_rule_label():
+    # the judges decide reported speech (ENDORSE: adopted true), and a correct answer is never an adoption (V1)
+    judged = {"grade": "incorrect", "adoption": "reported", "adopted": True, "adoption_grader": "judge:j"}
+    three = keyed_dark(Study()).adoption(30, full=judged).report()["predictions"][3]
+    assert three["halves"]["3b"]["comparison"]["b"] == 30 and three["halves"]["3b"]["verdict"] == "supported"
+    named = {"grade": "correct", "adoption": "endorsed", "adopted": False, "adoption_grader": "rule"}
+    three = keyed_dark(Study()).adoption(30, full=named).report()["predictions"][3]
+    assert three["halves"]["3b"]["comparison"]["b"] == 0 and three["halves"]["3b"]["verdict"] == "not supported"
+
+
+def test_the_undecided_share_counts_answered_full_rows():
+    # 8 undecided of 35 answered full rows (5 refusals): 22.9 %, more than a fifth (of all 40 planned rows: 20 %)
+    def full(i: int) -> Any:
+        if i < 5:
+            return {"grade": "ungraded", "grader": "refusal"}
+        return "undecided" if i < 13 else "endorsed"
+
+    three = keyed_dark(Study()).adoption(40, full=full).report()["predictions"][3]
+    assert three["halves"]["3b"]["undecided"] == {"undecided": 8, "full_rows": 35, "share": 8 / 35}
+    assert three["halves"]["3b"]["verdict"] == "not testable (reported speech undecided; grade with --judges)"
 
 
 def test_more_than_a_fifth_of_the_full_rows_undecided_makes_3b_not_testable():

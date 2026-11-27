@@ -109,10 +109,12 @@ class Study:
 
     def adoption(self, n: int, *, pair: tuple[str, str] = PAIR, set_: str = "donor_wrong", prefix: str = "w",
                  full: Any = "absent", alone: Any = "absent") -> Study:
-        """``n`` adoption items; ``full`` and ``alone`` are an ADOPTION label or a function of the index."""
+        """``n`` adoption items; ``full`` and ``alone`` are an ADOPTION label, a dict of result fields, or a function
+        of the index giving one."""
         for i in range(n):
             labels = {arm: (f(i) if callable(f) else f) for arm, f in (("full", full), ("alone", alone))}
-            self.item(set_, f"{prefix}{i}", {arm: (None if lab is None else dict(ADOPTION[lab]))
+            self.item(set_, f"{prefix}{i}", {arm: (None if lab is None else dict(ADOPTION[lab] if isinstance(lab, str)
+                                                                                    else lab))
                                               for arm, lab in labels.items()}, pair=pair)
         return self
 
@@ -169,6 +171,27 @@ def test_items_needed_for_a_gain():
     for bad in (0, -0.1, 1.5):
         with pytest.raises(ValueError):
             items_needed(bad)
+
+
+def test_items_needed_at_the_observed_discordance():
+    # a gain of m among discordant pairs at the rate the data show: c = round(n (d - m) / 2), b = c + ceil(m n)
+    def counts(n: int, d: Fraction, m: Fraction = Fraction(1, 10)) -> tuple[int, int]:
+        c = math.floor(n * (max(d, m) - m) / 2 + Fraction(1, 2))
+        return c + math.ceil(m * n), c
+
+    d = Fraction(11, 71)                                  # b = 8, c = 3 on the decisive pair's 71 items
+    n = items_needed(0.10, discordance=d)
+    assert n == 71 and counts(71, d) == (10, 2) and mcnemar_exact(10, 2) < 0.05
+    assert all(mcnemar_exact(*counts(k, d)) >= 0.05 for k in range(1, n))
+    # no discordance, or less than the margin: the number without it (a gain of m disagrees on m n items at least)
+    assert items_needed(0.10, discordance=0) == items_needed(0.10, discordance=0.05) == items_needed(0.10) == 51
+    assert items_needed(0.20, discordance=Fraction(11, 53)) == items_needed(0.20) == 26
+    # more disagreement needs more items
+    needed = [items_needed(0.10, discordance=Fraction(k, 20)) for k in range(21)]
+    assert needed == sorted(needed) and needed[-1] == 391 and items_needed(0.10, discordance=0.25) == 111
+    for bad in (-0.1, 1.5):
+        with pytest.raises(ValueError):
+            items_needed(0.10, discordance=bad)
 
 
 def _exact_permutation_p(units):
@@ -337,6 +360,12 @@ def test_ungraded_counts_as_not_correct_refusals_are_left_out():
     for i, grade in enumerate(["ungraded"] + ["abstain"] * 9):
         tenth.item("dark", f"d{i}", {"key": grade})
     assert not tenth.report()["pairs"][name()]["dark"]["arms"]["key"]["ungraded_flag"]
+    # the share is of the answered rows: 1 of 5 answered (5 rows missing) is flagged, although it is 1 of 10 planned
+    half = Study()
+    for i, grade in enumerate(["ungraded"] + ["abstain"] * 4 + [None] * 5):
+        half.item("dark", f"d{i}", {"key": grade})
+    key = half.report()["pairs"][name()]["dark"]["arms"]["key"]
+    assert (key["planned"], key["answered"], key["ungraded"], key["ungraded_flag"]) == (10, 5, 1, True)
 
 
 def test_paired_comparisons_use_the_items_with_both_arms_answered():
@@ -401,22 +430,47 @@ def test_cost_is_summed_over_every_row_of_the_results_file():
     study = Study().dark(2, correct={"key": range(2)})
     for row in study.results:
         row["usage"] = {"cost": 0.01}
-    first = study.results[0]
-    study.results.append(dict(first, usage={"cost": 0.01}))                     # the same id sent twice
-    study.results.append(dict(first, usage=None, grade="correct",                # a re-grade: judges only
+    a, b, c, d, e = study.results[:5]
+    regrade = {"usage": None, "error": None, "grader": "judge:j"}  # run --judges: the stored answer, judges only
+    study.results.append(dict(a, **regrade, grade="correct",
                               judge_usage=[{"judge": "j", "purpose": "judge", "cost": 0.02, "usage": {"cost": 0.02}},
                                            {"cost": 0.03}]))                     # a bare usage mapping
-    study.results.append(dict(study.results[1], usage={"cost": 0, "is_byok": True,
-                                                       "cost_details": {"upstream_inference_cost": 0.04}}))
+    study.results.append(dict(b, usage={"cost": 0, "is_byok": True,                # the same request sent twice (BYOK)
+                                        "cost_details": {"upstream_inference_cost": 0.04}}))
+    study.results.insert(0, dict(c, usage={"cost": 0.05}, request_sha="1" * 40))  # an older answer to other settings
+    study.results.insert(0, dict(d, usage={"cost": 0.06}, prompt_sha="e" * 40,    # an older answer to other messages
+                                 request_sha="2" * 40))
+    e.update(error="grading failed: ValueError: boom", grade="ungraded", grader="none")  # paid, grading raised ...
+    study.results.append(dict(e, **regrade, grade="abstain", judge_usage=[{"cost": 0.01}]))  # ... graded again
+    study.results.append({"id": "not-planned", "usage": {"cost": 0.5}})
     report = study.report()
     cost = report["totals"]["cost"]
-    assert cost["all_rows"] == {"rows": 13, "recipients_usd": 0.15, "judges_usd": 0.05, "total_usd": 0.2}
-    assert report["totals"]["cost_usd"] == 0.2
-    # the joined rows are the last row per id: 8 rows at 0.01, the re-graded row (judges 0.05), the BYOK row (0.04)
-    assert cost["joined"] == {"rows": 10, "recipients_usd": 0.12, "judges_usd": 0.05, "total_usd": 0.17}
-    assert cost["foreign"]["total_usd"] == 0 and report["totals"]["superseded_rows"] == 3
+    assert cost["all_rows"] == {"rows": 16, "recipients_usd": 0.75, "judges_usd": 0.06, "total_usd": 0.81}
+    assert report["totals"]["cost_usd"] == 0.81 and report["totals"]["superseded_rows"] == 5
+    assert cost["foreign"] == {"rows": 1, "recipients_usd": 0.5, "judges_usd": 0.0, "total_usd": 0.5}
+    # the joined answers: per id every row of the request its last row answered. The re-graded answers keep the
+    # recipient call that gave them (on an older line, the failed grading's included); the answers to other settings
+    # or messages and the foreign row do not count
+    assert cost["joined"] == {"ids": 10, "rows": 13, "recipients_usd": 0.14, "judges_usd": 0.06, "total_usd": 0.2}
     md = render_report(report)
-    assert "recipients 0.1500 USD, judges 0.0500 USD, total 0.2000 USD" in md
+    assert "recipients 0.7500 USD, judges 0.0600 USD, total 0.8100 USD" in md
+    assert ("The joined answers, each with every row of the request it answered (the call, a failed grading, the "
+            "re-grades): 0.2000 USD (recipients 0.1400, judges 0.0600; 13 rows of 10 ids).") in md
+
+
+def test_the_joined_cost_keeps_the_recipient_calls_of_re_graded_answers():
+    # 50 answers at 0.01; run --judges grades 20 of them again (usage None, 0.002 of judges each): the 50 joined answers
+    # cost their 50 recipient calls and 20 judge calls, the whole file (the last row per id alone says 0.30 + 0.04)
+    study = Study().dark(10, correct={"key": range(5)})
+    for row in study.results:
+        row["usage"] = {"cost": 0.01}
+    for row in study.results[:20]:
+        study.results.append(dict(row, usage=None, grade="abstain", grader="judge:j",
+                                  judge_usage=[{"judge": "j", "purpose": "judge", "cost": 0.002,
+                                                "usage": {"cost": 0.002}}]))
+    cost = study.report()["totals"]["cost"]
+    assert cost["joined"] == {"ids": 50, "rows": 70, "recipients_usd": 0.5, "judges_usd": 0.04, "total_usd": 0.54}
+    assert cost["all_rows"]["total_usd"] == 0.54
 
 
 # ---- rendering ---------------------------------------------------------------------------------------------------

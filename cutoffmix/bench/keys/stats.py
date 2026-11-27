@@ -52,19 +52,35 @@ def fisher_exact(a: int, b: int, c: int, d: int) -> float:
     return min(1.0, sum(p for x in range(lo, hi + 1) if (p := prob(x)) <= observed * (1 + 1e-9)))
 
 
-def items_needed(margin: float, alpha: float = 0.05) -> int:
-    """The smallest number of paired items ``n`` at which a gain of ``margin`` can be significant: ``b = ceil(margin
-    n)`` discordant pairs for the first arm and none for the second give ``mcnemar_exact(b, 0) < alpha`` (design
-    section 7, the "inconclusive" verdict). 51 for a margin of 0.10, 26 for 0.20."""
+def items_needed(margin: float, alpha: float = 0.05, *, discordance: float | Fraction | None = None) -> int:
+    """The smallest number of paired items ``n`` at which a gain of ``margin`` would be significant (design section
+    7, the "inconclusive" verdict): ``c`` discordant pairs for the second arm and ``b = c + ceil(margin n)`` for the
+    first give ``mcnemar_exact(b, c) < alpha``.
+
+    - Without ``discordance``, ``c = 0``: the fewest items at which such a gain can be significant at all, 51 for a
+      margin of 0.10 and 26 for 0.20.
+    - With ``discordance`` (the share of items on which the two arms disagree, ``(b + c) / n`` of the data), ``c =
+      round(n (discordance - margin) / 2)`` (half up), so that ``b + c`` is about ``discordance n``: the items a gain
+      of ``margin`` needs at the observed disagreement. A discordance below the margin counts as the margin (a gain of
+      ``margin`` disagrees on ``margin n`` items at least), which gives the number without it."""
     if not 0 < margin <= 1:
         raise ValueError(f"margin must be in (0, 1], got {margin}")
     if not 0 < alpha < 1:
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
     exact = Fraction(str(margin))  # the decimal as written: ceil(0.1 * 60) is 6, not 7
+    if discordance is None:
+        rate = exact
+    else:
+        rate = Fraction(discordance) if isinstance(discordance, (int, Fraction)) else Fraction(str(discordance))
+        if not 0 <= rate <= 1:
+            raise ValueError(f"discordance must be in [0, 1], got {discordance}")
+    against = max(rate, exact) - exact  # the share of items the second arm wins, twice over
     n = 1
-    while mcnemar_exact(math.ceil(exact * n), 0) >= alpha:
+    while True:
+        c = math.floor(n * against / 2 + Fraction(1, 2))
+        if mcnemar_exact(c + math.ceil(exact * n), c) < alpha:
+            return n
         n += 1
-    return n
 
 
 def _strata(units: Iterable[tuple[Hashable, Any, Any]]) -> dict[Hashable, list[tuple[bool, Fraction]]]:

@@ -8,9 +8,13 @@ comparisons and the verdicts on the pre-registered predictions (docs/DESIGN_keys
 - Primary analysis: an answered row (no ``error``, grader not ``refusal``) counts, and ``ungraded`` counts as not
   correct. Refusals are left out and counted. The sensitivity line leaves the ungraded rows out as well.
 - Costs: over every row of the results file (each line, not only the last per id), the recipients (``usage``) and the
-  judges (``judge_usage``) apart.
+  judges (``judge_usage``) apart. The joined answers' cost counts, per joined id, every row of the request its last
+  row answered (the call, a failed grading, the re-grades of ``run --judges``, whose ``usage`` is None).
 - Backends: when every joined row comes from the mock, the report is SIMULATED and each verdict says so; when the
   joined rows come from more than one backend, it gives no verdicts.
+- Verdicts are stated by :class:`_Voice`: what holds for a prediction's verdict holds for its parts (the comparisons,
+  the halves of prediction 3). Interim and mixed-backend parts carry the interim or mixed text, and the evidence prints
+  their numbers without a verdict (no verdict on partial data: robust-2); simulated parts are prefixed as well.
 """
 
 from __future__ import annotations
@@ -173,6 +177,14 @@ def _judge_cost(row: Mapping[str, Any]) -> float:
     return total
 
 
+def _request(row: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    """The request a result row answered: its ``backend``, ``prompt_sha`` and ``request_sha``. ``run`` copies them
+    from the answer it grades again (a re-grade of ``run --judges`` or after a failed grading: ``usage`` None, the new
+    judges' calls only), so the answering call and its re-grades share them; a stale answer or one given to other
+    settings does not."""
+    return row.get("backend"), row.get("prompt_sha"), row.get("request_sha")
+
+
 def _cost(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     chosen = list(rows)
     recipients = sum(row_cost(r) for r in chosen)
@@ -237,20 +249,54 @@ def _compare(items: Iterable[_Item], first: str, second: str, success: Callable[
 def _three_way(comparison: Mapping[str, Any], margin: float) -> dict[str, Any]:
     """The verdict of design section 7 on "first beats second" with ``margin``: ``not testable (n too small)`` on fewer
     than 6 items, ``supported`` if b > c and p < 0.05, ``refuted`` if the 95 % Wilson upper bound of b / n is below the
-    margin (the paired gain (b - c) / n is at most b / n), else ``inconclusive`` with the items a gain of the margin
-    needs (:func:`items_needed`). The observed number of discordant pairs never decides testability."""
+    margin (the paired gain (b - c) / n is at most b / n), else ``inconclusive``. The observed number of discordant
+    pairs never decides testability.
+
+    ``items_needed``: the items a gain of the margin would need at the observed share of discordant pairs
+    (:func:`items_needed` with ``discordance = (b + c) / n``). An inconclusive verdict names it when it exceeds the
+    items at hand ("k items; about N would be needed for a gain of m"); when it does not, the items sufficed for such a
+    gain and the data show none: "k items; a gain of m is neither shown nor ruled out"."""
     n, b, c = int(comparison["n_items"]), int(comparison["b"]), int(comparison["c"])
     upper = wilson(b, n)[1]
+    needed = items_needed(margin, ALPHA, discordance=Fraction(b + c, n) if n else None)
     if n < FLOOR_ITEMS:
         verdict = NOT_TESTABLE_N
     elif b > c and mcnemar_exact(b, c) < ALPHA:
         verdict = "supported"
     elif upper < margin:
         verdict = "refuted"
+    elif needed > n:
+        verdict = f"inconclusive ({n} items; about {needed} would be needed for a gain of {margin:.2f})"
     else:
-        verdict = (f"inconclusive ({n} items; about {items_needed(margin, ALPHA)} would be needed for a gain of "
-                   f"{margin:.2f})")
-    return {**comparison, "margin": margin, "upper": round(upper, 4), "verdict": verdict}
+        verdict = f"inconclusive ({n} items; a gain of {margin:.2f} is neither shown nor ruled out)"
+    return {**comparison, "margin": margin, "upper": round(upper, 4), "items_needed": needed, "verdict": verdict}
+
+
+@dataclass(frozen=True)
+class _Voice:
+    """How the report states verdicts (design sections 6 and 7). ``withheld`` stands for every verdict when the joined
+    rows come from more than one backend (the report gives none); ``prefix`` is ``"simulated: "`` when every joined
+    row comes from the mock. A part of a prediction (a comparison, a half of prediction 3) whose planned rows are not
+    all answered carries the interim text instead of its verdict, and the evidence prints its numbers without one:
+    a verdict on partial data is not shown, "supported" included (robust-2)."""
+
+    withheld: str | None = None
+    prefix: str = ""
+
+    def verdict(self, raw: str, interim: str | None = None) -> str:
+        """The verdict as stated: the withheld text, else the interim text or ``raw``, with the prefix."""
+        return self.withheld or self.prefix + (interim or raw)
+
+    def label(self, raw: str, interim: str | None = None) -> str | None:
+        """The verdict printed next to a comparison's numbers in the evidence: None when withheld or interim."""
+        return None if self.withheld or interim else self.prefix + raw
+
+
+def _stated(entry: dict[str, Any], voice: _Voice, interim: str | None) -> str | None:
+    """Replace a :func:`_three_way` entry's ``verdict`` by the one :class:`_Voice` states; return its evidence label."""
+    raw = str(entry["verdict"])
+    entry["verdict"] = voice.verdict(raw, interim)
+    return voice.label(raw, interim)
 
 
 def _combine(verdicts: Sequence[str]) -> str:
@@ -358,15 +404,21 @@ def _group(units: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             **{arm: _rate(sum(1 for u in units if u[arm]), len(units)) for arm in ("alone", "key", "wrong_key")}}
 
 
+_UNIT_SCOPES: dict[str, Callable[[_Item], bool]] = {
+    "no_pointer": lambda item: not item.pointer, "all": lambda item: True, "pointer": lambda item: item.pointer}
+
+
 def _units(dark: Mapping[str, Sequence[_Item]], priority: Callable[[str], tuple[Any, ...]],
-           with_pointer: bool = False) -> dict[str, Any]:
+           scope: str = "no_pointer") -> dict[str, Any]:
     """The units of prediction 2 (design section 7, :data:`UNIT_RULE`) with d = [key correct] - [alone correct] and
-    d_w = [key correct] - [wrong_key correct] (ungraded is not correct), per group and per pair and group.
-    ``with_pointer``: the pointer items as well (the numbers over all items, printed next to the verdict)."""
+    d_w = [key correct] - [wrong_key correct] (ungraded is not correct), per group and per pair and group. ``scope``:
+    the items without pointer (the units the verdict reads), ``all`` items or the ``pointer`` items on their own (the
+    numbers printed next to the verdict)."""
+    keep = _UNIT_SCOPES[scope]
     candidates: dict[tuple[str, str], list[_Item]] = {}
     for items in dark.values():
         for item in items:
-            if (with_pointer or not item.pointer) and item.answered("alone", "key", "wrong_key"):
+            if keep(item) and item.answered("alone", "key", "wrong_key"):
                 candidates.setdefault((item.recipient, item.event_id), []).append(item)
     units: list[dict[str, Any]] = []
     for (recipient, event_id), items in candidates.items():
@@ -407,8 +459,10 @@ def _fmt_test(entry: Mapping[str, Any] | None) -> str:
     return f"n={entry['n_items']}, b={entry['b']}, c={entry['c']}, p={entry['p']:.4g}"
 
 
-def _fmt_verdict(entry: Mapping[str, Any]) -> str:
-    return f"{_fmt_test(entry)} [{entry['verdict']}; Wilson upper bound of b/n {entry['upper']:.3f}]"
+def _fmt_verdict(entry: Mapping[str, Any], label: str | None) -> str:
+    """A comparison's numbers with its verdict ``label`` (left out when None: see :class:`_Voice`)."""
+    bound = f"Wilson upper bound of b/n {entry['upper']:.3f}"
+    return f"{_fmt_test(entry)} [{label}; {bound}]" if label else f"{_fmt_test(entry)} [{bound}]"
 
 
 def _fmt_number(value: float | None, digits: int = 3, sign: bool = False) -> str:
@@ -437,8 +491,10 @@ class _Context:
         return [it for pair in chosen for it in self.items.get((pair, set_), [])]
 
 
-def _prediction_1(ctx: _Context) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Predictions 1 and 1b on the decisive pair's dark items without pointer (design section 7)."""
+def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Predictions 1 and 1b on the decisive pair's dark items without pointer (design section 7), with their numbers
+    over all items and on the pointer items on their own; also prediction 1's verdict before :class:`_Voice` states
+    it (the gate of prediction 2)."""
     pair = ctx.decisive
     every = ctx.of("dark", [pair] if pair else [])
     plain = [it for it in every if not it.pointer]
@@ -450,11 +506,14 @@ def _prediction_1(ctx: _Context) -> tuple[dict[str, Any], dict[str, Any]]:
     kb = _three_way(tests["key_vs_blank"], KEY_MARGIN)
     bw = tests["blank_vs_wrong_key"]
     confounded = bw["b"] > bw["c"] and mcnemar_exact(bw["b"], bw["c"]) < ALPHA
-    verdict = interim or _combine([ka["verdict"], kw["verdict"]])
-    if verdict == "supported" and confounded:
-        verdict = CONFOUNDED
-    verdict_b = interim or _combine([kb["verdict"]])
+    raw = _combine([ka["verdict"], kw["verdict"]])
+    if raw == "supported" and confounded:
+        raw = CONFOUNDED
+    raw_b = _combine([kb["verdict"]])
+    withheld = bool(voice.withheld or interim)  # no verdict, so no qualifier of one either
+    label_ka, label_kw, label_kb = (_stated(entry, voice, interim) for entry in (ka, kw, kb))
     all_tests = _dark_comparisons(every)
+    pointer_tests = _dark_comparisons(pointed)
     arms = _arms_table("dark", plain)
     pointer_arms = _arms_table("dark", pointed)
     if pair is None:
@@ -463,46 +522,72 @@ def _prediction_1(ctx: _Context) -> tuple[dict[str, Any], dict[str, Any]]:
         counts = ctx.planned_dark[pair]
         scope = (f"decisive pair {pair} ({counts['no_pointer']} planned dark items without pointer, "
                  f"{counts['all']} in all)")
-    evidence = (f"{scope}; without pointer: key vs alone {_fmt_verdict(ka)}; key vs wrong key {_fmt_verdict(kw)}; "
-                f"blank vs alone {_fmt_test(tests['blank_vs_alone'])} (the note's presence); blank vs wrong key "
-                f"{_fmt_test(bw)} (the harm of a mismatched cue{', significant: confounded' if confounded else ''}); "
-                f"correct: key {_fmt_rate(arms.get('key'))}, alone {_fmt_rate(arms.get('alone'))}, wrong key "
+    pointer_scope = f"pointer items (B resolves A's pointer; {len(pointed)} items)"
+    evidence = (f"{scope}; without pointer: key vs alone {_fmt_verdict(ka, label_ka)}; key vs wrong key "
+                f"{_fmt_verdict(kw, label_kw)}; blank vs alone {_fmt_test(tests['blank_vs_alone'])} (the note's "
+                f"presence); blank vs wrong key {_fmt_test(bw)} (the harm of a mismatched cue"
+                f"{', significant: confounded' if confounded and not withheld else ''}); correct: key "
+                f"{_fmt_rate(arms.get('key'))}, alone {_fmt_rate(arms.get('alone'))}, wrong key "
                 f"{_fmt_rate(arms.get('wrong_key'))}, blank {_fmt_rate(arms.get('blank'))}; all items: key vs alone "
                 f"{_fmt_test(all_tests['key_vs_alone'])}, key vs wrong key {_fmt_test(all_tests['key_vs_wrong_key'])}; "
-                f"pointer items (B resolves A's pointer): key {_fmt_rate(pointer_arms.get('key'))}, wrong key "
-                f"{_fmt_rate(pointer_arms.get('wrong_key'))}; expected: key 10-30 %, wrong key under 10 %")
-    evidence_b = (f"{scope}; without pointer: key vs blank {_fmt_verdict(kb)}; correct: key "
+                f"{pointer_scope}: key vs alone {_fmt_test(pointer_tests['key_vs_alone'])}, key vs wrong key "
+                f"{_fmt_test(pointer_tests['key_vs_wrong_key'])}, correct: key {_fmt_rate(pointer_arms.get('key'))}, "
+                f"alone {_fmt_rate(pointer_arms.get('alone'))}, wrong key {_fmt_rate(pointer_arms.get('wrong_key'))}; "
+                f"expected: key 10-30 %, wrong key under 10 %")
+    evidence_b = (f"{scope}; without pointer: key vs blank {_fmt_verdict(kb, label_kb)}; correct: key "
                   f"{_fmt_rate(arms.get('key'))}, blank {_fmt_rate(arms.get('blank'))}; all items: key vs blank "
-                  f"{_fmt_test(all_tests['key_vs_blank'])}")
+                  f"{_fmt_test(all_tests['key_vs_blank'])}; {pointer_scope}: key vs blank "
+                  f"{_fmt_test(pointer_tests['key_vs_blank'])}, correct: key {_fmt_rate(pointer_arms.get('key'))}, "
+                  f"blank {_fmt_rate(pointer_arms.get('blank'))}")
     one = {"id": 1, "text": "On dark items without pointer of the decisive pair, key beats alone and wrong_key "
                             "(paired exact McNemar, margin 0.10).",
-           "verdict": verdict, "evidence": evidence, "pair": pair, "items": len(plain),
+           "verdict": voice.verdict(raw, interim), "evidence": evidence, "pair": pair, "items": len(plain),
            "comparisons": {"key_vs_alone": ka, "key_vs_wrong_key": kw, "blank_vs_alone": tests["blank_vs_alone"],
                            "blank_vs_wrong_key": bw},
-           "confounded": confounded, "all_items": {k: all_tests[k] for k in ("key_vs_alone", "key_vs_wrong_key")},
-           "pointer_items": {"items": len(pointed), "key": pointer_arms.get("key"),
-                             "wrong_key": pointer_arms.get("wrong_key")}}
+           "confounded": None if withheld else confounded,
+           "all_items": {k: all_tests[k] for k in ("key_vs_alone", "key_vs_wrong_key")},
+           "pointer_items": {"items": len(pointed), "key_vs_alone": pointer_tests["key_vs_alone"],
+                             "key_vs_wrong_key": pointer_tests["key_vs_wrong_key"], "key": pointer_arms.get("key"),
+                             "alone": pointer_arms.get("alone"), "wrong_key": pointer_arms.get("wrong_key")}}
     one_b = {"id": "1b", "text": "key beats blank on the same items: the donor's content, not the presence of a "
                                  "note, does the work (margin 0.10).",
-             "verdict": verdict_b, "evidence": evidence_b, "pair": pair, "items": len(plain),
-             "comparisons": {"key_vs_blank": kb}, "all_items": {"key_vs_blank": all_tests["key_vs_blank"]}}
-    return one, one_b
+             "verdict": voice.verdict(raw_b, interim), "evidence": evidence_b, "pair": pair, "items": len(plain),
+             "comparisons": {"key_vs_blank": kb}, "all_items": {"key_vs_blank": all_tests["key_vs_blank"]},
+             "pointer_items": {"items": len(pointed), "key_vs_blank": pointer_tests["key_vs_blank"],
+                               "key": pointer_arms.get("key"), "blank": pointer_arms.get("blank")}}
+    return one, one_b, interim or raw
 
 
-def _prediction_2(ctx: _Context, units: dict[str, Any], gate: str, every: Mapping[str, Any]) -> dict[str, Any]:
+def _fmt_units(units: Mapping[str, Any]) -> str:
+    """Units of another scope, briefly: their count per group, key vs alone per group, the stratified differences."""
+    rec, unrec = units["groups"]["recognised"], units["groups"]["unrecognised"]
+    return (f"{units['units']} units (recognised {rec['units']}, unrecognised {unrec['units']}), key vs alone "
+            f"recognised b={rec['b']}, c={rec['c']}, unrecognised b={unrec['b']}, c={unrec['c']}, mean d recognised "
+            f"{_fmt_number(rec['mean_d'])}, unrecognised {_fmt_number(unrec['mean_d'])}, stratified difference of d "
+            f"{_fmt_number(units['d']['difference'], sign=True)}, of d_w "
+            f"{_fmt_number(units['d_w']['difference'], sign=True)}")
+
+
+def _brief(units: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: units[k] for k in ("units", "groups", "d", "d_w")}
+
+
+def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str, gate_stated: str,
+                  every: Mapping[str, Any], pointed: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 2 (design section 7): the key's gain over ``alone`` is larger on recognised units; gated on
-    prediction 1 and at least 10 units per group; supported or inconclusive, never refuted. ``every``: the units with
-    the pointer items, printed next to it."""
+    prediction 1 (``gate``: its verdict before :class:`_Voice`, ``gate_stated``: as stated) and at least 10 units per
+    group; supported or inconclusive, never refuted. ``every`` and ``pointed``: the units over all items and of the
+    pointer items on their own, printed next to it."""
     interim = _interim(*_completed(ctx.of("dark", ctx.keyed)))
     groups = units["groups"]
     rec, unrec = groups["recognised"], groups["unrecognised"]
     tested: dict[str, Any] = {}
     if interim:
-        verdict = interim
+        raw = interim
     elif not gate.startswith("supported"):
-        verdict = f"not testable (prediction 1 is {_verb(gate)})"
+        raw = f"not testable (prediction 1 is {_verb(gate)})"
     elif rec["units"] < MIN_UNITS or unrec["units"] < MIN_UNITS:
-        verdict = NOT_TESTABLE_N
+        raw = NOT_TESTABLE_N
     else:
         known = [u for u in units["list"] if u["recognised"] is not None]
         for name in ("d", "d_w"):
@@ -512,11 +597,11 @@ def _prediction_2(ctx: _Context, units: dict[str, Any], gate: str, every: Mappin
         a = rec["b"] > rec["c"] and mcnemar_exact(rec["b"], rec["c"]) < ALPHA
         gain_d, gain_dw = ((tested[n]["statistic"] > 0 and tested[n]["p"] < ALPHA) for n in ("d", "d_w"))
         if a and gain_d and gain_dw:
-            verdict = "supported"
+            raw = "supported"
         else:
-            verdict = (f"inconclusive (stratified difference of d {_fmt_number(tested['d']['difference'], sign=True)}"
-                       f", p={tested['d']['p']:.4g}; of d_w {_fmt_number(tested['d_w']['difference'], sign=True)}, "
-                       f"p={tested['d_w']['p']:.4g})")
+            raw = (f"inconclusive (stratified difference of d {_fmt_number(tested['d']['difference'], sign=True)}"
+                   f", p={tested['d']['p']:.4g}; of d_w {_fmt_number(tested['d_w']['difference'], sign=True)}, "
+                   f"p={tested['d_w']['p']:.4g})")
     d, dw = units["d"], units["d_w"]
     p_d = f", p={d['p']:.4g}" if "p" in d else ""
     p_dw = f", p={dw['p']:.4g}" if "p" in dw else ""
@@ -528,69 +613,66 @@ def _prediction_2(ctx: _Context, units: dict[str, Any], gate: str, every: Mappin
                 f"difference of d {_fmt_number(d['difference'], sign=True)}{p_d}; of d_w "
                 f"{_fmt_number(dw['difference'], sign=True)}{p_dw}; alone correct: recognised "
                 f"{_fmt_rate(rec['alone'])}, unrecognised {_fmt_rate(unrec['alone'])}; guess-corrected recognised "
-                f"share {_fmt_number(units['guess_corrected'])}; all items (pointer included): {every['units']} units, "
-                f"recognised key vs alone b={every['groups']['recognised']['b']}, "
-                f"c={every['groups']['recognised']['c']}, stratified difference of d "
-                f"{_fmt_number(every['d']['difference'], sign=True)}, of d_w "
-                f"{_fmt_number(every['d_w']['difference'], sign=True)}; gate: prediction 1 {_verb(gate)}")
+                f"share {_fmt_number(units['guess_corrected'])}; all items (pointer included): {_fmt_units(every)}; "
+                f"pointer items on their own (B resolves A's pointer): {_fmt_units(pointed)}; gate: prediction 1 "
+                f"{_verb(gate_stated)}")
     return {"id": 2, "text": "The key's gain over alone is larger on recognised than on unrecognised units (distinct "
                              "units, permutation test stratified by pair; gated on prediction 1).",
-            "verdict": verdict, "evidence": evidence, "units": units["units"],
-            "groups": {"recognised": rec, "unrecognised": unrec}, "tests": tested}
+            "verdict": voice.verdict(raw, interim), "evidence": evidence, "units": units["units"],
+            "groups": {"recognised": rec, "unrecognised": unrec}, "tests": tested,
+            "all_items": _brief(every), "pointer_items": _brief(pointed)}
 
 
-def _prediction_3(ctx: _Context, pooled: Mapping[str, Any]) -> dict[str, Any]:
+def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 3 (design section 7): 3a full vs key pooled over the keyed pairs' dark items (margin 0.10), 3b full
-    vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20)."""
+    vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20). Each half is interim
+    on its own rows; the prediction is interim when one half is (k and N summed over both)."""
     done_a, planned_a = _completed(ctx.of("dark", ctx.keyed))
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
     done_b, planned_b = _completed(adoption_items)
+    interim_a, interim_b = _interim(done_a, planned_a), _interim(done_b, planned_b)
     a = _three_way(pooled["full_vs_key"], KEY_MARGIN)
     b = _three_way(pooled["adoption_full_vs_alone"], ADOPTION_MARGIN)
     undecided = pooled["adoption_full_undecided"]
-    half_a = _interim(done_a, planned_a) or _combine([a["verdict"]])
-    interim_b = _interim(done_b, planned_b)
-    if interim_b:
-        half_b = interim_b
-    elif b["verdict"] == NOT_TESTABLE_N:
-        half_b = NOT_TESTABLE_N
+    raw_a = _combine([a["verdict"]])
+    if b["verdict"] == NOT_TESTABLE_N:
+        raw_b = NOT_TESTABLE_N
     elif _share_above(undecided["undecided"], undecided["full_rows"], UNDECIDED_LIMIT):
-        half_b = UNDECIDED_VERDICT
+        raw_b = UNDECIDED_VERDICT
     else:
-        half_b = _combine([b["verdict"]])
-    if half_a.startswith("interim") or half_b.startswith("interim"):
-        verdict = f"interim ({done_a + done_b} of {planned_a + planned_b} planned items answered)"
-    else:
-        verdict = _combine([half_a, half_b])
+        raw_b = _combine([b["verdict"]])
+    interim = (f"interim ({done_a + done_b} of {planned_a + planned_b} planned items answered)"
+               if interim_a or interim_b else None)
+    half_a, half_b = voice.verdict(raw_a, interim_a), voice.verdict(raw_b, interim_b)
+    label_a, label_b = _stated(a, voice, interim_a), _stated(b, voice, interim_b)
     share = undecided["share"]
-    evidence = (f"3a full vs key, the keyed pairs' dark items: {_fmt_verdict(a)} -> {half_a}; 3b adoption (adopted "
-                f"true) full vs alone, donor_wrong and control of every pair: {_fmt_verdict(b)} -> {half_b}; full "
-                f"rows undecided {undecided['undecided']} of {undecided['full_rows']}"
+    evidence = (f"3a full vs key, the keyed pairs' dark items: {_fmt_verdict(a, label_a)} -> {half_a}; 3b adoption "
+                f"(adopted true) full vs alone, donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> "
+                f"{half_b}; full rows undecided {undecided['undecided']} of {undecided['full_rows']}"
                 f" ({'n/a' if share is None else f'{100 * share:.1f} %'}, limit 20 %); adopted: full "
                 f"{_fmt_rate(pooled['adoption_arms'].get('full'))}, alone "
                 f"{_fmt_rate(pooled['adoption_arms'].get('alone'))}")
     return {"id": 3, "text": "full beats key on dark items (3a, margin 0.10), and full makes the recipient endorse a "
                              "wrong donor answer far more often than alone (3b, adopted true, margin 0.20).",
-            "verdict": verdict, "evidence": evidence,
+            "verdict": voice.verdict(_combine([raw_a, raw_b]), interim), "evidence": evidence,
             "halves": {"3a": {"verdict": half_a, "comparison": a, "answered": done_a, "planned": planned_a},
                        "3b": {"verdict": half_b, "comparison": b, "answered": done_b, "planned": planned_b,
                               "undecided": undecided}}}
 
 
-def _prediction_4(ctx: _Context, pooled: Mapping[str, Any]) -> dict[str, Any]:
+def _prediction_4(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 4 (design section 7): on both_right, the excess harm (b - c) / n of key over alone is under 10 %."""
     interim = _interim(*_completed(ctx.of("both_right")))
     harm = pooled["both_right"]
     paired = harm["key_vs_alone"]
     n, excess = paired["n_items"], paired["excess_harm"]
-    if interim:
-        verdict = interim
-    elif n < MIN_HARM_ITEMS:
-        verdict = NOT_TESTABLE_N
+    if n < MIN_HARM_ITEMS:
+        raw = NOT_TESTABLE_N
     elif Fraction(paired["b"] - paired["c"], n) < Fraction(str(HARM_LIMIT)):
-        verdict = "supported"
+        raw = "supported"
     else:
-        verdict = "not supported"
+        raw = "not supported"
+    verdict = voice.verdict(raw, interim)
     arms = harm["arms"]
     evidence = (f"both_right, all pairs: {n} items with alone and key answered; b (alone correct, key not)="
                 f"{paired['b']}, c (key correct, alone not)={paired['c']}, p={paired['p']:.4g}; excess harm "
@@ -614,15 +696,19 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     ``mixed_backends``, ``decisive_pair``, ``keyed_pairs``, ``planned_dark``, ``pairs`` (per pair, set and arm: the
     counts and the correct rate, primary and ``sensitivity``), ``paired`` (the dark comparisons per pair over ``all``
     items, ``no_pointer`` items and ``pointer`` items), ``pointer_items``, ``recognised`` (the dark items by
-    recognition, ``all`` and ``no_pointer``), ``units`` (prediction 2), ``adoption`` (per pair, set and arm, and full
-    vs alone), ``harm`` (both_right per pair), ``pooled`` (the comparisons of predictions 3 and 4), ``rules``,
-    ``flags`` and ``predictions`` (ids 1, "1b", 2, 3, 4, each with ``text``, ``verdict`` and ``evidence``)."""
+    recognition, ``all`` and ``no_pointer``), ``units`` (prediction 2; its numbers over ``all_items`` and on the
+    ``pointer_items`` on their own), ``adoption`` (per pair, set and arm, and full vs alone), ``harm`` (both_right per
+    pair), ``pooled`` (the comparisons of predictions 3 and 4), ``rules``, ``flags`` and ``predictions`` (ids 1, "1b",
+    2, 3, 4, each with ``text``, ``verdict`` and ``evidence``; 1, 1b and 2 also with ``all_items`` and
+    ``pointer_items``). Verdicts are stated as :class:`_Voice` says, in the predictions' parts as well."""
     planned: dict[str, Mapping[str, Any]] = {}
     for row in plan:
         planned[str(row.get("id"))] = row
     last: dict[str, Mapping[str, Any]] = {}
+    lines: dict[str, list[Mapping[str, Any]]] = {}  # every row per id, in file order
     for row in results:
         last[str(row.get("id"))] = row
+        lines.setdefault(str(row.get("id")), []).append(row)
 
     # the join: every planned id gets a row with its status
     rows: dict[str, _Row] = {}
@@ -639,6 +725,9 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     statuses = Counter(r.status for r in rows.values())
     foreign_rows = [r for r in results if str(r.get("id")) not in planned]
     every_cost = _cost(results)
+    # the joined answers' cost: per joined id, every row of the request its last row answered (design section 6)
+    answer_rows = [line for r in joined if r.result is not None for line in lines[str(r.plan.get("id"))]
+                   if _request(line) == _request(r.result)]
     backends = dict(sorted(Counter(str(r.get("backend")) for r in joined).items()))
     simulated = bool(backends) and set(backends) == {MOCK}
     mixed = len(backends) > 1
@@ -652,7 +741,7 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
         "by_recipient": dict(Counter(str(r.plan.get("recipient")) for r in joined)),
         "cost_usd": every_cost["total_usd"],
         "cost": {"all_rows": every_cost, "foreign": _cost(foreign_rows),
-                 "joined": _cost(r.result for r in joined if r.result is not None)},
+                 "joined": {"ids": len(joined), **_cost(answer_rows)}},
     }
 
     # the sets per pair
@@ -722,17 +811,16 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     }
     keyed_dark = {pair: by.get((pair, "dark"), []) for pair in keyed}
     units = _units(keyed_dark, priority)
-    units_every = _units(keyed_dark, priority, with_pointer=True)
+    units_every = _units(keyed_dark, priority, scope="all")
+    units_pointer = _units(keyed_dark, priority, scope="pointer")
     units["all_items"] = {k: v for k, v in units_every.items() if k != "list"}
+    units["pointer_items"] = {k: v for k, v in units_pointer.items() if k != "list"}
 
-    one, one_b = _prediction_1(ctx)
-    two = _prediction_2(ctx, units, one["verdict"], units_every)
-    predictions = [one, one_b, two, _prediction_3(ctx, pooled), _prediction_4(ctx, pooled)]
-    for entry in predictions:
-        if mixed:
-            entry["verdict"] = f"not testable (mixed backends: {', '.join(backends)})"
-        elif simulated:
-            entry["verdict"] = f"simulated: {entry['verdict']}"
+    voice = _Voice(withheld=f"not testable (mixed backends: {', '.join(backends)})" if mixed else None,
+                   prefix="simulated: " if simulated else "")
+    one, one_b, gate = _prediction_1(ctx, voice)
+    two = _prediction_2(ctx, voice, units, gate, one["verdict"], units_every, units_pointer)
+    predictions = [one, one_b, two, _prediction_3(ctx, voice, pooled), _prediction_4(ctx, voice, pooled)]
 
     report: dict[str, Any] = {
         "totals": totals, "backends": backends, "simulated": simulated, "mixed_backends": mixed,
@@ -827,9 +915,11 @@ def render_report(report: Mapping[str, Any]) -> str:
               f"Backends of the joined rows: {backends}.", "",
               f"Cost over every row of the results file: recipients {cost['all_rows']['recipients_usd']:.4f} USD, "
               f"judges {cost['all_rows']['judges_usd']:.4f} USD, total {cost['all_rows']['total_usd']:.4f} USD "
-              f"(of it, ids not in the plan: {cost['foreign']['total_usd']:.4f} USD). The joined rows: "
+              f"(of it, ids not in the plan: {cost['foreign']['total_usd']:.4f} USD). The joined answers, each with "
+              f"every row of the request it answered (the call, a failed grading, the re-grades): "
               f"{cost['joined']['total_usd']:.4f} USD (recipients {cost['joined']['recipients_usd']:.4f}, judges "
-              f"{cost['joined']['judges_usd']:.4f}).", ""]
+              f"{cost['joined']['judges_usd']:.4f}; {cost['joined']['rows']} rows of {cost['joined']['ids']} ids).",
+              ""]
     decisive = report.get("decisive_pair")
     if decisive:
         counts = report["planned_dark"][decisive]
@@ -913,7 +1003,8 @@ def render_report(report: Mapping[str, Any]) -> str:
                   + (f" (p={u['d_w']['p']:.4g})" if "p" in u["d_w"] else "")
                   + f"; {u['units']} units, unknown recognition {u['unknown']}. With the pointer items: "
                   f"{u['all_items']['units']} units, d {_fmt_number(u['all_items']['d']['difference'], sign=True)}, "
-                  f"d_w {_fmt_number(u['all_items']['d_w']['difference'], sign=True)}."]
+                  f"d_w {_fmt_number(u['all_items']['d_w']['difference'], sign=True)}. The pointer items on their own "
+                  f"(B resolves A's pointer): {_fmt_units(u['pointer_items'])}."]
 
     lines += ["", "## Adoption of the donor's wrong name", "",
               "adopted: the answer gives the name as its own (undecided counted as not adopted); reported: offered "
