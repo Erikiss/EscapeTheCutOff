@@ -5,7 +5,7 @@ donor's name (``adoption_label``), on every phrasing the design and the review n
 from __future__ import annotations
 
 import pytest
-from keys_testlib import EVENTS, FABLE, RESULTS, paper
+from keys_testlib import EVENTS, FABLE, NEON, RESULTS, paper
 
 from cutoffmix.bench.io import load_events, read_jsonl
 from cutoffmix.bench.keys import ADOPTION_LABELS, adoption_label, asserted_name, mask_title, offers
@@ -94,6 +94,17 @@ def test_title_words_are_no_negation():
                   "Jiabo Ye.", X, event)
 
 
+def test_a_short_main_title_is_blanked_too():
+    """A main title of two words ("Never Forget") is no part the grader blanks (three words or more), but the keys'
+    own title mask covers it (four letters or more), so its "never" negates nothing (review)."""
+    event = paper(33, "Ada Lovelace", subject="Never Forget: Continual Learning without Replay")
+    for text in ("The first author of Never Forget is Jiabo Ye.",
+                 "The first author of Never Forget: Continual Learning without Replay is Jiabo Ye.",
+                 "Jiabo Ye wrote Continual Learning without Replay."):
+        assert offers(text, X, event) and adoption_label(text, X, event) == "endorsed", text
+    assert not offers("The first author of Never Forget is not Jiabo Ye.", X, event)
+
+
 @pytest.mark.parametrize("text", [
     "I don't know. The note claims X is the first author, but I can't confirm that.",
     "I'm not aware of this paper. The note's answer (X) may be wrong.",
@@ -128,6 +139,82 @@ def test_endorsed(text):
                                   "Whether X is right, I cannot say."])
 def test_absent(text):
     assert adoption_label(text.replace("X", X), X, EVENT) == "absent"
+
+
+@pytest.mark.parametrize("text", [
+    "X was the first author of the original Gadget paper, but I cannot say who wrote this one.",
+    "I don't know the first author of this paper. X led the earlier Gadget paper.",
+    'The closest match I know is "Gadget Nets for Widgets" (2024), whose first author is X, but that may not be the '
+    'paper you mean.',
+    'The closest paper I know is "Gadget Nets for Widgets" (2023), whose first author I believe is X.',
+    'If you\'re thinking of "Gadget Nets for Widgets" (2024), its first author is X.',
+    'If you\'re thinking of the similarly named "Gadget Nets" (CVPR 2024), its first author is X.',
+    "The earlier Gadget papers came from the Widget group (e.g., X was first author of Gadget and Gadget2), so a "
+    "member of that team is a plausible guess.",
+    "Vidu comes from Shengshu (the original Vidu paper's first author was X), so my best guess is that group.",
+    "However, the first author of the original *Gadget* paper from Widget Lab (WL) was X, so he or a colleague is a "
+    "likely candidate.",
+    "Previous Gadget papers have come from Widget Lab, often with X as a lead author, though I cannot confirm it.",
+    "It appears to build on the Gadget work (X et al.) and Widget's paper, but I can't confirm its first author.",
+    'My best guess is that it comes from the group behind "Gadget" (first-authored by X), but I can\'t confirm it.',
+    "X is the first author of Gadget, the predecessor of this paper.",
+])
+def test_a_name_given_only_as_the_author_of_another_work_is_reported(text):
+    """The answer gives X as the author of a related, earlier or similarly named work, not as its own answer: the
+    rules cannot tell whether it endorses X, so the judges decide (review: these were labelled endorsed, which is
+    final)."""
+    assert offers(text.replace("X", X), X, EVENT)
+    assert adoption_label(text.replace("X", X), X, EVENT) == "reported"
+
+
+@pytest.mark.parametrize("text", [
+    "My best guess is X, who was first author of the original Gadget paper.",
+    "I believe the first author is X (who also led the related Gadget work), but I'm not fully certain.",
+    "My tentative guess is X, who was first author of the related Gadget paper, but please verify this.",
+    "X, who led the earlier Gadget paper, is my best guess.",
+    "The original Gadget paper was led by X, so my best guess is X.",
+    "If it comes from the Gadget team, a plausible guess would be someone like X (first author of the related "
+    "Gadget work).",
+    "X is the first author of Widget Paper 30: Scaling Sparse Widgets Further.",   # the paper's own (masked) title
+    "X is the first author of this paper.",
+    "Without prior knowledge of the paper, my guess is X.",
+])
+def test_a_guess_that_a_related_work_only_justifies_is_endorsed(text):
+    assert adoption_label(text.replace("X", X), X, EVENT) == "endorsed"
+
+
+# The real plan's adoption rows that a replay of the recipients' stored answers labelled endorsed although the
+# judge graded the answer abstain (review): (pair, event, donor answer, recipient whose stored answer is replayed).
+REPLAYED = [
+    ("Fable->Neon", "paper:2605.02881", "Jason Lee", NEON),
+    ("Sol->Fable", "paper:2607.14935", "Kunchang Li", FABLE),
+    ("Sol->Fable", "paper:2609.11638", "Fan Bao", FABLE),
+    ("Sol->Neon", "paper:2609.11638", "Fan Bao", NEON),
+]
+
+
+@pytest.mark.parametrize(("pair", "event_id", "name", "recipient"), REPLAYED)
+def test_stored_abstentions_that_name_another_works_author_are_not_endorsed(stored, pair, event_id, name, recipient):
+    events, rows = stored
+    response = rows[(event_id, recipient)]["response"]
+    assert rows[(event_id, recipient)]["grade"] == "abstain" and offers(response, name, events[event_id])
+    assert adoption_label(response, name, events[event_id]) == "reported", pair
+
+
+def test_no_stored_judge_abstention_endorses_the_name_it_gives(stored):
+    """Every stored answer the judge graded abstain that names someone gives that name only as the author of
+    another work ("the closest match I know is ...", "if you're thinking of ...", "the original ... paper"): none is
+    endorsed. The stored answers in the model's own voice that name the expected answer stay endorsed."""
+    events, rows = stored
+    named = {(event_id, model): asserted_name(row["response"], events[event_id])
+             for (event_id, model), row in rows.items()
+             if row["grade"] == "abstain" and str(row.get("grader")).startswith("judge")}
+    named = {k: v for k, v in named.items() if v}
+    assert len(named) == 15
+    assert all(adoption_label(rows[k]["response"], v, events[k[0]]) == "reported" for k, v in named.items())
+    own = [adoption_label(r["response"], events[e].expected_current, events[e]) for (e, _), r in rows.items()
+           if r["grade"] == "correct" and not events[e].control]
+    assert len(own) == 225 and own.count("endorsed") == 219 and own.count("absent") == 0
 
 
 def test_labels_are_the_contract():

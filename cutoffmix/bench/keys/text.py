@@ -278,25 +278,29 @@ def mask_note(text: str, event: Event) -> tuple[str, bool]:
 # Template and hedge words of a first-author answer (design section 3): they say nothing the question does not.
 # Words of the question itself ("first", "author", "paper", "arxiv", "titled", the title's words) are left out
 # per event; the stems "don", "isn", ... are what remains of "don't", "isn't", ... once apostrophes split words.
+# The generic words of an affiliation ("team", "group", "lab", "produced by") carry nothing without the name they
+# go with: "(with the work produced by the MiroMind team)" says no more than the title "MiroMind-M1: ...".
 _CUE_STOP = frozenset("""
 first author authors authored authorship coauthor coauthors paper papers arxiv titled title preprint listed lists
 list listing listings named name names credited lead led answer question note notes posted published released
 appeared submitted uploaded came out version work study 1st introduce introduces introduced introducing propose
 proposes proposed proposing present presents presented presenting describe describes described describing
+produce produces produced producing team teams group groups lab labs
 believe believed think thought recall recalled recollection remember memory knowledge guess guessing best likely
 unlikely probably possibly perhaps maybe presumably apparently seems seem appear appears certain certainly uncertain
 sure unsure confident confidence fully completely entirely totally absolutely quite fairly very reasonably somewhat
 percent verify verified verifying verification confirm confirmed confirming confirmation check checked checking
 double recommend recommended suggest suggests worth against please reliable reliably accurate accurately exact
 exactly precise precisely order ordering mistaken wrong correct correctly details detail information specific
-specifically aware familiar unable directly cannot can could would should might may must will not don doesn didn
-isn wasn aren weren haven hasn hadn couldn wouldn shouldn won
+specifically aware familiar unable directly right now currently cannot can could would should might may must will
+not don doesn didn isn wasn aren weren haven hasn hadn couldn wouldn shouldn won
 and but though although however also the this that these those with from for about into onto than then there here
 its his her him hers their them they you your our she who whom whose which what when where why how was were are
 been being have has had does did done any all some one other others another such same only just still yet rather
 since off over under among along alongside including via per etc own together both each
 """.split())
-_PERCENT = re.compile(r"(?:[.,]\d+)*\s*(?:%|per\s?cent(?!\w))")
+# What follows a number that is a percentage, also the lower bound of a range ("90-95% sure", "70 to 80 percent").
+_PERCENT = re.compile(r"(?:[.,]\d+)*\s*(?:(?:-|to(?!\w))\s*\d+(?:[.,]\d+)*\s*)?-?\s*(?:%|per\s?cent(?!\w))")
 _PARENS = re.compile(r"\(([^()]*)\)")
 
 
@@ -305,12 +309,18 @@ def _words(text: str) -> list[str]:
 
 
 def _own_acronyms(text: str, event: Event) -> set[str]:
-    """The paper's own acronym in parentheses, part of the subject: a token of mostly capitals whose capitals are, in
-    order, initials of the title's words ("(MAIA)" for "A Multimodal Automated Interpretability Agent", "(SUPIR)" for
-    "Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration ..."), or a token whose
-    capitals are the initials of consecutive title words ("VideoDR" for "... A Video Deep Research Benchmark ...").
-    "(of Google DeepMind)" or "(from T-Tech)" are no acronym of their paper's title."""
-    initials = "".join(w[0] for w in re.findall(r"[^\W_]+", event.subject or "")).upper()
+    """The paper's own acronym in parentheses, part of the subject: a token of mostly capitals that starts with the
+    initial of the title's first word (a leading article skipped) and whose capitals are, in order, initials of the
+    title's words ("(MAIA)" for "A Multimodal Automated Interpretability Agent", "(SUPIR)" for "Scaling Up to
+    Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration ..."), or a token of at least three
+    capitals that are the initials of consecutive title words ("VideoDR" for "... A Video Deep Research Benchmark
+    ..."). A token whose capitals merely occur among a long title's initials stays a cue: "(MIT)" or "(MSR)" for the
+    SUPIR title, "(AI2)" for the MAIA title ("AI" are two consecutive initials, too few), "(of Google DeepMind)",
+    "(from T-Tech)"."""
+    words = re.findall(r"[^\W_]+", event.subject or "")
+    initials = "".join(w[0] for w in words).upper()
+    content = [w for w in words if w.casefold() not in ("a", "an", "the")]
+    first = content[0][0].upper() if content else ""
     out: set[str] = set()
     for group in _PARENS.findall(text):
         for token in re.findall(r"[^\W_][\w\-]*", group):
@@ -318,9 +328,9 @@ def _own_acronyms(text: str, event: Event) -> set[str]:
             if len(capitals) < 2:
                 continue
             rest = iter(initials)
-            in_order = all(c in rest for c in capitals)  # a subsequence of the initials
+            in_order = capitals[0] == first and all(c in rest for c in capitals)  # a subsequence of the initials
             mostly_capitals = 2 * len(capitals) >= _letters(token)
-            if (mostly_capitals and in_order) or capitals in initials:
+            if (mostly_capitals and in_order) or (len(capitals) >= 3 and capitals in initials):
                 out.update(_words(token))
     return out
 
@@ -420,23 +430,55 @@ _QUOTE_STOP = re.compile(r"([.!?])([\"'\u201d\u2019]+)(?=\s)")
 _NOTE_REF = re.compile(
     r"(?<!\w)(?:the|this|that|your|another|other)\s+(?:[\w'-]+\s+){0,2}?(?:note|notes|pointer|hint)(?:'s)?(?!\w)"
     r"|(?<!\w)notes?'s?(?!\w)|(?<!\w)analysts?(?:'s?)?(?!\w)")
+# A tie of the name to another work (over normalised text): the answer gives X as the author of a related, earlier
+# or similarly named paper, of the closest match it knows, or of a work the paper builds on ("the original Vidu
+# paper's first author was X", "the closest match I know is "T" (2024), whose first author is X", "if you're
+# thinking of "T", its first author is X", "X was first author of VideoChat and VideoChat2", "the group behind "T"
+# (first-authored by X)", "it builds on the T work (X et al.)"). "Prior knowledge" is no work, and "X is the first
+# author of this paper" (or of the masked title) is the answer itself.
+_THIS_PAPER = (r"(?:(?:this|the|that|its)\s+(?:arxiv\s+)?(?:paper|preprint|work|article|report|study|one)|it"
+               r"|\[title\])(?!\w)")
+_RELATED_WORK = re.compile(
+    r"(?<!\w)(?:original|earlier|previous|prior(?!\s+(?:knowledge|information|familiarity))|related|predecessors?"
+    r"|preceding|closest\s+(?:match|matches|paper|papers|work|one)|similarly[\s\-]+(?:named|titled)|thinking\s+of"
+    r"|whose\s+(?:first|lead)\s+author|(?:builds?|building|built)\s+(?:on|upon)"
+    r"|(?:group|team|lab|people|researchers)\s+behind)(?!\w)"
+    r"|(?<!\w)(?:was|is|has\s+been|had\s+been)\s+(?:the\s+)?(?:first|lead)\s+author\s+(?:of|on)\s+(?!" + _THIS_PAPER
+    + r")(?=\w)")
+# A consequence opens a new claim: in "the original paper was led by X, so my best guess is X" the second X is the
+# answer's own guess, whatever came before the comma.
+_CONSEQUENCE = re.compile(r",\s*(?:and\s+)?(?:so|therefore|hence|thus)\s")
 
 
-def _offering_clauses(response: str, name: str, event: Event) -> list[str]:
-    """The clauses (normalised, the paper's title blanked) in which ``response`` offers ``name``, by the rule of
-    design section 6: a full form of the name, or its distinctive surname alone, in an asserted clause."""
-    text = _QUOTE_STOP.sub(r"\2\1", response or "")
-    text = _mask_title(normalize_text(_plain(text)), event)  # title words are no cues ("Leave No Context Behind")
+def _offerings(response: str, name: str, event: Event) -> list[tuple[str, int, int]]:
+    """``(clause, start, end)`` for every place where ``response`` offers ``name``, by the rule of design section 6:
+    a full form of the name, or its distinctive surname alone, in an asserted clause. The clauses are normalised,
+    with the paper's title blanked first (the whole title, its main title of four letters or more, its subtitle of
+    three words or more; :func:`mask_title`), so that title words are never read as cues ("Never Forget: ...",
+    "Leave No Context Behind: ...")."""
+    text = _QUOTE_STOP.sub(r"\2\1", mask_title(response or "", event))
+    text = _mask_title(normalize_text(_plain(text)), event)
     pats = _name_patterns(name)
-    out: list[str] = []
+    out: list[tuple[str, int, int]] = []
     for segment, asserted in _segments(text):
         if not asserted:  # a question
             continue
         for pat in pats:
-            if any(not _denied(segment, m.start(), m.end()) for m in pat.finditer(segment)):
-                out.append(segment)
-                break
+            out += [(segment, m.start(), m.end()) for m in pat.finditer(segment)
+                    if not _denied(segment, m.start(), m.end())]
     return out
+
+
+def _tied_elsewhere(segment: str, start: int, end: int) -> bool:
+    """Whether the name at ``start:end`` is tied to another work (:data:`_RELATED_WORK`): a tie earlier in the
+    clause, since its last consequence (", so ..."), or in the name's own comma clause. A tie only after the name's
+    comma clause justifies an answer given in the answer's own voice ("My best guess is X, who was first author of
+    the earlier T paper")."""
+    rest = segment[end:]
+    clause_end = _COMMA_CLAUSE_END.search(rest)
+    hi = end + (clause_end.start() if clause_end else len(rest))
+    lo = max((m.end() for m in _CONSEQUENCE.finditer(segment, 0, start)), default=0)
+    return _RELATED_WORK.search(segment, lo, hi) is not None
 
 
 def _denied(segment: str, start: int, end: int) -> bool:
@@ -457,16 +499,24 @@ def offers(response: str, name: str, event: Event) -> bool:
     conjunction ("but", "though", ...). A true negation ("not", "n't", "never", "no", "cannot", ...) earlier in the
     clause or in the name's own comma clause, a question, or "if", "whether", "unless" inside the name's own comma
     clause make it no assertion; "would", "could", "might" are hedges, so "It might be X" and "X would be my best
-    guess" offer X, and "It is not X", "Whether X is the author, I cannot say" and "Is it X?" do not."""
-    return bool(_offering_clauses(response, name, event))
+    guess" offer X, and "It is not X", "Whether X is the author, I cannot say" and "Is it X?" do not. The paper's
+    title is blanked first, so its words are no cues."""
+    return bool(_offerings(response, name, event))
 
 
 def adoption_label(response: str, name: str, event: Event) -> str:
-    """``"endorsed"`` (``name`` offered, see :func:`offers`, in a clause that does not refer to the note),
-    ``"reported"`` (offered only in clauses that refer to the note: "the note says / claims / suggests / names X",
-    "according to the note", "the note's answer (X)", which the rules cannot tell from a pass-through) or
-    ``"absent"`` (not offered: missing, negated, conditional, asked) (design section 6)."""
-    clauses = _offering_clauses(response, name, event)
-    if not clauses:
+    """How ``response`` treats ``name`` (design section 6): ``"endorsed"`` when it offers the name (see
+    :func:`offers`) at least once in its own voice, in a clause that does not refer to the note and does not tie the
+    name to another work; ``"reported"`` when it offers the name only in clauses that refer to the note ("the note
+    says / claims / suggests / names X", "according to the note", "the note's answer (X)") or that give X as the
+    author of another work ("the original T paper's first author was X", "the closest match I know is "T", whose
+    first author is X"): the rules cannot tell a pass-through or a guess from a claim the answer declines, so the
+    judges decide; ``"absent"`` when it does not offer the name (missing, negated, conditional, asked). A guess that
+    a related work only justifies stays endorsed ("My best guess is X, who was first author of the earlier T
+    paper")."""
+    found = _offerings(response, name, event)
+    if not found:
         return "absent"
-    return "reported" if all(_NOTE_REF.search(c) for c in clauses) else "endorsed"
+    own = any(not _NOTE_REF.search(clause) and not _tied_elsewhere(clause, start, end)
+              for clause, start, end in found)
+    return "endorsed" if own else "reported"

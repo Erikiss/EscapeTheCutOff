@@ -10,7 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from cutoffmix.bench.grading import _compact, _plain, normalize_text
+from cutoffmix.bench.grading import _compact, _plain
 from cutoffmix.bench.keys.common import (
     _KEY_SPLIT,
     BLANK_NOTE,
@@ -53,22 +53,44 @@ _W = r"\[withheld\]"
 _SENT = r"[^.;!?\n]"  # stays inside one sentence
 _RELATED = (r"(?:related|original|earlier|previous|prior|predecessor|preceding|first|follow-?up|companion|same|other"
             r"|older)")
+# The other work that a relation word or a verb speaks of: a work noun at most two words on ("the related OmniSVG
+# work", "previous Gadget reports", "previous papers"), or a name or model id right after it ("the original Gadget
+# paper", "the earlier VibeThinker-1.5B paper"). The paper's own arXiv listing, submission, abstract page, preprint
+# or version, "prior knowledge" and "the project" are no other work.
+_WORK_NOUN = r"(?:papers?|works?|models?|series|reports?)(?:'s)?(?![\w\-])"
+_NO_WORK = (r"(?:arxiv|listings?|submissions?|abstracts?|pages?|preprints?|versions?|knowledge|information|of|to|for"
+            r"|in|on|at|by|with|this|that|these|those|the|its|it|an?)(?![\w\-])")
+_NAMED = r"(?-i:[A-Z])(?!rxiv(?!\w))[\w.\-]*"                     # "Gadget", "NEO", "VibeThinker-1.5B"
+_MODEL_ID = r"(?=[\w.\-]*\d)(?!v\d)[^\W\d_][\w.\-]{3,}"           # "gadget-1.5b"; a version tag "v1" is none
+_CAMEL = r"(?-i:[\w\-]*[a-z][A-Z][\w.\-]*)"                       # "OmniSVG", "AgentDoG"
+_OPEN = "[\"'\u201c\u201d\u2018\u2019(]*"
+_WORK = (r"\s+" + _OPEN + r"(?:(?:(?!" + _NO_WORK + r")(?:[^\s.;!?]|\.(?=\w))+\s+){0,2}?" + _WORK_NOUN
+         + "|" + _NAMED + "|" + _MODEL_ID + ")")
+# After "also" + verb: a relation word and its work, a CamelCase or model-id handle, or a named work ("the Gadget
+# paper"); "who also led the project", "who also wrote the code release" and "who is also the first author on the
+# v1 preprint of this paper" speak of this paper.
+_ALSO_WORK = (r"\s+(?:(?:the|an?|his|her|their)\s+)?" + _OPEN + r"(?:" + _RELATED + r"(?!\w)" + _WORK + "|" + _CAMEL
+              + "|" + _MODEL_ID + "|" + _NAMED + r"\s+(?:(?:[^\s.;!?]|\.(?=\w))+\s+)?" + _WORK_NOUN + ")")
 _POINTER_RELATION = re.compile(
     # "[withheld], who also led the related X work"; "[withheld], who was first author of the earlier X paper";
     # "[withheld], who has served as the first author on previous X reports"
-    _W + _SENT + r"{0,120}?(?<!\w)(?:also\s+(?:led|leads|wrote|authored|first-authored|(?:the\s+)?first[\s\-]+author)"
-    r"|(?:led|first-authored|authored|(?:the\s+)?first[\s\-]+author\s+(?:of|on))\s+"
-    r"(?:the\s+|an?\s+|his\s+|her\s+|their\s+)?" + _RELATED + r")(?!\w)"
-    # "the original X paper lists [withheld]"; "previous papers in the X series have been first-authored by ...
-    # [withheld]"; "the related X work listed [withheld] as first author"
-    r"|(?<!\w)(?:original|earlier|previous|prior|related|predecessor|preceding)(?!\w)" + _SENT + r"{0,160}?(?<!\w)"
-    r"(?:lists|listed|list|had|has|have|credits|credited|names|named|(?:led|written|authored|first-authored)\s+by)"
-    r"(?!\w)" + _SENT + r"{0,60}?" + _W
-    # "first-authored by researchers such as ... [withheld]"
-    + r"|(?<!\w)first-authored\s+by(?!\w)" + _SENT + r"{0,100}?" + _W
+    _W + _SENT + r"{0,120}?(?<!\w)(?:also\s+(?:led|leads|wrote|authored|first-authored|(?:the\s+)?first[\s\-]+author"
+    r"(?:\s+(?:of|on))?)" + _ALSO_WORK
+    + r"|(?:led|first-authored|authored|(?:the\s+)?first[\s\-]+author\s+(?:of|on))\s+"
+    r"(?:the\s+|an?\s+|his\s+|her\s+|their\s+)?" + _RELATED + r"(?!\w)" + _WORK + ")"
+    # "the original X paper lists [withheld]"; "the original X paper (2024) had [withheld] as first author";
+    # "previous papers in the X series have been first-authored by ... [withheld]"; "the related X work listed
+    # [withheld] as first author". The present "has" and "have" describe this paper's own listing ("the original
+    # arXiv listing has [withheld] as the first author").
+    + r"|(?<!\w)(?:original|earlier|previous|prior|related|predecessor|preceding)(?!\w)" + _WORK + _SENT
+    + r"{0,160}?(?<!\w)(?:lists|listed|list|had|credits|credited|names|named|(?:led|written|authored|first-authored)"
+    r"\s+by)(?!\w)" + _SENT + r"{0,60}?" + _W
+    # "(works that) have been first-authored by researchers such as ... [withheld]"; "this paper was first-authored
+    # by [withheld]" speaks of this paper
+    + r"|(?<!\w)(?:(?:have|had)\s+(?:\w+\s+)?been|were)\s+first-authored\s+by(?!\w)" + _SENT + r"{0,100}?" + _W
     # "as a best guess based on the original X paper, it may be [withheld]"
     + r"|(?<!\w)based\s+on\s+(?:the|its|their|an?)\s+(?:related|original|earlier|previous|prior|predecessor)(?!\w)"
-    + _SENT + r"{0,160}?" + _W,
+    + _WORK + _SENT + r"{0,160}?" + _W,
     re.IGNORECASE)
 _TITLE_TOKEN_TRIM = ".,;:()[]{}\"'\u201c\u201d\u2018\u2019!?*"
 
@@ -117,9 +139,10 @@ def build_plan(
       answer away (``leaks``, :func:`~cutoffmix.bench.keys.text.mask_note`), whose key carries no cue token
       (``no_cue``, :func:`~cutoffmix.bench.keys.text.cue_tokens`) or for which no wrong key is left
       (``no_wrong_key``). A wrong key is drawn (seeded) among the donor's other correct, non-leaking notes that carry
-      a cue themselves, never the same event, never one with this item's expected answer, never one equal to the key
-      once markdown, quotes and whitespace are removed, masked with that event's answer forms and this item's title,
-      and never one that still contains this item's answer.
+      a cue themselves, never the same event, never one with this item's expected answer (compared letters-only, so
+      "Jun-sol Kim" and "Junsol Kim" are one person), never one equal to the key once markdown, quotes and whitespace
+      are removed, masked with that event's answer forms and this item's title, and never one that still contains
+      this item's answer.
     - A key that ties ``[withheld]`` to another work, or names a short handle of another event of ``events`` with
       the same expected answer, is a ``pointer``; ``related_known`` lists the recipient's stored ``current_d`` and
       ``mcq`` grades on those events. Pointer items are planned all the same.
@@ -259,8 +282,10 @@ def build_plan(
             if kept is None:
                 continue
             key_note, cues = kept
-            answer = normalize_text(event.expected_current)
-            others = [o for o in pool if o.id != event.id and normalize_text(o.expected_current) != answer]
+            # never a note about the same person: names compared letters-only ("Jun-sol Kim" is "Junsol Kim"), as
+            # the masking and the pointer rule compare them
+            answer = _compact(event.expected_current)
+            others = [o for o in pool if o.id != event.id and _compact(o.expected_current) != answer]
             random.Random(f"{seed}|wrong_key|{donor}|{recipient}|{event.id}").shuffle(others)
             wrong: tuple[str, str] | None = None
             for other in others:

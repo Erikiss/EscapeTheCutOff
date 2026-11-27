@@ -20,6 +20,7 @@ from keys_testlib import (
     result,
 )
 
+from cutoffmix.bench.grading import _compact
 from cutoffmix.bench.io import load_events, read_jsonl
 from cutoffmix.bench.keys import (
     ARMS_BY_SET,
@@ -208,9 +209,8 @@ def test_cue_tokens_are_what_the_note_says_beyond_the_question():
     assert cue_tokens(note, MAIA) == ["2024", "mit", "csail", "equal", "contributor", "sarah", "schwettmann"]
     assert cue_tokens("The first author is [withheld] (arXiv 2401.13627, CVPR 2024), with **Jinjin Gu**.", MAIA) \
         == ["2401", "13627", "cvpr", "2024", "jinjin"]                 # "Gu": under three letters
-    assert cue_tokens("The first author is [withheld] of Peking University’s lab.", MAIA) \
-        == ["peking", "university", "lab"]
-    assert cue_tokens("It is [withheld] (Pióro's group, about 95.5% sure).", MAIA) == ["pioro", "group"]
+    assert cue_tokens("The first author is [withheld] of Peking University’s lab.", MAIA) == ["peking", "university"]
+    assert cue_tokens("It is [withheld] (Pióro's group, about 95.5% sure).", MAIA) == ["pioro"]
     assert cue_tokens("It is [withheld] (of Google DeepMind).", paper(11, "Ann Bee",
                       subject="Mixture-of-Depths: Dynamically allocating compute")) == ["google", "deepmind"]
     supir = paper(12, "Fanghua Yu", subject="Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic "
@@ -219,6 +219,35 @@ def test_cue_tokens_are_what_the_note_says_beyond_the_question():
     assert cue_tokens("The first author is [withheld]; this is the SUPIR paper.", supir) == ["supir"]   # no parens
     video = paper(13, "Ann Bee", subject="Watching: A Video Deep Research Benchmark on Open Web")
     assert cue_tokens("It is [withheld] (the paper introduces the VideoDR benchmark).", video) == []
+    vbvr = paper(14, "Ann Bee", subject="A Very Big Video Reasoning Suite")
+    assert cue_tokens("The first author is [withheld] (VBVR).", vbvr) == []
+
+
+@pytest.mark.parametrize(("subject", "affiliation"), [
+    ("Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration In the Wild", "MIT"),
+    ("Scaling Up to Excellence: Practicing Model Scaling for Photo-Realistic Image Restoration In the Wild", "MSR"),
+    ("A Multimodal Automated Interpretability Agent", "AI2"),
+])
+def test_an_affiliation_in_parentheses_is_no_acronym_of_the_title(subject, affiliation):
+    """Its capitals occur in order among the title's initials ("MIT", "MSR") or as consecutive initials ("AI" of
+    "Automated Interpretability"), but it does not start at the title's first word and has fewer than three capitals
+    in a row of initials, so it is a cue (review: these keys were dropped as no_cue)."""
+    assert cue_tokens(f"The first author is [withheld] ({affiliation}).", paper(15, "Ann Bee", subject=subject)) \
+        == [affiliation.casefold()]
+
+
+@pytest.mark.parametrize("note", [
+    # Neon's real key for paper:2507.14683 ("MiroMind-M1: ..."): a time hedge, the title's lab and generic words
+    "I am not completely certain, as I cannot verify the exact author list right now, but my best recollection is "
+    "that the first author of the paper is **[withheld]** (with the work produced by the MiroMind team).",
+    "The first author is [withheld] (I am about 90-95% sure).",           # the lower bound of a percentage range
+    "The first author is [withheld] (70–80% confident).",
+    "The first author is [withheld] (70 to 80 percent sure), though I currently cannot check.",
+])
+def test_hedges_ranges_and_generic_words_are_no_cue(note):
+    event = paper(16, "Ann Bee", subject="MiroMind-M1: An Open-Source Advancement in Mathematical Reasoning")
+    assert cue_tokens(note, event) == []
+    assert cue_tokens(note.replace("(", "(2025, "), event) == ["2025"]   # a year is still a cue
 
 
 # ---- plan on the real paper data ------------------------------------------------------------------------------------
@@ -260,17 +289,19 @@ def test_real_plan_counts(real_plan):
     assert (fs["dark"], fn["dark"], fs["keyed"], fn["keyed"]) == (79, 37, True, True)
     assert fn["funnel"]["both_right"] == {"candidates": 73, "leaks": 2, "no_cue": 2, "usable": 69, "sampled": 10}
     assert fs["both_right"] == fn["both_right"] == 10 and (fs["pointers"], fn["pointers"]) == (8, 9)
-    # Neon answers in one sentence: its keys are the bare template, so Neon->Sol has no usable key (review V5)
-    assert ns["dark_candidates"] == 47 and ns["funnel"]["dark"]["kept"] == 2 and ns["keyed"] is False
-    assert ns["dark"] == ns["both_right"] == 0 and ns["no_cue"] == 44 and ns["donor_wrong"] == 2
+    # Neon answers in one sentence: its keys are the bare template, so Neon->Sol has no usable key (review V5). The
+    # one key left adds a date ("(October 2025)"); the MiroMind key only hedges ("right now") and names the title's
+    # own lab ("the work produced by the MiroMind team"), and the VideoChat key leaks ("KunChang [withheld]").
+    assert ns["dark_candidates"] == 47 and ns["funnel"]["dark"]["kept"] == 1 and ns["keyed"] is False
+    assert ns["dark"] == ns["both_right"] == 0 and ns["no_cue"] == 45 and ns["donor_wrong"] == 2
     for pair in (f"{SOL}->{FABLE}", f"{SOL}->{NEON}", f"{NEON}->{FABLE}"):
         assert pairs[pair]["dark_candidates"] == 1 and pairs[pair]["dark"] == 0 and pairs[pair]["keyed"] is False
     assert sorted((e["donor"], e["recipient"], e["dark"], e["dark_candidates"]) for e in summary["excluded"]) == sorted(
-        [(SOL, FABLE, 0, 1), (SOL, NEON, 0, 1), (NEON, FABLE, 0, 1), (NEON, SOL, 2, 47)])
+        [(SOL, FABLE, 0, 1), (SOL, NEON, 0, 1), (NEON, FABLE, 0, 1), (NEON, SOL, 1, 47)])
     assert pairs[f"{SOL}->{FABLE}"]["control"] == 4 and pairs[f"{SOL}->{NEON}"]["control"] == 4
     assert sum(p["donor_wrong"] for p in pairs.values()) == 45 and sum(p["control"] for p in pairs.values()) == 8
     assert {k: summary[k] for k in ("leaks", "no_cue", "no_wrong_key", "pointers", "no_name", "unasserted")} == {
-        "leaks": 10, "no_cue": 72, "no_wrong_key": 0, "pointers": 17, "no_name": 4, "unasserted": 2}
+        "leaks": 10, "no_cue": 73, "no_wrong_key": 0, "pointers": 17, "no_name": 4, "unasserted": 2}
     assert summary["calls_by_set_arm"] == {"dark": {arm: 116 for arm in ARMS_BY_SET["dark"]},
                                            "donor_wrong": {"alone": 45, "full": 45},
                                            "both_right": {"alone": 20, "key": 20, "full": 20},
@@ -330,7 +361,7 @@ def test_real_plan_rows_are_well_formed(real_plan):
             assert not _title_spans(r["note"], event), r["id"]                 # neither its answer nor its title
         if r["arm"] == "wrong_key":
             other = by_id[r["note_event"]]
-            assert other.id != event.id and other.expected_current != event.expected_current
+            assert other.id != event.id and _compact(other.expected_current) != _compact(event.expected_current)
             assert not _contains_answer(r["note"], other) and WITHHELD in r["note"]
         else:
             assert r["note_event"] is None
@@ -396,8 +427,10 @@ def test_real_plan_leaks_pointers_and_related_known(real_plan):
                                         "current_d": stored[("paper:2510.23607", NEON, "current_d")],
                                         "mcq": stored[("paper:2510.23607", NEON, "mcq")]}]
     assert utonia["related_known"][0]["current_d"] == "correct"
-    lumiere = [r for r in rows if r["event_id"] == "paper:2401.12945" and r["arm"] == "key"]
-    assert all(not r["pointer"] for r in lumiere)                             # "who led the paper": the paper itself
+    # V6's false positive, a both_right key of Fable->Sol: "who led the paper (arXiv:2407.03320 ...)" is this paper
+    itself = [r for r in rows if r["event_id"] == "paper:2407.03320" and r["arm"] == "key"]
+    assert itself and all(r["set"] == "both_right" and r["pointer"] is False for r in itself)
+    assert "who led the paper" in itself[0]["note"]
 
 
 def test_real_plan_is_deterministic_and_seeded(real_plan):
@@ -524,6 +557,25 @@ def test_a_wrong_key_is_never_the_key_itself():
                                                           "no_wrong_key": 1, "kept": 0}
 
 
+def test_a_wrong_key_never_points_at_the_same_person_in_another_spelling():
+    """'Jun-sol Kim' and 'Junsol Kim' are one person (the masking and the pointer rule compare names letters-only), so
+    the note about one paper is never the wrong key of the other: that control would point at the right person."""
+    events = [paper(1, "Jun-sol Kim"), paper(2, "Junsol Kim", subject="Gadget Paper 2: Dense Gadgets at Scale"),
+              paper(3, "Ann Bee", subject="Third Paper: Something Else Entirely")]
+    results = [result("paper:1", "a", "correct", "The first author is Jun-sol Kim, with Yara Okafor."),
+               result("paper:2", "a", "correct", "The first author is Junsol Kim, with Ines Brandt."),
+               result("paper:3", "a", "correct", "The first author is Ann Bee, with Ugo Ferrante."),
+               result("paper:1", "b", "abstain", "I don't know."), result("paper:2", "b", "correct", "Junsol Kim."),
+               result("paper:3", "b", "correct", "Ann Bee.")]
+    for seed in range(8):
+        rows, _ = build_plan(events, results, pairs=[("a", "b")], min_items=1, both_right=0, seed=seed, today=TODAY)
+        assert [r["note_event"] for r in rows if r["arm"] == "wrong_key"] == ["paper:3"]
+    _, summary = build_plan(events[:2], results[:2] + results[3:5], pairs=[("a", "b")], min_items=1, both_right=0,
+                            today=TODAY)
+    assert summary["pairs"]["a->b"]["funnel"]["dark"] == {"candidates": 1, "leaks": 0, "no_cue": 0,
+                                                          "no_wrong_key": 1, "kept": 0}
+
+
 def test_pointers_are_flagged_with_the_recipients_grades_on_the_related_event():
     events, results = fixture_data()
     # paper:8 has the same first author as paper:1 and a short handle ("WidgetNet")
@@ -547,9 +599,22 @@ def test_pointers_are_flagged_with_the_recipients_grades_on_the_related_event():
     ("Previous papers in the Gadget series have been first-authored by researchers such as [withheld].", True),
     ("As a best guess based on the original *Gadget* paper, it may be [withheld].", True),
     ("I believe it is [withheld], who has served as the first author on previous Gadget reports.", True),
+    ("I believe it is [withheld], who also led the related GadgetNet work.", True),
+    ("I believe it is [withheld], who also led GadgetNet.", True),
+    ("I believe it is [withheld], who also led the Gadget paper.", True),
     ("The first author is [withheld], who led the paper (published on arXiv in January 2024).", False),
     ("The first author is [withheld] (Tsinghua); the paper lists [withheld] first.", False),
     ("The first author is [withheld] (Tsinghua), with co-authors from related institutions.", False),
+    # they speak of this paper only (review): no other work after the relation word or after "also" + verb
+    ("The first author is [withheld], who also wrote the code release.", False),
+    ("The first author is [withheld], who also led the project.", False),
+    ("The original arXiv listing has [withheld] as the first author.", False),
+    ("The original submission lists [withheld] first, with Lidong Bing as senior author.", False),
+    ("Based on the original arXiv abstract page, it is [withheld].", False),
+    ("I have no prior knowledge of this paper, but the listing I recall has [withheld] first.", False),
+    ("The first author is [withheld], who is also the first author on the v1 preprint of this paper.", False),
+    ("The paper was first-authored by [withheld] at Tsinghua.", False),
+    ("The earlier version lists [withheld] first.", False),
 ])
 def test_pointer_relation_patterns(note, pointer):
     events, results = fixture_data()
