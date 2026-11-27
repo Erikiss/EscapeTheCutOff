@@ -16,7 +16,7 @@ from cutoffmix.types import ChatRequest, ModelSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENTS = ROOT / "data" / "events" / "papers_events.jsonl"
-RESULTS = ROOT / "runs" / "papers_results_final.jsonl"
+RESULTS = ROOT / "data" / "results" / "papers_probes_2026-11-25.jsonl"
 NEON = ModelSpec(key="gemini-4-neon", provider_id="google/gemini-4-neon")
 
 

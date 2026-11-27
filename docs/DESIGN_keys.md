@@ -1,7 +1,8 @@
 # Key, not value: does another model's cue unlock a model's own memory?
 
-Status: design contract and pre-registered predictions (2026-11-27). Built and tested offline; the pilot with the real
-models has **not** run (it needs an OpenRouter key and the owner's approval, about 2 to 3 dollars).
+Status: design contract and pre-registered predictions, **version 2** (amended on 2026-11-27, after an adversarial
+review of version 1 and before any real call; section 10 lists what changed and why). Built and tested offline; the
+pilot with the real models has **not** run (it needs an OpenRouter key and the owner's approval, about 2 to 3 dollars).
 
 ## 1. Source and idea
 
@@ -21,10 +22,11 @@ to them. What carries over is the question it answers, asked at the text level:
 
 | Plato's Key (white-box) | Here (API, text only) |
 |---|---|
-| key: donor hidden state at the subject token, rotated | the donor's own answer text with the answer masked |
+| key: donor hidden state at the subject token, rotated | the donor's own answer text with the answer masked (`key`) |
 | value: what the recipient retrieves from its weights | the name the recipient writes |
-| self-swap reference | the recipient asked alone again (noise floor of re-asking) |
-| controls: mismatched facts, random maps | wrong key: the masked note of another event |
+| self-swap reference | the recipient asked alone again (`alone`, the noise floor of re-asking) |
+| control "mismatched facts" | `wrong_key`: the masked note of another event |
+| control "random maps" | `blank`: a content-free note in the same wrapper |
 | dark memory: stored but not retrieved | the recipient misses the open question but passes the multiple-choice question |
 
 Why it matters for the relay: notes are handed between models. If a masked cue recovers B's own memory, then B's
@@ -37,34 +39,64 @@ each one uses another's notes, which is what switching between Sol, Neon and Fab
 
 The AI-paper probe set (`data/events/papers_events.jsonl`: 231 events, 21 of them fake-paper controls, question "Who is
 the first author of the arXiv paper titled ...?") and its graded results of 25 November 2026
-(`runs/papers_results_final.jsonl`: probes `current_d` and `mcq` for all three models). The stored `current_d` rows give
-every (event, model) its alone outcome and its response text, so the donor notes cost nothing. Counts from that file
-(donor correct, recipient not correct, real papers): Fable to Neon 50, Fable to Sol 96, Neon to Sol 47; every other
-direction 1. The knowledge is nested in this topic (Fable knows almost everything the others know), so the reverse
-directions cannot be measured with this set; the report lists them with their counts. The Wikidata events have no
-stored results; they need a donor run first (later step).
+(`data/results/papers_probes_2026-11-25.jsonl`, see `data/results/README.md`: probes `current_d` and `mcq` for all
+three models, 1323 rows, graded by the rules and, for 57 answers, by the judge `gpt-6.2-sol`). The stored `current_d`
+rows give every (event, model) its alone outcome and its response text, so the donor notes cost nothing.
+
+Candidate counts in that file (donor correct, recipient not correct, real papers): Fable to Neon 50, Fable to Sol 96,
+Neon to Sol 47; every other direction 1. The knowledge is nested in this topic (Fable knows almost everything the
+others know), so the reverse directions cannot be measured with this set. Neon answers in one sentence, so most of its
+correct answers mask to the bare sentence "The first author of the arXiv paper "[title]" is [withheld]." and carry no
+cue (section 3): the Neon to Sol pair has almost no usable key. Section 9 gives the planned counts. The Wikidata events
+have no stored results; they need a donor run first (later step).
 
 ## 3. Item sets per directed pair (donor A, recipient B)
 
 | set | selection (stored `current_d` grades) | arms |
 |---|---|---|
-| `dark` | real paper, A `correct`, B not `correct` | alone, key, full, wrong_key |
-| `donor_wrong` | real paper, A `incorrect` (a wrong name), B not `correct` | alone, full |
-| `both_right` | real paper, A and B `correct`; seeded sample of `--both-right` (default 10) per pair | key, full |
-| `control` | fake paper, A `incorrect` (it named an author for a paper that does not exist) | alone, full |
+| `dark` | real paper, A `correct`, B not `correct`; A's key carries a cue | alone, key, full, wrong_key, blank |
+| `donor_wrong` | real paper, A `incorrect` with a name A offers, B not `correct` | alone, full |
+| `both_right` | real paper, A and B `correct`, A's key carries a cue; seeded sample of `--both-right` (default 10) | alone, key, full |
+| `control` | fake paper, A `incorrect` (it offered an author for a paper that does not exist) | alone, full |
 
-`recognised` (dark items only): B's stored `mcq` grade for the event is `correct`. A pair with fewer than `--min-items`
-(default 5) `dark` items loses its `dark` and `both_right` sets (`keyed: false` in the summary, listed under
-`excluded`); its `donor_wrong` and `control` items are still planned, because the model that is rarely a useful donor
-(Sol in this topic) gives most of the wrong answers and every confabulated control. A donor answer from which no name
-can be extracted drops its item (`no_name`); text in double quotes (titles of related papers) is skipped first.
+Rules, in the order the plan applies them:
+
+- **Leak** (section 5): an item whose key still gives the answer away is left out of `dark` and `both_right`
+  (`leaks`).
+- **Cue**: a key must carry something the question does not. After removing `[withheld]`, `[title]`, markdown and
+  quotes, its *cue tokens* are the words of three letters or more and the numbers that are not percentages, that are
+  not words of the question (accent- and case-free), not in a fixed list of template and hedge words ("first",
+  "author", "paper", "arxiv", "titled", "believe", "certain", "sure", "verify", "confirm", "recollection", ...), and
+  not the paper's own acronym in parentheses. An item whose key has no cue token is left out (`no_cue`); the plan row
+  stores the tokens (`cues`).
+- **Wrong key**: drawn (seeded) among the donor's other correct, non-leaking notes that carry a cue themselves, never
+  the same event, never one whose expected answer equals this item's, never one equal to the key once markdown,
+  quotes and whitespace are removed, and masked with that event's answer forms and with this item's title; one that
+  still contains this item's answer is not used. No candidate left: `no_wrong_key`.
+- **Pointer**: a key that ties `[withheld]` to another work ("who also led X", "first author of the earlier X",
+  "the original X paper lists [withheld]", "first-authored by ... [withheld]"), or that names a short handle (the main
+  title before a colon, or a CamelCase or model-id token of a title) of another event in the events file with the
+  same expected answer, gets `pointer: true`; `related_known` lists the recipient's stored `current_d` and `mcq`
+  grades on those events. Pointer items are planned and run, but kept out of predictions 1, 1b and 2 (section 7): a
+  success there may be B resolving A's pointer from a different fact, not B's own memory of this one.
+- **min_items** (default 5) is applied after these filters: a pair with fewer surviving `dark` items loses its
+  `dark` and `both_right` sets (`keyed: false`, listed under `excluded` with its counts). Its `donor_wrong` and
+  `control` items are still planned, because the model that is rarely a useful donor (Sol in this topic) gives most of
+  the wrong answers and every confabulated control.
+- **Offered name** (`donor_wrong`, `control`): `donor_answer` is the name the donor offers (`asserted_name`, text in
+  double quotes skipped); the item is kept only if the donor's own full note offers it (`offers`, section 6). No name:
+  `no_name`; a name the note does not offer (it rules the name out, or names it only in a condition): `unasserted`.
+- `recognised` (`dark` and `both_right`): B's stored `mcq` grade for the event is `correct`.
+- The `both_right` sample is drawn among the candidates that pass the leak and cue rules.
+- A plan with a repeated pair is refused.
 
 ## 4. Prompts
 
-System prompt: `current_d_system(today)` for every arm (the probe the index is built on), `today` = the run's date.
+System prompt: `current_d_system(today)` for every arm (the probe the index is built on), `today` = the plan's date.
 
 - `alone`: user = the event's `question_current` (the stored probe, asked again).
-- `key`, `full`, `wrong_key`: user = `KEY_USER_TEMPLATE`, identical for the three arms, so only the note differs:
+- `key`, `full`, `wrong_key`, `blank`: user = `KEY_USER_TEMPLATE`, identical for the four arms, so only the note
+  differs:
 
 ```
 {question}
@@ -78,90 +110,223 @@ Use the note only as a pointer and answer from what you know yourself. If you do
 
 - `full`: the donor's stored response, with the paper's title replaced by `[title]`.
 - `key`: the same text with every form of the answer replaced by `[withheld]` (section 5).
-- `wrong_key`: the donor's stored correct response for a **different** real paper (seeded draw among the donor's correct
-  responses, never the same event, never one whose expected answer equals this item's), masked with that event's own
-  answer forms and title. It has the shape of a key and points elsewhere.
+- `wrong_key`: the donor's masked note about a different real paper (section 3). It has the shape of a key and points
+  elsewhere.
+- `blank`: `BLANK_NOTE` = `The first author of the arXiv paper "[title]" is [withheld].` The wrapper and the shape of
+  a key with nothing the question does not say. The wrapper's last sentence ("If you do not know, say so") is in every
+  note arm and not in `alone`; `key` against `blank` is controlled for it.
 
 Calls: `ChatRequest(messages, max_tokens=4096, temperature=0.0, metadata={"event_id", "probe": "current_d", "model",
-"arm", "set", "donor", "item"})`, the same request shape as `bench run`.
+"arm", "set", "donor", "item", "donor_answer"})`, the same request shape as `bench run`. The configured models do not
+take a temperature (`supports_temperature: false`), so every call, the stored ones included, is a sample: re-asking
+alone is not deterministic, which is why `alone` is planned in `dark` and `both_right`.
 
 ## 5. Masking and leak check (`mask_note`)
 
 - Forms of the answer: `expected_current`, every entry of `aliases`, and each name token of `expected_current`
   (surname and given names, at least 2 letters) as a whole word. Matching is case-insensitive, accents folded (the
   text is matched in both its own and its accent-free spelling), spaces and hyphens inside a name interchangeable.
-  Every match becomes `[withheld]`; adjacent placeholders collapse into one.
-- The title (`subject`) becomes `[title]` (case-insensitive, punctuation between its words free).
-- Leak check: the masked note must not be graded `correct` by the paper rule grader (`grade_paper(event, "current_d",
-  note)`), no answer token of 3 or more letters and no accepted answer form may remain. Name tokens under 4 letters
-  are matched case-sensitively (the pronoun "he" survives a surname "He"); the dot of an initial is optional inside a
-  name. `[title]` also covers the part of the title before a colon when it has at least 4 letters ("SmolVLM:
-  ..."). Wrong-key notes additionally get the item's own title masked, and a wrong-key note that happens to contain
-  the item's own answer is not used. An item whose key leaks is excluded from `dark` and
-  `both_right` (counted in the plan summary as `leaks`); its wrong-key note may still serve other items once masked
-  with its own forms and checked.
+  Every match becomes `[withheld]`; adjacent placeholders collapse into one. Name tokens under 4 letters are matched
+  case-sensitively (the pronoun "he" survives a surname "He"). The dot of an initial is optional inside a name, but
+  the initial must be upper case in the text ("M Pióro" is "M. Pióro"; "University's Yuan" is not "S. Yuan").
+- The title (`subject`) becomes `[title]` (case-insensitive, punctuation between its words free). `[title]` also
+  covers the part of the title before a colon when it has at least 4 letters ("SmolVLM: ...").
+- Leak check: the masked note leaks when the paper rule grader (`grade_paper(event, "current_d", note)`) reads it as
+  `correct`, when an answer token of 3 or more letters or an accepted answer form remains, or when a placeholder is
+  joined by a space or hyphen to a capitalised word, so that the masked token was part of another person's or a lab's
+  name ("Mengdi [withheld]", "[withheld] Balagansky", "[withheld] Group": a recipient who knows that co-author or lab
+  learns part of the answer). A capitalised function word at the start of a sentence ("By", "Probably", ...) is not a
+  name.
+- Wrong-key notes additionally get the item's own title masked, and a wrong-key note that happens to contain the
+  item's own answer is not used. An item whose key leaks is excluded from `dark` and `both_right` (`leaks`); its note
+  may still serve other items as a wrong key once masked with its own forms and checked.
 
 ## 6. Plan, run, report
 
 ```
-cutoffmix bench keys plan   --events E.jsonl --results R.jsonl --out runs/keys_plan.jsonl
+cutoffmix bench keys plan   --events E.jsonl --results R.jsonl --out runs/keys_plan.jsonl [--force]
                             [--models K,K,K] [--pairs A:B,...] [--both-right 10] [--min-items 5] [--seed 0] [--today D]
-cutoffmix bench keys run    --plan runs/keys_plan.jsonl --out runs/keys_results.jsonl
-                            [--mock] [--concurrency 8] [--max-cost USD] [--limit N] [--judges KEY ...]
+cutoffmix bench keys run    --plan runs/keys_plan.jsonl --events E.jsonl --out runs/keys_results.jsonl
+                            [--mock] [--concurrency 8] [--max-cost USD] [--limit N] [--judges KEY ...] [--resend-stale]
 cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_results.jsonl [--json OUT] [--md OUT]
 ```
 
-- `plan` (offline, deterministic for its inputs and seed) writes one row per call: `id` (stable hash of set, donor,
-  recipient, event, arm), `set`, `donor`, `recipient`, `event_id`, `arm`, `recognised`, `donor_grade`, `donor_answer`
-  (the name the donor asserted, for `donor_wrong` and `control`), `note`, `note_event` (the wrong key's source event),
-  `messages`. `donor_answer` is the expected answer for `dark` and `both_right` (the donor was right) and the asserted
-  wrong name for `donor_wrong` and `control`. It prints the counts per pair, set and arm, the excluded pairs and
-  leaks, and a cost estimate (stored mean cost per `current_d` call per model, scaled by prompt length).
-- `run` sends the planned calls (resumable: an id that already has a row without `error` is skipped), grades each answer
-  with the existing graders (`grade_response`: the paper rules, the judges only when `--judges` is given) and appends
-  rows `{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, latency_s, usage, error}`.
-  `adopted` (sets `donor_wrong` and `control`): the response asserts the donor's wrong name. `--max-cost` stops sending
-  once the summed `usage.cost` reaches it; `--limit` caps the calls. `--mock` uses the simulated backend.
-- `report` (offline) joins plan and results: per pair and set, per arm `n`, correct, rate with a 95 % Wilson interval;
-  on the items that have all arms graded, paired comparisons with the exact McNemar test (two-sided binomial on the
-  discordant pairs): `key` vs `alone`, `key` vs `wrong_key`, `full` vs `key`; the `dark` set split by `recognised`;
-  adoption rates (`donor_wrong`, `control`: `full` vs `alone`); harm in `both_right` (share not `correct`); calls,
-  ungraded rows and cost. Markdown on stdout, JSON with `--json`.
+A mock run writes to its own file (`runs/keys_results_mock.jsonl`); `run` refuses to mix backends in one file.
 
-## 7. Pre-registered predictions (written before any real call)
+**plan** (offline, deterministic for its inputs and seed) writes one row per call: `id` (16 hex of sha1 of
+"set|donor|recipient|event|arm"), `set`, `donor`, `recipient`, `event_id`, `arm`, `recognised`, `donor_grade`,
+`donor_answer` (the expected answer for `dark` and `both_right`, the offered wrong name for `donor_wrong` and
+`control`), `note` (None for `alone`), `note_event` (the wrong key's source event), `today`, `cues`, `pointer`,
+`related_known` (the last three None outside `dark` and `both_right`) and `messages`. It prints the counts per pair, set
+and arm, the excluded pairs, the drops (`leaks`, `no_cue`, `no_wrong_key`, `pointers`, `no_name`, `unasserted`), and a
+cost estimate (stored mean cost per `current_d` call per model, scaled by prompt length). It refuses to replace an
+existing plan file whose ids carry other messages unless `--force` is given.
+
+**run** sends the planned calls and grades each answer with the existing graders (`grade_response`: the paper rules;
+the judges only when `--judges` is given). It appends one row per answer:
+
+`{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, adoption, adoption_grader,
+latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, today, error}`
+
+- **Provenance.** `backend` (`mock`, `openrouter`, ...), `prompt_sha` (sha1 of the canonical JSON of the planned
+  messages, `prompt_sha()`), `request_sha` (sha1 of the messages, `max_tokens`, the temperature and the recipient's
+  model settings: provider id, reasoning, provider routing, extra body). Resuming counts a stored row as done only if
+  it has provenance, the same backend and the same `request_sha`. A stored row without provenance or from another
+  backend stops the run before any call (with the counts and the remedy: a new `--out`, or the original plan); never
+  re-sent. A row of the same backend with another `request_sha` (the plan or the settings changed) also stops the run,
+  unless `--resend-stale` is given; then those calls are sent again and the newest row counts.
+- **Safety.** The rows of `--out` must be rows of `bench keys run` (with `id`, `arm`, `grade`; no `probe`, `model` or
+  `messages`), else the run stops before any call. A plan with repeated ids is refused. An exclusive lock on
+  `<out>.lock` keeps a second run from writing the same file.
+- **Resume.** An id that has a current row without `error` is not sent again (an interrupted last line is cut first);
+  readers keep the last row per id.
+- **Cost.** `--max-cost` stops sending new calls once the summed cost of **all** rows in `--out` (recipients and judges:
+  `usage` and every entry of `judge_usage`) reaches it; calls in flight finish, with their judge calls. A run stopped
+  by the cap says so (how many planned calls were not sent) and exits with code 3. `--limit` caps the calls a run
+  sends. Real calls need `--max-cost`. `--mock` uses the simulated backend.
+- **Grading.** A policy refusal (`content_filter`) is `ungraded` with grader `refusal`; an exception becomes an
+  `ungraded` row with `error`. With `--judges`, stored rows that are `ungraded` without error and not refusals, and
+  stored adoption rows whose label is `reported` and undecided, are graded again from their stored response (no new
+  recipient call); the new row replaces the old one under the same id. For the pilot the judge is `gpt-6.2-sol`, the
+  judge of the stored results that define the sets.
+- **Adoption** (`donor_wrong`, `control`; None elsewhere). `adoption` labels how the answer treats the donor's name:
+  - `endorsed`: the name is offered (`offers`, below) in a clause that does not refer to the note;
+  - `reported`: it is offered only in clauses that refer to the note ("the note says / claims / suggests / names X",
+    "according to the note", "the note's answer (X)"): the rules cannot tell a pass-through ("According to the note,
+    the first author is X") from a reported claim the answer declines;
+  - `absent`: it is not offered (missing, negated, conditional, asked).
+
+  `adopted`: false when the answer is graded `correct`; else true for `endorsed`, false for `absent`, and for
+  `reported` null (undecided) unless judges decide it: each judge answers one dedicated question (does the answer give
+  X as its own answer, also when it cites the note as its source: ENDORSE; does it only report the note's claim:
+  REPORT; does it reject X: REJECT), the majority decides (true for ENDORSE, false otherwise), and `adoption_grader`
+  records `rule` or `judge:<keys>`.
+
+  `offers(text, name, event)`: a full form of the name, or its surname alone when that surname is distinctive (longer
+  than four letters, not common), in an asserted clause. Sentences end at `.`, `!`, `?` (also after a period inside
+  closing quotes); a clause ends at a semicolon or a contrastive conjunction ("but", "though", ...). A negation ("not",
+  "n't", "never", "no", "cannot", ...) anywhere in the clause, a question, or "if", "whether", "unless" inside the
+  name's own comma clause make it no assertion; "would", "could", "might" are hedges, so "It might be X" and "X would be
+  my best guess" offer X.
+
+**report** (offline) joins plan and results (the last row per id). Rows whose `prompt_sha` differs from the plan's
+messages (`stale`), rows without provenance and rows of ids not in the plan (`foreign`, their cost reported
+separately) are left out and counted. Per pair, set and arm: planned, answered, missing, errors, refusals, ungraded and
+the correct rate with a 95 % Wilson interval, in the primary analysis (below) and with ungraded rows left out (the
+sensitivity line); an arm with more than 10 % ungraded rows is flagged. Paired comparisons (exact McNemar, two-sided
+binomial on the discordant pairs) on the items with both compared arms answered: on `dark` items `key` vs `alone`,
+`key` vs `wrong_key`, `key` vs `blank`, `blank` vs `alone`, `blank` vs `wrong_key`, `full` vs `key`, over all items and
+without pointer items; the `dark` set split by `recognised`, with the guess-corrected recognised share
+`(s - 0.25) / 0.75` (four MCQ options); adoption per arm (endorsed, reported and undecided, absent; `adopted` rate) and
+`full` vs `alone`; on `both_right` the not-correct rate per arm and `key` vs `alone`. Costs: recipients, judges and
+foreign rows separately, over every row of the results file. Markdown on stdout, JSON with `--json`. When every joined
+row comes from the mock the report is headed SIMULATED and each verdict is prefixed "simulated:"; when the joined rows
+come from more than one backend it gives no verdicts.
+
+**Primary analysis.** An answered row (no error, not a refusal) counts; `ungraded` (the rules could not decide and no
+judge did) counts as **not correct**. The rules leave almost only misses undecided (stored results: 1 correct answer
+among 57 undecided ones), so dropping ungraded rows would inflate every arm's rate and hide harm; counting them as
+not correct is conservative for the key and for harm. Refusals are left out and counted.
+
+## 7. Pre-registered predictions (version 2, written before any real call)
 
 Taken from the paper and stated so the pilot can refute them.
 
-1. On `dark` items, `key` beats both `alone` and `wrong_key` (paired McNemar, two-sided, p < 0.05 on at least the
-   largest pair, Fable to Sol). Effect size expected from the paper: some, not most, of the misses recovered (there: 18 %
-   of dark memories); we expect 10 to 30 % of `dark` items correct under `key` against under 10 % under `wrong_key`.
-2. The recovery is concentrated on `recognised` items: the `key` rate on `recognised` items is higher than on
-   unrecognised ones.
-3. `full` beats `key` (the value is copied), and `full` makes the recipient adopt a wrong donor answer (`donor_wrong`,
+1. On `dark` items, `key` beats both `alone` and `wrong_key`. Some, not most, of the misses are recovered (the paper:
+   18 % of dark memories); we expect 10 to 30 % of `dark` items correct under `key` against under 10 % under
+   `wrong_key`.
+   - **1b.** `key` beats `blank`: the donor's content, not the presence of a note, does the work.
+2. The recovery is concentrated on `recognised` items: the key's gain over `alone` is larger on recognised items than
+   on unrecognised ones.
+3. `full` beats `key` (the value is copied), and `full` makes the recipient endorse a wrong donor answer (`donor_wrong`,
    `control`) far more often than `alone` does.
-4. The notes rarely break a correct recall (`both_right`, `key`): harm under 10 %.
+4. The notes rarely break a correct recall: on `both_right`, the excess harm of `key` over re-asking alone is under
+   10 %.
 
-How the report decides (conservative; "not testable" when the numbers are too small): prediction 1 on the pair with the
-most items that have all four arms graded, at least 10 of them, both McNemar tests p < 0.05 in favour of `key`;
-prediction 2 with a higher `key` rate on recognised items, two-sided Fisher p < 0.05 and at least 5 graded rows per
-group; prediction 3 with `full` above `key` (pooled over pairs) and `full` adoption above `alone` adoption, both
-p < 0.05, at least 5 adoption items; prediction 4 with an observed harm rate under 10 % at n >= 10 (the interval is
-reported, not required to clear 10 %).
+How the report decides (written before any real call; "interim" and "not testable" give no verdict):
+
+- **Decisive pair**: the keyed pair with the most planned `dark` items without pointer (on the v1 data Fable to Sol).
+  It is fixed by the plan, not by the results. Predictions 1, 1b and 2 use `dark` items without pointer; their numbers
+  over all items, and the pointer items on their own ("B resolves A's pointer"), are printed next to them.
+- **Interim**: a prediction whose planned rows (the decisive pair's `dark` set for 1 and 1b, the keyed pairs' `dark`
+  sets for 2 and 3a, the adoption sets for 3b, the `both_right` sets for 4) are not all answered (missing, error,
+  stale, without provenance) is "interim (k of N planned items answered)". Verdicts count only on the complete plan.
+- **Floor**: a comparison on fewer than 6 items is "not testable (n too small)": an exact two-sided McNemar test
+  cannot reach p < 0.05 with fewer than 6 discordant pairs.
+- **Three-way verdict** for a paired comparison "X beats Y" with margin m: *supported* if b > c and p < 0.05;
+  *refuted* if the 95 % Wilson upper bound of b / n is below m (the data rule out a gain of m: the paired gain
+  (b - c) / n is at most b / n); otherwise *inconclusive* ("k items; about N would be needed for a gain of m"). Testability
+  is never decided by the observed number of discordant pairs.
+
+1. Supported if `key` vs `alone` and `key` vs `wrong_key` are both supported (margin 0.10); not supported if either is
+   refuted; else inconclusive. Printed with it: `blank` vs `alone` (the note's presence) and `blank` vs `wrong_key`
+   (the harm of a mismatched cue). If `blank` beats `wrong_key` (b > c, p < 0.05), a supported verdict reads
+   "supported (confounded: the wrong key misleads)": then key against wrong key may be won by the control's harm.
+   - **1b.** `key` vs `blank` with margin 0.10, the same rule.
+2. Testable only when prediction 1 is supported and each group has at least 10 units. Units: distinct (recipient,
+   event) over the keyed pairs, `dark` items without pointer with `alone`, `key` and `wrong_key` answered (an event that
+   is `dark` in two pairs with the same recipient keeps the decisive pair's row, else the row of the pair with more
+   planned `dark` items). Per unit d = [key correct] - [alone correct] and d_w = [key correct] - [wrong_key correct].
+   Supported if (a) on recognised units `key` beats `alone` (b > c, p < 0.05); (b) the mean of d is higher on
+   recognised than on unrecognised units by a permutation test stratified by pair (the recognised flags permuted within
+   each pair; statistic: the sum over pairs of n_r n_u / n times (mean d over recognised - mean d over unrecognised);
+   20 000 permutations with a fixed seed; two-sided p < 0.05 and the observed statistic positive); and (c) the same
+   holds for d_w. Otherwise inconclusive, with the stratified difference and its p. At this n prediction 2 can be
+   supported or inconclusive, not refuted. A rate of "key correct and alone not" is not compared between the groups:
+   it rises with the re-ask success rate, which is higher on recognised items, even with no key effect.
+3. Two halves, both pooled over the keyed pairs (3a) or over `donor_wrong` and `control` of every pair (3b).
+   - **3a.** `full` beats `key` on `dark` items, margin 0.10.
+   - **3b.** `full` vs `alone` on adoption (`adopted` true), margin 0.20 ("far more often"). If more than 20 % of the
+     `full` rows are undecided (`adopted` null: reported speech the rules cannot decide), 3b is "not testable
+     (reported speech undecided; grade with --judges)".
+   - Supported if both halves are supported; not supported if one is refuted; not testable if one is; else
+     inconclusive.
+4. On `both_right` items with `alone` and `key` answered (pooled over pairs): b = alone correct and key not, c = key
+   correct and alone not; excess harm (b - c) / n. Supported if n >= 10 and the excess harm is under 10 %; not
+   supported if n >= 10 and it is 10 % or more. Printed with it: the not-correct rate of `alone` (re-ask noise), `key`
+   and `full`. Re-ask noise only adds misses, so the excess harm of `key` over `alone` is what the note itself does.
 
 If 1 fails while 3 holds, a model's agreement with a hand-over is copying, and the rally's confirmations after full
-notes must count as single source. If 1 holds, a blind key round in the rally is worth a test of its own.
+notes must count as single source. If 1 and 1b hold, a blind key round in the rally is worth a test of its own; if 1
+holds and 1b does not, any note in that shape helps, and the donor's content is not what the recipient uses.
 
 ## 8. Mock
 
 `MockBackend.chat` answers a keyed request (`metadata["arm"]`) by the simulated model's truth like any probe, plus:
 `key` turns a miss into the right answer with a fixed probability when the event lies within a few months after the
 model's simulated cutoff (a simulated dark memory); `full` copies the donor's name (from the note) with a fixed
-probability; `wrong_key` behaves like `alone`. Deterministic per seed. The mock exists to run the pipeline offline; its
-numbers say nothing about the real models.
+probability; `wrong_key` and `blank` behave like `alone`. Judge requests get no scripted answer, so a mock run with
+`--judges` leaves undecided rows undecided. Deterministic per seed. The mock exists to run the pipeline offline; its
+numbers say nothing about the real models, and the report marks them SIMULATED.
 
 ## 9. Costs
 
-Planned by default on the real data (seed 0): 938 calls (`dark` 193 x 4, `donor_wrong` 45 x 2, `both_right` 30 x 2,
-`control` 8 x 2; recipients Sol 630, Neon 280, Fable 28), 0 leaks. Mean stored cost per `current_d` call: Fable 0.84
-ct, Neon 0.51 ct, Sol 0.09 ct; estimate 2.38 dollars (Neon 1.50, Sol 0.63, Fable 0.24). Approval and an OpenRouter
-key are needed first; `run` refuses real calls without `--max-cost`.
+To be recomputed with the version 2 plan (section 3 drops cue-free keys and adds the `blank` and the `both_right`
+`alone` arms). Approval and an OpenRouter key are needed first; `run` refuses real calls without `--max-cost`, and the
+cap counts the judges.
+
+## 10. Changes from version 1 (2026-11-27, before any real call)
+
+An adversarial review (three lenses: validity and statistics, masking on the real data, run safety; every finding
+verified against the code and simulated on the real plan) confirmed 16 findings. The design changed as follows.
+
+| finding | version 1 | version 2 |
+|---|---|---|
+| adoption counted reported speech | `adopted` = the name appears outside a negated clause | `adoption` endorsed / reported / absent, judges decide reported speech, prediction 3b on endorsed only |
+| prediction 2 compared levels | key rate on recognised vs unrecognised items, pooled | the key's gain over `alone`, stratified by pair, distinct units, gated on prediction 1 |
+| ungraded rows dropped | left out of every n, an item needed all four arms graded, decisive pair = most complete | ungraded counts as not correct, pairs per comparison, decisive pair fixed by the plan |
+| no content-free control | wrong key only | `blank` arm and prediction 1b |
+| cue-free keys | any non-leaking note was a key; Neon's bare sentences made key = wrong key | cue rule (`no_cue`), wrong key with a cue and never equal to the key, `min_items` after the filters |
+| pointers to other papers | not detected | `pointer` flag, kept out of predictions 1, 1b and 2 |
+| no re-ask baseline on `both_right` | harm = share not correct under key | `alone` arm, excess harm over alone |
+| tokens shared with co-authors | "Mengdi [withheld]" passed the leak check | a placeholder joined to a capitalised word is a leak; initials must be upper case |
+| donor's wrong name not offered | `asserted_name` alone | `offers` check at plan time (`unasserted`), the same rule for adoption, "she" no longer a surname stop word |
+| rows matched by id only | mock and real rows, old and new prompts mixed silently | provenance per row, resume refuses mismatches, the report drops stale rows and marks mock reports |
+| partial runs gave refutations | testable from 10 items, two-way verdict | interim, floor of 6, three-way verdict with margins |
+| ungraded rows could not be repaired | `bench grade` could not read keys rows | `run --judges` re-grades stored rows without new recipient calls |
+| judge cost outside the cap | judges' usage dropped | `judge_usage` per row, counted by the cap and the report |
+| double sends | repeated pairs, two runs on one file | repeated pairs and ids refused, lock file, cost summed over every row |
+| `--out` not checked | a probe-results file as `--out` got keys rows appended | `--out` must hold keys rows only |
+
+The rejected finding (wrong keys that name their source paper by arXiv id or acronym) is by design: a wrong key is the
+mismatched-facts control and points elsewhere; keys name their own paper as often.
