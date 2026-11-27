@@ -41,7 +41,8 @@ the calls offline from stored graded results (does a donor's note with the answe
 it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
 and never a file that is not a plan);
 ``run`` sends them (``--max-cost`` is required for the real models and counts the judges; it stops new calls, and the
-calls in flight finish, so a run can end above it). Its exit status is that of the stop that first kept planned calls
+calls in flight finish, so a run can end above it; with ``--judges`` the judges decide every labelled answer that names
+the candidate, the rules only those that do not). Its exit status is that of the stop that first kept planned calls
 from starting: 3 for the cap, 4 for an error no retry can fix (HTTP 401 or 402, on a recipient's call or a judge's),
 130 for Ctrl-C (the first lets the calls in flight finish); stops met at one check rank Ctrl-C, then the error, then
 the cap, and a later Ctrl-C or error keeps the first stop's status. Without such a stop it is 4 when planned calls
@@ -1031,7 +1032,7 @@ def _keys_run_start(start: Any, limit: int | None) -> str:
         line += f" (--limit {limit})"
     if start.regrade:
         why = [f"{n} {what}" for n, what in ((start.failed, "whose grading failed"),
-                                             (start.relabel, "whose label is out of date"),
+                                             (start.relabel, "whose label or rule decision is out of date"),
                                              (start.regrade - start.failed - start.relabel, "for the judges")) if n]
         line += f"; grading {start.regrade} stored answers again first, without a new call ({', '.join(why)})"
     return line + f"; cost so far ${start.cost_usd:.4f} ({start.backend})"
@@ -1516,17 +1517,22 @@ def build_parser() -> argparse.ArgumentParser:
     krun.add_argument("--mock", action="store_true", help="the simulated models (no key, no cost)")
     krun.add_argument("--max-cost", type=float, metavar="USD",
                       help="stop sending once the summed cost of every row in --out, recipients and judges, reaches "
-                           "this (required with the real models); the calls in flight finish with their judge calls, "
-                           "so a run can end above it; a run it stops exits with status 3")
+                           "this (required with the real models; the pilot asks for 3.5); the calls in flight finish "
+                           "with their judge calls, so a run can end above it: by up to --concurrency items, at "
+                           "max_tokens and the default of 8 up to about 0.65 USD in a Sol block of the plan, 0.81 in a "
+                           "Neon block, 1.64 in a Fable block (docs/DESIGN_keys.md section 9); a run it stops exits "
+                           "with status 3")
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
-                      help="judge models for answers the rules cannot grade and for the names the rules leave to "
-                           "them: the donor's name or the right name of a full note in reported speech, or endorsed "
-                           "next to someone else offered as well, with another role (a co-author), a rejection in "
-                           "other words or a disclaimer; for the right name also another spelling or a doubt (for "
-                           "the donor's name these are not adopted, by rule); stored undecided rows are graded again "
-                           "first, without a new call (default: none)")
+                      help="judge models for answers the rules cannot grade and for every labelled answer that "
+                           "names the candidate in any form, whatever the rules would decide: the right name of a "
+                           "correct full answer (dark, both_right) and the donor's name on donor_wrong and control "
+                           "(alone and full, whatever the grade); the rules decide alone only the answers that do not "
+                           "name the donor's name. A failed or tied vote leaves the answer undecided, never to the "
+                           "rules, and a later run with --judges asks again; stored rows that are undecided, or that "
+                           "the rules decided and the judges decide now, are graded again first, without a new call "
+                           "(default: none: the rules decide, and what they leave open stays undecided)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "
                            "settings changed); the newest row counts (default: stop)")

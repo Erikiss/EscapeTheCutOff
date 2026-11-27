@@ -43,6 +43,7 @@ from cutoffmix.bench.keys.text import (
     disclaims,
     mask_note,
     mask_title,
+    mentions,
     offers,
     offers_another,
 )
@@ -102,6 +103,7 @@ __all__ = [
     "mask_note",
     "mask_title",
     "mcnemar_exact",
+    "mentions",
     "offers",
     "offers_another",
     "prompt_sha",

@@ -394,6 +394,44 @@ def _never(row: _Row) -> bool:
     return False
 
 
+# the labelled rows (design section 6) in the order the diagnostic table lists them
+LABELLED: tuple[tuple[str, str], ...] = (("dark", "full"), ("both_right", "full"), ("donor_wrong", "alone"),
+                                         ("donor_wrong", "full"), ("control", "alone"), ("control", "full"))
+_VERSUS = ("judged", "undecided", "agree", "rule_yes_judges_no", "rule_no_judges_yes", "open_yes", "open_no",
+           "no_rule")
+
+
+def _rules_vs_judges(rows: Iterable[_Row]) -> dict[str, dict[str, Any]]:
+    """The diagnostic of design section 6 ("rules versus judges"; no verdict uses it): for the answered labelled rows
+    whose label the adoption judges decided (``adoption_grader`` ``judge:<keys>``), per set and arm pooled over the
+    pairs, how the judges' decision (``adopted``) compares with the rules' own (``rule_adopted``): ``agree``, the rules
+    adopted and the judges did not (``rule_yes_judges_no``) or the reverse (``rule_no_judges_yes``), the rules left it
+    open and the judges adopted (``open_yes``) or did not (``open_no``); ``undecided`` the rows the judges' votes left
+    open, ``no_rule`` those written before ``rule_adopted`` was stored. On the ``full`` rows of ``dark`` and
+    ``both_right`` "adopted" is the right name given as the answer's own (correct)."""
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if (not row.answered or row.get("adoption") is None
+                or not str(row.get("adoption_grader") or "").startswith("judge")):
+            continue
+        set_, arm = str(row.plan.get("set")), str(row.plan.get("arm"))
+        entry = out.setdefault(f"{set_} {arm}", {"set": set_, "arm": arm, **{k: 0 for k in _VERSUS}})
+        entry["judged"] += 1
+        adopted = row.get("adopted")
+        if adopted is None:
+            entry["undecided"] += 1
+        elif "rule_adopted" not in (row.result or {}):
+            entry["no_rule"] += 1
+        elif row.get("rule_adopted") is None:
+            entry["open_yes" if adopted else "open_no"] += 1
+        elif bool(row.get("rule_adopted")) == bool(adopted):
+            entry["agree"] += 1
+        else:
+            entry["rule_yes_judges_no" if row.get("rule_adopted") else "rule_no_judges_yes"] += 1
+    order = {f"{s} {a}": i for i, (s, a) in enumerate(LABELLED)}
+    return dict(sorted(out.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0])))
+
+
 def _harm(items: Sequence[_Item]) -> dict[str, Any]:
     """``both_right``: the not-correct rate per arm and ``key`` against ``alone`` with b = alone correct and key not,
     c = key correct and alone not, and the excess harm (b - c) / n (design section 7, prediction 4)."""
@@ -738,7 +776,8 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
     items, ``no_pointer`` items and ``pointer`` items), ``pointer_items``, ``recognised`` (the dark items by
     recognition, ``all`` and ``no_pointer``), ``units`` (prediction 2; its numbers over ``all_items`` and on the
     ``pointer_items`` on their own), ``adoption`` (per pair, set and arm, and full vs alone), ``harm`` (both_right per
-    pair), ``pooled`` (the comparisons of predictions 3 and 4), ``rules``, ``flags`` and ``predictions`` (ids 1, "1b",
+    pair), ``pooled`` (the comparisons of predictions 3 and 4), ``rules_vs_judges`` (the diagnostic of the labelled rows
+    the judges decided, :func:`_rules_vs_judges`), ``rules``, ``flags`` and ``predictions`` (ids 1, "1b",
     2, 3, 4, each with ``text``, ``verdict`` and ``evidence``; 1, 1b and 2 also with ``all_items`` and
     ``pointer_items``). Verdicts are stated as :class:`_Voice` says, in the predictions' parts as well."""
     planned: dict[str, Mapping[str, Any]] = {}
@@ -878,7 +917,7 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
         "decisive_pair": decisive, "keyed_pairs": keyed, "planned_dark": planned_dark, "pairs": pairs,
         "paired": paired, "pointer_items": pointer_items, "recognised": recognised,
         "units": units, "adoption": adoption, "harm": harm,
-        "pooled": pooled,
+        "pooled": pooled, "rules_vs_judges": _rules_vs_judges(rows.values()),
         "rules": {"alpha": ALPHA, "floor_items": FLOOR_ITEMS, "key_margin": KEY_MARGIN,
                   "adoption_margin": ADOPTION_MARGIN, "undecided_limit": UNDECIDED_LIMIT, "min_units": MIN_UNITS,
                   "permutations": PERMUTATIONS, "permutation_seed": PERMUTATION_SEED,
@@ -947,7 +986,8 @@ def _related(value: Any) -> str:
 def render_report(report: Mapping[str, Any]) -> str:
     """The report as Markdown: a SIMULATED (or mixed backends) banner first when it applies, the totals and costs,
     the flags, the rates per pair, set and arm (primary and sensitivity), the paired comparisons, the pointer items,
-    the split by recognition, the units of prediction 2, adoption, harm, and the predictions with their evidence."""
+    the split by recognition, the units of prediction 2, adoption, harm, the rules versus the judges (a diagnostic),
+    and the predictions with their evidence."""
     t = report["totals"]
     cost = t["cost"]
     lines: list[str] = []
@@ -1085,6 +1125,26 @@ def render_report(report: Mapping[str, Any]) -> str:
         lines.append(f"| {pair} | {entry['items']} | {_fmt_rate(arms.get('alone'))} | {_fmt_rate(arms.get('key'))} | "
                      f"{_fmt_rate(arms.get('full'))} | {_fmt_test(test)} | "
                      f"{'n/a' if excess is None else f'{100 * excess:.1f} %'} |")
+
+    lines += ["", "## Rules versus judges (diagnostic; no verdict uses it)", "",
+              ("The labelled rows the adoption judges were asked about, by set and arm over all pairs: the rules' own "
+               "decision (rule_adopted) next to the judges'. Yes: the answer gives the name as its own (adopted; on "
+               "the full rows of dark and both_right the right name, so correct). A judge that rejects plain answers "
+               "shows as rules yes, judges no."), ""]
+    versus = report.get("rules_vs_judges") or {}
+    if versus:
+        lines += [("| set | arm | judged | judges undecided | agree | rules yes, judges no | rules no, judges yes | "
+                   "rules open, judges yes | rules open, judges no |"), "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+        for entry in versus.values():
+            lines.append(f"| {entry['set']} | {entry['arm']} | {entry['judged']} | {entry['undecided']} | "
+                         f"{entry['agree']} | {entry['rule_yes_judges_no']} | {entry['rule_no_judges_yes']} | "
+                         f"{entry['open_yes']} | {entry['open_no']} |")
+        no_rule = sum(entry["no_rule"] for entry in versus.values())
+        if no_rule:
+            lines += ["", (f"{no_rule} rows the judges decided carry no rule decision (written before rule_adopted was "
+                           "stored; a later run stores it without a call).")]
+    else:
+        lines.append("No labelled row was decided by the adoption judges.")
 
     lines += ["", "## Pre-registered predictions (docs/DESIGN_keys.md section 7)", "",
               "Interim and not testable give no verdict; verdicts count only on the complete plan.", ""]

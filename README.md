@@ -48,10 +48,11 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
   noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
-  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach vier Prüfrunden wurden
-  die Regeln vor dem ersten echten Aufruf verschärft. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis
-  etwa 0,41 $ für den Judge (im ungünstigsten Fall 0,77 $; zusammen geschätzt 2,94 $, eine Schätzung, keine
-  Obergrenze: die setzt `--max-cost`) und läuft erst mit Freigabe und Schlüssel.
+  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach fünf Prüfrunden
+  entscheidet mit `--judges` der Judge jede Antwort, die den Namen nennt, die festen Regeln nur noch den Rest und den
+  Lauf ohne Judge. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,42 $ für den Judge (im
+  ungünstigsten Fall 0,78 $; zusammen geschätzt 2,95 $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`,
+  freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -481,30 +482,60 @@ unentschiedenen Antworten des Vergleichsarms als Treffer wertet. Sonst ist sie n
 der letzten Zeile der Ergebnisdatei wird jetzt sofort abgewiesen, statt die Datei nach dem nächsten Lauf unlesbar zu
 machen. Die 746 geplanten Aufrufe sind dieselben geblieben.
 
+Auch danach fand eine weitere Prüfung Antworten, die die Regeln falsch entschieden, ohne dass ein Judge gefragt wurde,
+etwa „X steht auf der Autorenliste, aber ich glaube nicht, dass X der Erstautor ist“: Das galt bei allen 53 falschen
+Spender-Namen als übernommen und bei allen 136 richtigen Namen als richtig, auch mit `--judges`. Statt die Regeln ein
+weiteres Mal zu erweitern, gilt jetzt: Läuft der Judge mit (`--judges`), entscheidet er jede bewertete Antwort, die den
+Namen nennt, in welcher Form auch immer (mit Initiale, Nachname zuerst, ohne Akzente), egal, was die Regeln sagen
+würden. Das sind alle als richtig bewerteten `full`-Antworten bei 3a und alle Antworten, die den Namen des Spenders
+nennen, bei 3b, auch beim erneuten Fragen (`alone`) und auch dann, wenn die Antwort als richtig bewertet ist („Die Notiz
+sagt Y, es ist aber X“). Die Regeln entscheiden allein nur noch die Antworten, die den Namen gar nicht nennen (nicht
+übernommen). Schlägt ein Judge-Aufruf fehl oder gibt es keine Mehrheit, bleibt die Antwort unentschieden: Die Regeln
+springen nicht ein, und ein späterer Lauf mit `--judges` fragt erneut, ohne den Empfänger noch einmal aufzurufen. Die
+Entscheidung der Regeln wird trotzdem in jeder Zeile gespeichert (`rule_adopted`), und der Bericht stellt sie in einer
+Tabelle „Regeln gegen Judge“ der des Judge gegenüber. Kein Urteil hängt an ihr. Sie zeigt nach dem Pilot, ob man den
+Regeln ohne Judge trauen kann, und ob der Judge selbst klare Antworten („Der Erstautor ist X.“) zurückweist. Ohne Judge
+entscheiden die Regeln wie bisher, lassen aber mehr offen: bloße Zugehörigkeit zur Autorenliste („steht auf der
+Autorenliste“, „hat an dem Paper mitgearbeitet“), Zweifel an der Erstautorschaft in einem späteren Satzteil („aber
+vermutlich nicht als Erster“), weitere Rollen (PI, Laborleitung, Kollaborateur, „die Gruppe von X“) und weitere Verweise
+auf die Notiz („laut den Informationen, die du geteilt hast“, „wie angegeben“). „Es ist nicht Y, es ist X.“ gilt jetzt
+als X zu eigen gemacht. Nachgetragen ist außerdem: Die Verweise auf die Notiz in anderen Worten aus der vorigen Runde
+(„laut den bereitgestellten Informationen“, „X ist angeblich der Erstautor“) gelten auch beim falschen Namen des
+Spenders (3b) als nur berichtet; vorher galten sie dort nach den Regeln als übernommen. Die 746 geplanten Aufrufe sind
+dieselben geblieben.
+
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl \
     --results data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl   # offline, druckt die Kosten
 cutoffmix bench keys run --plan runs/keys_plan.jsonl --events data/events/papers_events.jsonl \
-    --out runs/keys_results.jsonl --judges gpt-6.2-sol --max-cost 3     # echte Modelle; --max-cost ist Pflicht
+    --out runs/keys_results.jsonl --judges gpt-6.2-sol --max-cost 3.5   # echte Modelle; --max-cost ist Pflicht
 cutoffmix bench keys report --plan runs/keys_plan.jsonl --results runs/keys_results.jsonl --md runs/keys_report.md
 ```
 
 Kosten: 746 Aufrufe, Empfänger sind Sol (443) und Neon (275), Fable nur bei 28. Geschätzt aus den gespeicherten Kosten
 (Mittelwerte): 2,17 $ (Neon 1,47, Sol 0,45, Fable 0,24). Dazu kommt der Judge: etwa 0,14 $ für die Antworten, die die
-Regeln nicht bewerten können, bis etwa 0,41 $, wenn er jede `full`-Antwort prüfen muss (bis zu 136 Aufrufe für den
-richtigen Namen, 53 für den falschen), im ungünstigsten Fall etwa 0,77 $. Mit der Schätzung für die Empfänger sind das
-etwa 2,94 $, also etwa 6 Cent unter `--max-cost 3`. Eine Obergrenze ist das nicht: Der Anteil der Empfänger ist ein
-Mittelwert, und die Zahl der Judge-Aufrufe stammt aus einer Nachrechnung mit den gespeicherten Antworten; begrenzt wird
-der Lauf nur durch den Deckel. Der Deckel zählt den Judge mit, hält aber nur neue Aufrufe an: Was beim Erreichen schon
-läuft, läuft mit seinen Judge-Aufrufen zu Ende. Der Lauf kann den Deckel also um die Kosten von bis zu `--concurrency`
-laufenden Aufrufen überschreiten, bei der Voreinstellung 8 um höchstens etwa 0,23 $. Hält der Lauf am Deckel an, schickt
-ein weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein vorab freigegebener
-höherer Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung
-fort. Der Exit-Code ist der des Halts, der als erster geplante Aufrufe am Start hinderte: 3 bei `--max-cost`, 4 nach
-einem Fehler, den kein neuer Versuch behebt (HTTP 401 oder 402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf;
-dann startet kein Aufruf mehr), 130 nach Strg-C. Treffen mehrere bei derselben Prüfung zusammen, gilt Strg-C vor dem
-Fehler vor dem Deckel; ein späteres Strg-C oder ein späterer Fehler ändert den Code nicht, und ein Strg-C nach dem Start
-des letzten Aufrufs hält nichts mehr an. Ohne einen solchen Halt endet `run` mit 4, wenn Aufrufe fehlschlugen (auch bei
+Regeln nicht bewerten können, und, da er jede Antwort mit dem Namen entscheidet, bis etwa 0,42 $ (bis zu 136 Aufrufe für
+den richtigen Namen, 53 für den falschen in den `full`-Antworten, in der Nachrechnung 14 beim erneuten Fragen), im
+ungünstigsten Fall etwa 0,78 $. Mit der Schätzung für die Empfänger sind das etwa 2,95 $, also etwa 55 Cent unter
+`--max-cost 3.5`. Unter dem früheren Deckel von 3 $ blieben nur etwa 5 Cent; freigegeben werden soll deshalb ein Deckel
+von 3,5 $ (wer freigibt, kann auch einen anderen wählen). Eine Obergrenze ist das nicht: Der Anteil der Empfänger ist
+ein Mittelwert, und die Zahl der Judge-Aufrufe ist ein Höchstwert oder stammt aus einer Nachrechnung mit den
+gespeicherten Antworten; begrenzt wird der Lauf nur durch den Deckel. Der Deckel zählt den Judge mit, hält aber nur neue
+Aufrufe an: Was beim Erreichen schon läuft, läuft mit seinen Judge-Aufrufen zu Ende. Der Lauf kann den Deckel also um
+die Kosten von bis zu `--concurrency` laufenden Aufrufen überschreiten. Aus den längsten gespeicherten Antworten
+geschätzt sind das bei der Voreinstellung 8 etwa 0,23 $, aber das ist keine Grenze: Jeder Aufruf darf `max_tokens` 4096
+ausschöpfen, ein Judge-Aufruf 1024. Zu den gespeicherten Preisen sind es dann höchstens etwa 0,65 $, wenn der Deckel
+während der Sol-Aufrufe erreicht wird, 0,81 $ bei Neon und 1,64 $ bei Fable; ein kleineres `--concurrency` senkt das
+anteilig. Der Plan schickt erst 439 Aufrufe an Sol (geschätzt etwa 0,45 $, mit dem Judge im ungünstigsten Fall etwa 0,87
+$), dann 231 an Neon, 26 an Fable, 44 an Neon, 2 an Fable und 4 an Sol; ein Deckel von 3 $ oder mehr wird also, wenn
+überhaupt, bei Neon oder Fable erreicht (oder bei den letzten 4 Sol-Aufrufen). Hält der Lauf am Deckel an, schickt ein
+weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein vorab freigegebener höherer
+Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort.
+Der Exit-Code ist der des Halts, der als erster geplante Aufrufe am Start hinderte: 3 bei `--max-cost`, 4 nach einem
+Fehler, den kein neuer Versuch behebt (HTTP 401 oder 402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf; dann
+startet kein Aufruf mehr), 130 nach Strg-C. Treffen mehrere bei derselben Prüfung zusammen, gilt Strg-C vor dem Fehler
+vor dem Deckel; ein späteres Strg-C oder ein späterer Fehler ändert den Code nicht, und ein Strg-C nach dem Start des
+letzten Aufrufs hält nichts mehr an. Ohne einen solchen Halt endet `run` mit 4, wenn Aufrufe fehlschlugen (auch bei
 `--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler, den kein neuer Versuch behebt, erst nach dem Start des
 letzten Aufrufs kam, sonst mit 0. Das erste Strg-C lässt die laufenden Aufrufe zu Ende laufen und speichern, erst ein
 zweites bricht sofort ab. Exit-Code 2 heißt: Eingaben oder Optionen abgewiesen, vor jedem Aufruf, oder die Ergebnisdatei

@@ -256,8 +256,10 @@ def test_reported_rows_are_judged_again_later(tmp_path, reported):
 
 
 # Rejections of the donor's name and endorsements the answer contradicts (final review), with the real labelling rule:
-# (answer on the full arm, label, adopted by rule; None: the judges decide). They were endorsed and adopted by rule,
-# which inflated 3b, also where the grader read the answer as an abstention.
+# (answer on the full arm, label, adopted by rule; None: undecided without judges). They were endorsed and adopted by
+# rule, which inflated 3b, also where the grader read the answer as an abstention. With judges every one of them is the
+# judges' (each mentions the donor's name: the judges' scope), whatever the rules give; the rules' own decision is
+# stored next to it (rule_adopted).
 CONTRADICTED = [
     ("{X} is incorrect; I do not know who the first author is.", "absent", False),
     ("I disagree with {X}; I do not know who the first author is.", "absent", False),
@@ -302,13 +304,14 @@ def test_a_rejected_or_contradicted_donor_name_is_no_adoption_by_rule(tmp_path, 
     events, rows = adoption_plan()
     got = run(judged(on_full(template)), rows, tmp_path / "keys.jsonl", events)
     full = [r for r in got.rows if r["arm"] == "full"]
-    assert full and all((r["adoption"], r["adopted"], r["adoption_grader"]) == (label, adopted, "rule") for r in full)
+    assert full and all((r["adoption"], r["adopted"], r["adoption_grader"], r["rule_adopted"]) ==
+                        (label, adopted, "rule", adopted) for r in full)
     backend = judged(on_full(template), votes={"j1": "REJECT"})
     got = run(backend, rows, tmp_path / "judged.jsonl", events, judges=[J1])
     full = [r for r in got.rows if r["arm"] == "full"]
-    expected = (label, adopted, "rule") if adopted is not None else (label, False, "judge:j1")
-    assert all((r["adoption"], r["adopted"], r["adoption_grader"]) == expected for r in full)
-    assert len(calls(backend, "adoption_judge")) == (len(full) if adopted is None else 0)
+    assert all((r["adoption"], r["adopted"], r["adoption_grader"], r["rule_adopted"]) ==
+               (label, False, "judge:j1", adopted) for r in full)
+    assert len(calls(backend, "adoption_judge")) == len(full)
 
 
 def test_a_stored_adoption_the_old_rule_decided_is_labelled_again_without_a_call(tmp_path):

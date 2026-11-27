@@ -3,12 +3,14 @@ has its row in section 10's refinements table, and the judge-cost figures of sec
 way section 9 says it prices a judge call (final review: prediction 1's rule text changed without a row; the judges
 were priced like probe calls, which understated the worst case the owner approves the pilot on). The README's cost
 paragraph, the recipients' estimate per model, the stored judge prices and the cap's overshoot are pinned too, and the
-texts of the exit statuses and of the judges' scope say what the code does (review of the final review)."""
+texts of the exit statuses and of the judges' scope say what the code does (review of the final review). With the
+judges' scope (the judges decide every labelled answer that names the candidate), the counts follow that scope in the
+replay, the overshoot is bounded at max_tokens per block of the plan's order, and the pilot's cap is 3.5 USD."""
 
 from __future__ import annotations
 
 import argparse
-import re
+import itertools
 from statistics import mean
 
 import pytest
@@ -18,7 +20,7 @@ import cutoffmix.cli
 from cutoffmix.bench.grading import grade_rule
 from cutoffmix.bench.io import load_events, load_results
 from cutoffmix.bench.keys import build_plan, estimate_cost, row_cost
-from cutoffmix.bench.keys.run import adoption_judge_messages
+from cutoffmix.bench.keys.run import _JUDGE_MAX_TOKENS, adoption_judge_messages
 from cutoffmix.bench.prompts import judge_messages, probe_messages
 
 DESIGN = ROOT / "docs" / "DESIGN_keys.md"
@@ -26,6 +28,9 @@ README = ROOT / "README.md"
 JUDGE = "gpt-6.2-sol"  # the pilot's judge (design section 6)
 PROMPT_USD, COMPLETION_USD = 2e-6, 10e-6  # per token, as section 9 states them (checked against the stored rows)
 CONCURRENCY = 8  # the default of 'bench keys run --concurrency'
+MAX_TOKENS = 4096  # every planned call's max_tokens (design section 4)
+CAP = 3.5  # the pilot's cap (design section 9)
+SHORT = {"gpt-6.2-sol": "Sol", "gemini-4-neon": "Neon", "claude-fable-5.2": "Fable"}
 
 
 def readme() -> str:
@@ -57,7 +62,7 @@ def priced():
     """Section 9's judge figures, computed the way it states: the judge's stored current_d usage gives the characters
     per prompt token and the mean and longest completion; a call's prompt is the judge's messages with the recipient's
     stored answer (at worst the longest stored answer or note) in them."""
-    from cutoffmix.bench.keys.run import _adoption_rule  # which alone rows the rules leave to the judges
+    from cutoffmix.bench.keys.run import _adoption_rule, _judged  # which alone rows are in the judges' scope
 
     events = load_events(EVENTS)
     results = load_results(RESULTS)
@@ -70,6 +75,12 @@ def priced():
     completion = mean(r.usage["completion_tokens"] for r in judge)
     longest_completion = max(r.usage["completion_tokens"] for r in judge)
     longest = max(max(len(r.response or "") for r in stored.values()), max(len(p["note"] or "") for p in plan))
+
+    def chars_per_token(model: str) -> float:
+        rows = [r for r in results if r.model == model and r.probe == "current_d"]
+        return mean(sum(len(m["content"]) for m in probe_messages(by_id[r.event_id], "current_d",
+                                                                   today="2026-11-25")) / r.usage["prompt_tokens"]
+                    for r in rows)
 
     def usd(messages, worst: bool = False) -> float:
         tokens = sum(len(m["content"]) for m in messages) / chars
@@ -85,11 +96,11 @@ def priced():
     grading = [p for p in plan if grade_rule(by_id[p["event_id"]], "current_d", answer(p)) is None]
     right = [p for p in plan if p["set"] in ("dark", "both_right") and p["arm"] == "full"]
     adopt_full = [p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "full"]
-    alone_due = []
+    alone_due = []  # the alone rows of the replay that mention the donor's name: the judges decide them
     for p in (p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "alone"):
         ruled = grade_rule(by_id[p["event_id"]], "current_d", answer(p))
-        adopted, label = _adoption_rule(p, by_id[p["event_id"]], answer(p), ruled[0] if ruled else "ungraded")
-        if label is not None and adopted is None:
+        _, label = _adoption_rule(p, by_id[p["event_id"]], answer(p), ruled[0] if ruled else "ungraded")
+        if _judged(p, by_id[p["event_id"]], answer(p), label):
             alone_due.append(p)
     figures = {
         "grading": (len(grading), sum(usd(judge_messages(by_id[p["event_id"]], "current_d", answer(p)))
@@ -108,11 +119,43 @@ def priced():
     recipients = {p["recipient"] for p in plan}
     worst_call = max(row_cost({"usage": r.usage}) for r in results if r.probe == "current_d" and r.model in recipients)
     estimate = estimate_cost(plan, results)
+    # the overshoot bound at max_tokens (review of 863ca47: the stored maxima are no bound): per block of one recipient
+    # in the plan's order, --concurrency items, each the recipient's call at max_tokens completion tokens with the
+    # block's longest planned prompt, at the stored prices per token, and two judge calls at their own max_tokens with
+    # an answer of max_tokens tokens in the prompt
+    prices = {}
+    for model in recipients:
+        rows = [r for r in results if r.model == model and r.probe == "current_d"]
+        prompt = {r.usage["cost_details"]["upstream_inference_prompt_cost"] / r.usage["prompt_tokens"] for r in rows}
+        done = {r.usage["cost_details"]["upstream_inference_completions_cost"] / r.usage["completion_tokens"]
+                for r in rows}
+        prices[model] = (max(prompt), max(done), chars_per_token(model), min(prompt), min(done))
+    template = max(max(sum(len(m["content"]) for m in judge_messages(by_id[p["event_id"]], "current_d", "")),
+                       sum(len(m["content"]) for m in adoption_judge_messages(by_id[p["event_id"]],
+                                                                              p["donor_answer"] or "", "")))
+                   for p in plan)
+    judge_bound = (template / chars + MAX_TOKENS) * PROMPT_USD + _JUDGE_MAX_TOKENS * COMPLETION_USD
+
+    def item_bound(p) -> float:
+        prompt_usd, completion_usd, cpt, _, _ = prices[p["recipient"]]
+        tokens = sum(len(m["content"]) for m in p["messages"]) / cpt
+        return tokens * prompt_usd + MAX_TOKENS * completion_usd + 2 * judge_bound
+
+    blocks = [(model, len(rows), max(item_bound(p) for p in rows))
+              for model, rows in ((k, list(g)) for k, g in itertools.groupby(plan, key=lambda p: p["recipient"]))]
+    first = plan[: blocks[0][1]]
+    first_ids = {p["id"] for p in first}
+    first_judges = sum(usd(judge_messages(by_id[p["event_id"]], "current_d", "x" * longest), True)
+                       for p in grading if p["id"] in first_ids)
+    first_judges += sum(adoption(p, True) for p in right + adopt_full + alone_due if p["id"] in first_ids)
     return {"figures": figures, "chars": chars, "completion": completion, "longest_completion": longest_completion,
             "longest": longest, "recipients": estimate["total_usd"], "by_model": estimate["by_model"],
             "calls": len(plan), "judge_rows": judge, "dark_full": sum(1 for p in right if p["set"] == "dark"),
             "both_right_full": sum(1 for p in right if p["set"] == "both_right"), "worst_call": worst_call,
-            "overshoot": CONCURRENCY * (worst_call + 2 * worst_judge)}
+            "overshoot": CONCURRENCY * (worst_call + 2 * worst_judge), "prices": prices, "blocks": blocks,
+            "bound": {SHORT[m]: CONCURRENCY * max(b for k, _, b in blocks if k == m) for m in recipients},
+            "item": {SHORT[m]: max(b for k, _, b in blocks if k == m) for m in recipients},
+            "first": estimate_cost(first, results)["total_usd"] + first_judges}
 
 
 def test_section_9_prices_every_judge_call_from_its_prompt(priced):
@@ -125,36 +168,44 @@ def test_section_9_prices_every_judge_call_from_its_prompt(priced):
     n, typical, worst = f["grading"]
     assert f"leaves {n} of the {priced['calls']} answers to the judges: about {typical:.2f} USD ({worst:.2f} at worst)" \
         in text
+    # the judges' scope (review of 863ca47): every correct right-name row and every donor row that names the donor's
+    # name goes to the judges; the replay counts the alone rows that mention it (14 of 53; the rules left 10 open)
     n, typical, worst = f["right"]
-    assert n == 136 and f"at most the {n} `full` rows" in text and f"about {typical:.2f} USD ({worst:.2f} at worst)" \
-        in text
+    assert n == 136 and "every correct `full` row of `dark` and `both_right`, so at most the 136 `full` rows" in text
+    assert f"(20): about {typical:.2f} USD ({worst:.2f} at worst)" in text
     n, typical, worst = f["adopt_full"]
     assert n == 53 and f"at most the {n} `full` rows of `donor_wrong` and `control`, about {typical:.2f} USD " \
         f"({worst:.2f} at worst)" in text
     n, typical, worst = f["alone"]
-    assert f"({n} of 53 in the replay, about {worst:.2f} USD at worst)" in text
-    rules_only = f["grading"][1]
-    every_full = sum(f[k][1] for k in ("grading", "right", "adopt_full", "alone"))
+    assert n == 14 and f"the `alone` rows that mention the donor's name ({n} of 53 in the replay, about {worst:.2f} " \
+        "USD at worst)" in text
+    every = sum(f[k][1] for k in ("grading", "right", "adopt_full", "alone"))
     at_worst = sum(f[k][2] for k in ("grading", "right", "adopt_full", "alone"))
-    assert (f"In all: about {rules_only:.2f} USD when the rules decide every name, up to about {every_full:.2f} USD "
-            f"when every `full` row goes to the judges, about {at_worst:.2f} USD at worst.") in text
+    assert f"In all: up to about {every:.2f} USD, about {at_worst:.2f} USD at worst" in text
+    assert "when the rules decide every name" not in text and "in a way the rules leave to the judges" not in text
     total = priced["recipients"] + at_worst
     # the total is the recipients' mean estimate plus the judges at their worst: no worst case, no bound (review of the
-    # final review: it read "about 2.94 USD at worst")
-    assert total < 3.0 and f"Added to the recipients' estimate that is about {total:.2f} USD, about " \
-        f"{3.0 - total:.2f} USD under the pilot's cap of 3 USD. It is no bound:" in text
+    # final review: it read "about 2.94 USD at worst"); under the old cap of 3 too little room is left (863ca47)
+    assert 3.0 - 0.1 < total < CAP and f"Added to the recipients' estimate that is about {total:.2f} USD, about " \
+        f"{CAP - total:.2f} USD under the pilot's cap of 3.5 USD. It is no bound:" in text
+    assert f"Under the cap of 3 USD of the earlier drafts the judges at their worst would leave about " \
+        f"{3.0 - total:.2f} USD" in text
     assert "USD at worst: under the pilot's cap" not in text
     # the README states the same figures (in German, decimal comma)
     text_de = readme()
-    assert f"bis etwa {comma(every_full)} $ für den Judge (im ungünstigsten Fall {comma(at_worst)} $; zusammen " \
-        f"geschätzt {comma(total)} $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`)" in text_de
-    assert re.search(rf"etwa {comma(rules_only)} \$ .* bis etwa {comma(every_full)} \$, wenn er jede", text_de)
-    n_right, n_adopt = f["right"][0], f["adopt_full"][0]
-    cents = round(100 * (3.0 - total))
-    assert f"(bis zu {n_right} Aufrufe für den richtigen Namen, {n_adopt} für den falschen), im ungünstigsten Fall " \
-        f"etwa {comma(at_worst)} $. Mit der Schätzung für die Empfänger sind das etwa {comma(total)} $, also etwa " \
-        f"{cents} Cent unter `--max-cost 3`. Eine Obergrenze ist das nicht" in text_de
+    assert f"bis etwa {comma(every)} $ für den Judge (im ungünstigsten Fall {comma(at_worst)} $; zusammen " \
+        f"geschätzt {comma(total)} $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`, freigegeben werden " \
+        "sollen 3,5 $)" in text_de
+    n_right, n_adopt, n_alone = f["right"][0], f["adopt_full"][0], f["alone"][0]
+    cents = round(100 * (CAP - total))
+    assert f"etwa {comma(f['grading'][1])} $ für die Antworten, die die Regeln nicht bewerten können, und, da er " \
+        f"jede Antwort mit dem Namen entscheidet, bis etwa {comma(every)} $ (bis zu {n_right} Aufrufe für den " \
+        f"richtigen Namen, {n_adopt} für den falschen in den `full`-Antworten, in der Nachrechnung {n_alone} beim " \
+        f"erneuten Fragen), im ungünstigsten Fall etwa {comma(at_worst)} $. Mit der Schätzung für die Empfänger " \
+        f"sind das etwa {comma(total)} $, also etwa {cents} Cent unter `--max-cost 3.5`. Unter dem früheren Deckel " \
+        f"von 3 $ blieben nur etwa {round(100 * (3.0 - total))} Cent" in text_de
     assert "im ungünstigsten Fall etwa 2" not in text_de and "Zusammen sind das im ungünstigsten Fall" not in text_de
+    assert "unter `--max-cost 3`" not in text_de
 
 
 def test_the_recipients_estimate_and_the_judge_prices_are_the_stored_ones(priced):
@@ -184,16 +235,59 @@ def test_the_recipients_estimate_and_the_judge_prices_are_the_stored_ones(priced
 def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     """The cap is checked before an item starts and the items in flight finish with their judge calls (section 6), so
     the run can end above it: by up to --concurrency items (review of the final review: section 9 and the README said
-    the run cannot spend more)."""
+    the run cannot spend more). The stored maxima give an estimate only; every call may use max_tokens, so section 9
+    bounds the overshoot per block of the plan's order at max_tokens (review of 863ca47: "at most about 0.23 USD" was
+    no bound)."""
     text, text_de = section(9), readme()
     overshoot, worst_call = priced["overshoot"], priced["worst_call"]
-    assert f"up to `--concurrency` items, at the default of {CONCURRENCY} at most about {overshoot:.2f} USD " \
-        f"(each item the most expensive stored recipient call, {worst_call:.3f} USD, and two judge calls at their " \
-        "worst)" in text
-    assert f"bei der Voreinstellung {CONCURRENCY} um höchstens etwa {comma(overshoot)} $" in text_de
+    assert f"From the stored maxima that is about {overshoot:.2f} USD at the default of {CONCURRENCY} (each item the " \
+        f"most expensive stored recipient call, {worst_call:.3f} USD, and two judge calls at their worst): an " \
+        "estimate, no bound." in text
+    assert f"at the default of {CONCURRENCY} at most about" not in text and "um höchstens etwa 0,23" not in text_de
+    prices = {SHORT[m]: v for m, v in priced["prices"].items()}
+    for prompt, completion, _, low_prompt, low_completion in prices.values():  # one price per token and model
+        assert prompt == pytest.approx(low_prompt, rel=1e-9) and completion == pytest.approx(low_completion, rel=1e-9)
+    per_million = {name: (f"{prompt * 1e6:g}", f"{completion * 1e6:g}") for name, (prompt, completion, *_) in
+                   prices.items()}
+    judge_prices = f"{PROMPT_USD * 1e6:g} and {COMPLETION_USD * 1e6:g}"
+    assert (f"Sol {' and '.join(per_million['Sol'])} USD, Neon {' and '.join(per_million['Neon'])}, Fable "
+            f"{' and '.join(per_million['Fable'])}, the judge {judge_prices}") in text
+    item, bound = priced["item"], priced["bound"]
+    assert f"costs at most about {item['Sol']:.2f} USD (Sol), {item['Neon']:.2f} (Neon) or {item['Fable']:.2f} " \
+        "(Fable)" in text
+    assert f"ends at most about {bound['Sol']:.2f} USD above the cap when it is reached in a Sol block, " \
+        f"{bound['Neon']:.2f} in a Neon block and {bound['Fable']:.2f} in a Fable block, at the default of " \
+        f"{CONCURRENCY}" in text
+    order = ", then ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][:2])
+    rest = ", ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][2:-1])
+    last = priced["blocks"][-1]
+    assert f"blocks of one recipient: {order.replace(' 439', ' 439 first')}, {rest} and {SHORT[last[0]]} {last[1]}" \
+        in text
+    assert f"first Sol block costs about {priced['by_model']['gpt-6.2-sol']['estimate_usd']:.2f} USD, about " \
+        f"{priced['first']:.2f} with its judges at their worst" in text
+    assert f"Aus den längsten gespeicherten Antworten geschätzt sind das bei der Voreinstellung {CONCURRENCY} etwa " \
+        f"{comma(overshoot)} $, aber das ist keine Grenze" in " ".join(text_de.split())
+    assert f"höchstens etwa {comma(bound['Sol'])} $, wenn der Deckel während der Sol-Aufrufe erreicht wird, " \
+        f"{comma(bound['Neon'])} $ bei Neon und {comma(bound['Fable'])} $ bei Fable" in text_de
+    assert f"mit dem Judge im ungünstigsten Fall etwa {comma(priced['first'])} $" in text_de
     assert "cannot spend more" not in text and "mehr wird also nicht ausgegeben" not in text_de
     assert "so a run can end above the cap by what the items in flight cost" in section(6)
     assert _keys_run_parser().get_default("concurrency") == CONCURRENCY           # the default the figure assumes
+    max_cost = next(a for a in _keys_run_parser()._actions if "--max-cost" in a.option_strings)
+    help_text = " ".join((max_cost.help or "").split())
+    assert f"up to about {bound['Sol']:.2f} USD in a Sol block of the plan, {bound['Neon']:.2f} in a Neon block, " \
+        f"{bound['Fable']:.2f} in a Fable block" in help_text and "the pilot asks for 3.5" in help_text
+
+
+def test_the_pilot_asks_for_a_cap_of_3_5_usd():
+    """The judges' worst case left about 5 cents under the cap of 3 USD, so the pilot's command asks the owner to
+    approve 3.5 USD (review of 863ca47), in the design and the README alike."""
+    assert "`--judges gpt-6.2-sol --max-cost 3.5`, the cap the owner is asked to approve (the owner may choose " \
+        "another cap" in section(9)
+    assert "--out runs/keys_results.jsonl --judges gpt-6.2-sol --max-cost 3.5   # echte Modelle" in \
+        README.read_text("utf-8")
+    assert "`--max-cost 3`" not in DESIGN.read_text("utf-8") and "--max-cost 3 " not in README.read_text("utf-8")
+    assert "the cap the owner is asked to approve is 3.5 dollars" in " ".join(DESIGN.read_text("utf-8")[:600].split())
 
 
 def _keys_run_parser() -> argparse.ArgumentParser:
@@ -228,18 +322,50 @@ def test_the_exit_statuses_are_those_of_the_first_stop_everywhere():
 
 
 def test_the_judges_scope_is_stated_for_each_name():
-    """For the donor's name, another spelling, a doubt or a rejection is absent: not adopted, by rule. Only for the
-    right name of a full note do these go to the judges; the README and the --judges help said so for both names
-    (review of the final review)."""
+    """With --judges the judges decide every labelled answer that names the candidate, the right name and the donor's
+    name alike, and the rules only the donor rows that do not name it (review of 863ca47: the rules decided by rule
+    phrasings that four review rounds kept finding). The README, the --judges help and the design say so; the rules'
+    own decision without judges is still stated for each name."""
     text_de = readme()
-    assert "Beim richtigen Namen einer `full`-Notiz (3a) entscheidet alles andere der Judge" in text_de
+    assert "Läuft der Judge mit (`--judges`), entscheidet er jede bewertete Antwort, die den Namen nennt, in welcher " \
+        "Form auch immer" in text_de
+    assert "Die Regeln entscheiden allein nur noch die Antworten, die den Namen gar nicht nennen (nicht übernommen)." \
+        in text_de
     assert "Beim falschen Namen des Spenders (3b) gilt eine Antwort nach den Regeln als übernommen, wenn sie sich " \
-        "den Namen zu eigen macht, die Bewertung sie als falsche Antwort liest und sie niemand anderen als Antwort " \
-        "anbietet; als nicht übernommen gilt sie nach den Regeln, wenn sie den Namen nicht als Antwort anbietet" in \
-        text_de
-    assert "sonst entscheidet der Judge" not in text_de and "noch eine andere Person nennt" not in text_de
+        "den Namen zu eigen macht" in text_de
     judges = next(a for a in _keys_run_parser()._actions if "--judges" in a.option_strings)
     help_text = " ".join((judges.help or "").split())
-    assert "for the right name also another spelling or a doubt (for the donor's name these are not adopted, by " \
-        "rule)" in help_text
-    assert "(the donor's name, or the right name of a full note: reported speech, another spelling" not in help_text
+    assert "every labelled answer that names the candidate in any form, whatever the rules would decide" in help_text
+    assert "the rules decide alone only the answers that do not name the donor's name" in help_text
+    assert "A failed or tied vote leaves the answer undecided, never to the rules" in help_text
+    assert "for the right name also another spelling or a doubt" not in help_text
+    six = section(6)
+    assert "**The judges' scope** (with `--judges`). The adoption judges decide every labelled answer that mentions " \
+        "the name it is measured against, whatever the rules would decide" in six
+    assert "`mentions(text, name, event)` reads widely" in six and "rule_adopted" in six
+    seven = section(7)
+    assert "The gates, the 20 % limit and the check against the undecided rows are the same whoever decides the rows." \
+        in seven and "an answered row is undecided only when the judges' votes failed or tied" in seven
+
+
+def test_section_10_records_the_judges_scope_and_its_refinements():
+    """The check of 863ca47 added four rows to the refinements table: the judges' scope, the rules without judges, the
+    3b effect of the wider note references (the row on the note in more words named only the right name) and the
+    cap's overshoot; the intro counts the rows each review added."""
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    titles = [line.split(" | ")[0].removeprefix("| ") for line in table.splitlines() if line.startswith("| ")][1:]
+    assert titles[-4:] == ["the judges' scope", "the rules without judges",
+                           "the wider note references on the donor's name", "the cap's overshoot"]
+    seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
+    assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
+    intro = " ".join(table[: table.index("| issue | before | now |")].split())
+    assert "added the seven rows from \"another role or a rejection in other words\" to \"the pilot's total and the " \
+        "cap\"" in intro
+    assert "added the last four rows, from \"the judges' scope\" on" in intro
+    rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
+    assert "\"Supposedly X.\"" in rows["the wider note references on the donor's name"]
+    assert "adopted by rule on `donor_wrong` and `control`" in rows["the wider note references on the donor's name"]
+    assert "0.23 USD is an estimate from the stored maxima" in rows["the cap's overshoot"]
+    assert "`rule_adopted`" in rows["the judges' scope"] and "`mentions`" in rows["the judges' scope"]
+    assert "the plan is unchanged byte for byte" in rows["the rules without judges"]

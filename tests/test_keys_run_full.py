@@ -166,11 +166,19 @@ def test_a_name_given_as_the_answers_own_stays_correct(tmp_path, real, event_id,
     events, _ = real
     rows = items(real, event_id)
     backend = judged(answering(template), votes={"j1": "REJECT"})
-    got = by_arm(run(backend, rows, tmp_path / "keys.jsonl", events, judges=[J1]))
-    full = got[(event_id, "full")]
+    full = by_arm(run(backend, rows, tmp_path / "keys.jsonl", events))[(event_id, "full")]
     assert full["grade"] == "correct" and full["grader"] == "rule"
-    assert (full["adoption"], full["adopted"], full["adoption_grader"]) == (label, True, "rule")
-    assert calls(backend, "adoption_judge") == [] and full["judge_usage"] == []
+    assert (full["adoption"], full["adopted"], full["adoption_grader"], full["rule_adopted"]) == \
+        (label, True, "rule", True)
+    assert backend.calls and calls(backend, "adoption_judge") == [] and full["judge_usage"] == []
+    # with judges the judges decide every correct full row, a plain own answer included; the rules' decision is kept
+    # next to theirs (a judge that rejects plain answers shows in the report's rules-versus-judges table)
+    for vote, grade in (("ENDORSE", "correct"), ("REJECT", "incorrect")):
+        backend = judged(answering(template), votes={"j1": vote})
+        full = by_arm(run(backend, rows, tmp_path / f"{vote}.jsonl", events, judges=[J1]))[(event_id, "full")]
+        assert (full["grade"], full["grader"], full["adoption"], full["adopted"], full["adoption_grader"],
+                full["rule_adopted"]) == (grade, "rule", label, vote == "ENDORSE", "judge:j1", True)
+        assert len(calls(backend, "adoption_judge")) == 1 and calls(backend, "judge") == []
 
 
 # ---- the rules decide only an answer that gives the right name as its own, and nobody else (final review) ----------
@@ -241,17 +249,23 @@ def test_an_alias_form_given_as_the_answers_own_is_correct_once_the_judges_endor
     assert calls(backend) == [] and len(calls(backend, "adoption_judge")) == 1      # the stored row, no new call
 
 
-def test_a_correct_answer_that_lists_co_authors_goes_to_the_judges_and_a_bare_one_does_not(tmp_path, real):
+def test_a_correct_answer_that_lists_co_authors_is_left_open_by_the_rules_and_a_bare_one_is_not(tmp_path, real):
     events, _ = real
     rows = items(real, EL_BANANI)
     listed = answering("The first author is {X}, with co-authors Yara Okafor and Ines Brandt.")
+    full = by_arm(run(judged(listed), rows, tmp_path / "listed_rules.jsonl", events))[(EL_BANANI, "full")]
+    assert decision(full) == ("ungraded", "rule", "endorsed", None, "rule") and full["rule_adopted"] is None
     backend = judged(listed, votes={"j1": "ENDORSE"})
     full = by_arm(run(backend, rows, tmp_path / "listed.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
-    assert decision(full) == ("correct", "rule", "endorsed", True, "judge:j1")
+    assert decision(full) == ("correct", "rule", "endorsed", True, "judge:j1") and full["rule_adopted"] is None
     assert len(calls(backend, "adoption_judge")) == 1
-    bare = judged(answering("The first author is {X}."), votes={"j1": "REJECT"})
-    full = by_arm(run(bare, rows, tmp_path / "bare.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
-    assert decision(full) == ("correct", "rule", "endorsed", True, "rule") and calls(bare, "adoption_judge") == []
+    bare = answering("The first author is {X}.")
+    full = by_arm(run(judged(bare), rows, tmp_path / "bare_rules.jsonl", events))[(EL_BANANI, "full")]
+    assert decision(full) == ("correct", "rule", "endorsed", True, "rule") and full["rule_adopted"] is True
+    backend = judged(bare, votes={"j1": "REJECT"})                      # with judges, the bare one is theirs too
+    full = by_arm(run(backend, rows, tmp_path / "bare.jsonl", events, judges=[J1]))[(EL_BANANI, "full")]
+    assert decision(full) == ("incorrect", "rule", "endorsed", False, "judge:j1") and full["rule_adopted"] is True
+    assert len(calls(backend, "adoption_judge")) == 1
 
 
 def test_an_endorsement_next_to_a_disclaimer_goes_to_the_judges(tmp_path, real):
@@ -329,25 +343,28 @@ def test_an_undecided_pass_through_becomes_correct_on_endorse(tmp_path, real):
 
 
 def stored(item: dict[str, Any], response: str, grade: str, *, hedged: bool = False, adoption: str | None = None,
-           adopted: bool | None = None, adoption_grader: str | None = None) -> dict[str, Any]:
+           adopted: bool | None = None, adoption_grader: str | None = None,
+           rule_adopted: bool | None = None) -> dict[str, Any]:
     """A result row as ``run`` writes it for ``item`` (scripted backend, default request), so a later run resumes it."""
     return {"id": item["id"], "set": item["set"], "donor": item["donor"], "recipient": item["recipient"],
             "event_id": item["event_id"], "arm": item["arm"], "response": response, "grade": grade, "hedged": hedged,
             "grader": "rule", "adopted": adopted, "adoption": adoption, "adoption_grader": adoption_grader,
-            "latency_s": 0.5, "usage": {"cost": 0.01}, "judge_usage": [], "backend": "scripted",
+            "rule_adopted": rule_adopted, "latency_s": 0.5, "usage": {"cost": 0.01}, "judge_usage": [],
+            "backend": "scripted",
             "prompt_sha": prompt_sha(item["messages"]),
             "request_sha": request_sha(item["messages"], max_tokens=4096, temperature=TEMPERATURE, model=MODELS[0]),
             "note_event": item.get("note_event"), "today": item.get("today"), "error": None}
 
 
 def stored_items(real) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
-    """The El Banani and Guo items with every row stored: the full rows with a label that is current (the dark one
-    endorsed, the both_right one undecided reported speech, a third one of Wang decided by a judge: REJECT)."""
+    """The El Banani and Guo items with every row stored: the full rows with a label (and the rules' decision) that is
+    current (the dark one endorsed, the both_right one undecided reported speech, a third one of Wang decided by a
+    judge: REJECT)."""
     rows = items(real, EL_BANANI, GUO, WANG)
     plan = {(r["event_id"], r["arm"]): r for r in rows}
     lines = {k: stored(p, DONT_KNOW, "abstain") for k, p in plan.items()}
     lines[(EL_BANANI, "full")] = stored(plan[(EL_BANANI, "full")], "Mohamed El Banani.", "correct",
-                                        adoption="endorsed", adopted=True, adoption_grader="rule")
+                                        adoption="endorsed", adopted=True, adoption_grader="rule", rule_adopted=True)
     lines[(GUO, "full")] = stored(plan[(GUO, "full")], "According to the note, the first author is Daya Guo.",
                                   "ungraded", adoption="reported", adoption_grader="rule")
     lines[(WANG, "full")] = stored(plan[(WANG, "full")], "The note's answer, Ziqi Wang, is wrong.", "incorrect",
@@ -368,12 +385,15 @@ def test_a_full_row_whose_label_is_current_is_not_labelled_again(tmp_path, real)
     seen = []
     got = run(backend, rows, out, events, on_start=seen.append)
     assert backend.calls == [] and got.regraded == 0 and seen[0].relabel == 0 and out.read_bytes() == before
-    # with judges only the undecided row is due; the judge's REJECT and the endorsed row stand
+    # with judges the undecided row and the row the rules decided are due (the judges decide every right name); the
+    # judge's REJECT stands
     backend = judged(lambda req: DONT_KNOW, votes={"j1": "ENDORSE"})
     got = by_arm(run(backend, rows, out, events, judges=[J1]))
-    assert len(calls(backend, "adoption_judge")) == 1 and calls(backend) == [] and calls(backend, "judge") == []
+    assert len(calls(backend, "adoption_judge")) == 2 and calls(backend) == [] and calls(backend, "judge") == []
     assert fields(got[(GUO, "full")]) == ("correct", False, "rule", "reported", True, "judge:j1")
-    assert got[(WANG, "full")] == lines[(WANG, "full")] and got[(EL_BANANI, "full")] == lines[(EL_BANANI, "full")]
+    assert fields(got[(EL_BANANI, "full")]) == ("correct", False, "rule", "endorsed", True, "judge:j1")
+    assert got[(EL_BANANI, "full")]["rule_adopted"] is True and got[(GUO, "full")]["rule_adopted"] is None
+    assert got[(WANG, "full")] == lines[(WANG, "full")]
 
 
 def test_a_correct_full_row_stored_without_a_label_is_labelled_without_a_call(tmp_path, real):
@@ -494,8 +514,10 @@ def test_hedged_pass_throughs_the_rules_cannot_grade_keep_3a_from_a_verdict(tmp_
     assert half["comparison"]["b"] == 0 and half["comparison"]["verdict"] == "refuted"
     assert half["undecided"] == {"undecided": len(full), "full_rows": len(full), "share": 1.0}
     assert half["verdict"] == "not testable (undecided answers; grade with --judges)"
-    # once a judge answers, the pass-throughs are correct and 3a is supported
-    backend = judged(answering(template, key=DONT_KNOW), grade='{"label": "correct", "hedged": true}')
+    # once the judges answer, the pass-throughs are correct (the grading judge) and the answers' own (the adoption
+    # judge, who decides every correct full row), and 3a is supported
+    backend = judged(answering(template, key=DONT_KNOW), grade='{"label": "correct", "hedged": true}',
+                     votes={"j1": "ENDORSE"})
     run(backend, dark, out, events, judges=[J1])
     half = build_report(dark, read_jsonl(out))["predictions"][3]["halves"]["3a"]
     assert half["comparison"]["b"] == len(full) and half["verdict"] == "supported"

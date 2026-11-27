@@ -484,7 +484,7 @@ def test_render_report_sections_and_json():
     json.loads(json.dumps(report))
     assert set(report) == {"totals", "backends", "simulated", "mixed_backends", "decisive_pair", "keyed_pairs",
                            "planned_dark", "pairs", "paired", "pointer_items", "recognised", "units", "adoption",
-                           "harm", "pooled", "rules", "flags", "predictions"}
+                           "harm", "pooled", "rules_vs_judges", "rules", "flags", "predictions"}
     assert [p["id"] for p in report["predictions"]] == [1, "1b", 2, 3, 4]
     assert all({"id", "text", "verdict", "evidence"} <= set(p) for p in report["predictions"])
     md = render_report(report)
@@ -492,6 +492,7 @@ def test_render_report_sections_and_json():
                     "## Paired comparisons on dark items", "## Pointer items", "## Dark items by recognition",
                     "## Units of prediction 2", "## Adoption of the donor's wrong name",
                     "## Items both answered correctly (both_right)",
+                    "## Rules versus judges (diagnostic; no verdict uses it)",
                     "## Pre-registered predictions (docs/DESIGN_keys.md section 7)"):
         assert heading in md
     rules = report["rules"]                                         # the pre-registered constants (section 7)
