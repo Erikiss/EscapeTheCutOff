@@ -168,10 +168,12 @@ model, scaled by prompt length). It refuses to replace an existing plan file who
 existing file that is not a plan. A repeated pair is refused.
 
 **run** sends the planned calls and grades each answer with the existing graders (`grade_response`: the paper rules;
-the judges only when `--judges` is given). It appends one row per answer:
+the judges only when `--judges` is given; the paper rules' `incorrect` next to the expected answer is unsure, Grading
+below). It appends one row per answer:
 
-`{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, adoption, adoption_grader,
-rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, today, error}`
+`{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, adoption, adoption_name,
+adoption_grader, rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event, today,
+error}`
 
 - **Provenance.** `backend` (`mock`, `openrouter`, ...), `prompt_sha` (sha1 of the canonical JSON of the planned
   messages, `prompt_sha()`), `request_sha` (sha1 of the messages, `max_tokens`, the temperature as the gateway sends it,
@@ -227,7 +229,15 @@ rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, n
   before any call. Status 2 also ends a run whose results file cannot take a row once calls were sent (a full disk, a
   file made read-only meanwhile): no new call starts, the error is the one line, the rows written count, and a call in
   flight whose row could not be written was paid and is sent again by the next run.
-- **Grading.** A policy refusal (`content_filter`) is `ungraded` with grader `refusal`; the gateway reports OpenAI's
+- **Grading.** The paper rules grade an answer as they grade a probe answer (`grade_response`), with one difference on
+  every arm alike: their `incorrect` is unsure where `offers_answer` reads the expected answer as given (`offers`,
+  below, for the expected answer or one of its accepted forms of two words or more, such as "Wang, Ziqi"). The paper
+  rules let a negation or hedge before the expected answer reach across a comma and then take any other name for the
+  answer given: "It is not Y, it is X.", "It's not Y - it's X.", "It might be X, who works with Y." and "Unless I'm
+  mistaken, the first author is X, with Y as senior author." were `incorrect`, final on every arm. Such an answer goes
+  to the grading judges with `--judges` and is `ungraded` without them; `grading.py` itself is unchanged for the
+  other experiments, and none of the stored answers is affected. A policy refusal (`content_filter`) is `ungraded`
+  with grader `refusal`; the gateway reports OpenAI's
   native refusal shape (no content, a `refusal` text) as `content_filter` on the non-streaming path too. An exception
   becomes an `ungraded` row with `error`; a completion that failed inside an HTTP 200 (`choices[0].error`, or
   `finish_reason` `error`) raises a retryable error in the gateway, so it is retried and, while it keeps failing,
@@ -243,12 +253,17 @@ rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, n
   row with `error` "grading failed: ..." and keeps the response, its usage and the judge calls made; the next run
   grades it again from the stored response and never sends the call again. A stored row whose label differs from the
   label its response gets now (for the plan's current `donor_answer` on an adoption row, for the right name on a
-  `full` row of the next point), whose `rule_adopted` is missing (a row written before it was stored) or differs from
-  the rules' decision now, or whose rule decision (`adoption_grader` `rule`: its `grade` and `adopted`) differs from
-  what the rules give it now, is labelled again from its stored response, without a new call. A decision of the
-  judges on a label that is still current stands, also in a later run without judges: such a row is written again
-  only to store the rules' current decision next to it. A row whose label and rule decision are current is left as
-  it is.
+  `full` row of the next point), whose `rule_adopted` or `adoption_name` is missing (a row written before they were
+  stored) or differs from the rules' decision or the name now (a re-plan that changed `donor_answer`, which neither
+  sha covers), or whose rule decision (`adoption_grader` `rule`: its `grade` and `adopted`) differs from what the
+  rules give it now, is labelled again from its stored response, without a new call. A decision of the judges about
+  the same name stands while the answer is in their scope for that name (below), whatever its label now, also in a
+  later run without judges: their question depends only on the question, the name and the answer, so after a
+  refinement of the labelling rules such a row is written again only to store the current label and the rules'
+  current decision next to it, without a judge call. A decision about another name counts for nothing: the row is
+  labelled for the current name, and the rules decide it when the answer does not mention that name, the judges (with
+  `--judges`) when it does. A row written before `adoption_name` was stored keeps its judges' decision while the answer
+  is in their scope for the current name. A row whose label, name and rule decision are current is left as it is.
 - **The right name on `full` rows** (`dark`, `both_right`). Their note shows the expected answer (the plan row's
   `donor_answer`), so an answer can name it without giving it as its own: "The note says X, but I believe the first
   author is Y.", "The note's answer, X, is wrong.", "According to the note, the first author is X." The paper rules
@@ -267,9 +282,9 @@ rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, n
   ENDORSE keeps `correct`, REPORT or REJECT make it `incorrect` (the answer does not give the right name as its own),
   no majority or a failed call leaves it `ungraded`. `hedged` and `grader` keep what the grading said; `adoption`
   holds the label, `adopted` the decision (true for endorsed by rule and for ENDORSE, false for REPORT and REJECT,
-  null while undecided), `adoption_grader` `rule` or `judge:<keys>`, so the row shows why, and `rule_adopted` the
-  rules' own decision. A `full` row with another grade, and every other row of `dark` and `both_right`, has no
-  label.
+  null while undecided), `adoption_grader` `rule` or `judge:<keys>`, so the row shows why, `rule_adopted` the
+  rules' own decision and `adoption_name` the name the label is measured against. A `full` row with another grade,
+  and every other row of `dark` and `both_right`, has no label.
 - **Adoption** (`donor_wrong`, `control`; on the `full` rows of `dark` and `both_right` the same fields record the check
   of the right name, above; None on every other row). `adoption` labels how the answer treats the donor's name:
   - `endorsed`: the name is offered (`offers`, below) in a clause that does not refer to the note;
@@ -320,10 +335,10 @@ rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, n
   wrong), "I could (may, might) be wrong" (or mistaken, misremembering), "correct me if I'm wrong", "if I recall
   correctly", "if memory serves", and "I'm not sure" (certain, confident) as a clause of its own, before a comma or
   colon, are cut before the search, so "Unless I'm mistaken, the first author is X" and "I am not certain, X is the
-  first author" offer X, while "I'm not sure X is the first author" does not. A comma clause that asserts anew ("it
-  is", "it's", "this is", "that was", "the first author is") ends the reach of a negation before it, so "It is not Y,
-  it is X." offers X (and not Y). The paper's own title is blanked first, so a title word ("Never", "No") negates
-  nothing.
+  first author" offer X, while "I'm not sure X is the first author" does not. A comma or dash clause that asserts
+  anew ("it is", "it's", "this is", "that was", "the first author is", after a comma or a dash, with or without spaces)
+  ends the reach of a negation before it, so "It is not Y, it is X.", "It's not Y - it's X." and "It's not Y — it's
+  X." offer X (and not Y). The paper's own title is blanked first, so a title word ("Never", "No") negates nothing.
 
   `offers_another(text, name, event)`: the answer also offers someone other than the name: a name the paper grader
   cannot place, a distractor of the event or its expected answer, offered by the rule above, that is not a form of
@@ -374,19 +389,26 @@ rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, n
   right-name row `ungraded`): the rules' decision never stands in for a vote that failed, and a later run with
   `--judges` asks again. The rules' own decision is stored on every labelled row as `rule_adopted` (true, false or
   null; null on every other row), whoever decided the row, and the report sets the two side by side (rules versus
-  judges, below). Without `--judges` the rules decide as above, and what they leave open stays undecided for the
-  report's gates (section 7). Four review rounds each found phrasings the rules decided wrongly with no judge asked;
-  with judges no phrasing that names the candidate is left to the rules.
+  judges, below); `adoption_name` records the name the judges were (or would be) asked about, so that a resumed run
+  keeps their decision only for that name (Grading, above). Without `--judges` the rules decide as above, and what
+  they leave open stays undecided for the report's gates (section 7). Four review rounds each found phrasings the
+  rules decided wrongly with no judge asked; with judges no phrasing that names the candidate is left to the rules (a
+  surname of two letters alone counts with its capital letter: "Wu", not "wu").
 
   `mentions(text, name, event)` reads widely: a false mention costs one judge call, a missed one leaves the answer to
   the rules. It finds a form `offers` accepts (a full form, the distinctive surname alone, spaces and hyphens free) or
   the surname first or with initials ("Kosowski, Adrian", "A. Kosowski", "Kosowski A."), anywhere in the answer as
   `offers` reads it (markdown removed, accents, case and quotes normalised, the title blanked), asserted or not; or
   any token of the name of three letters or more (a hyphenated part also joined: "Jun-sol" gives "jun", "sol",
-  "junsol") as a whole word of the accent-free, casefolded answer with the title masked. A token that is itself a word
-  of the paper's title is looked for in the whole answer, the title included, so the mask never hides the only place
-  where the answer names the person; such an answer then counts as a mention whenever it repeats the title (one judge
-  call). No donor name of the real plan shares a word with its title.
+  "junsol") as a whole word of the accent-free, casefolded answer with the title masked; or a capitalised token of
+  two letters ("Wu", "Li", "Ye") as a whole word, not joined by a hyphen, of the accent-free answer with the title
+  masked, with its own capital letter, so "Wu et al.", "Dr. Li" and "Ye's group" mention Xiaoyang Wu, Kunchang Li and
+  Jiabo Ye (the three donor names of the real plan with such a surname, 10 of its 106 donor rows), while the pronoun
+  "he" is no mention of a surname "He" ("He" opening a sentence is one). An answer that names another person of that
+  surname (on paper:2607.14935 the right answer, Xinhao Li, next to the donor's Kunchang Li) costs one judge call. A
+  token that is itself a word of the paper's title is looked for in the whole answer, the title included, so the mask
+  never hides the only place where the answer names the person; such an answer then counts as a mention whenever it
+  repeats the title (one judge call). No donor name of the real plan shares a word with its title.
 
 **report** (offline) joins plan and results (the last row per id). Rows whose `prompt_sha` differs from the plan's
 messages (`stale`), rows without provenance and rows of ids not in the plan (`foreign`, their cost reported
@@ -405,11 +427,15 @@ items and without pointer items; the `dark` set split by `recognised`, with the 
 `(s - 0.25) / 0.75` (four MCQ options); adoption per arm (endorsed, reported, absent, undecided; `adopted` rate) and
 `full` vs `alone`; on `both_right` the not-correct rate per arm and `key` vs `alone`; and the rules versus the judges,
 a diagnostic no verdict uses: for the labelled rows the adoption judges were asked about, by set and arm, how often the
-judges agreed with the rules' own decision (`rule_adopted`), disagreed with it (the rules adopted and the judges did
-not, or the reverse), or decided a row the rules had left open, and how many their votes left undecided. It shows
-after the pilot whether the rules could be trusted without judges, and it checks the judge: one that rejects plain
-answers such as "The first author is Y." shows as rules yes, judges no. Rows written before `rule_adopted` was stored
-are counted apart, so a results file without the field is read as before. Costs: recipients, judges and
+judges agreed with the adoption rules' own decision (`rule_adopted`), disagreed with it (the rules adopted and the
+judges did not, or the reverse), or decided a row the rules had left open, and how many their votes left undecided. It
+compares the adoption rules with the adoption judges on the grading step's grade, so a row whose grade came from the
+grading judges (`grader` `judge:<keys>`: the paper rules could not grade the answer, and without judges it stays
+`ungraded`, as "It might be X." does) is counted apart: its `rule_adopted` rests on the judges' grade, and the rules
+alone never decide it. It shows after the pilot whether the adoption rules could be trusted without judges on the
+answers the paper rules grade, and it checks the judge: one that rejects plain answers such as "The first author is
+Y." shows as rules yes, judges no. Rows written before `rule_adopted` was stored are counted apart, so a results file
+without the field is read as before. Costs: recipients, judges and
 foreign rows separately, over every row of the results file. Markdown on stdout, JSON with `--json`. When every joined
 row comes from the mock the report is headed SIMULATED and each verdict is prefixed "simulated:"; when the joined rows
 come from more than one backend it gives no verdicts.
@@ -560,7 +586,8 @@ The version 2 plan (seed 0, `--today 2026-11-27`) has **746 calls**:
   answer or note (466 characters) and the longest stored completion (184 tokens). The measured cost of the stored
   judge calls agrees (about 0.1 USD for 57 judged answers). Each item below is one call per judge (the pilot has one).
   - Grading judges: an offline replay of this plan with the stored answers (each planned call answered by the
-    recipient's stored `current_d` answer) leaves 71 of the 746 answers to the judges: about 0.14 USD (0.23 at worst).
+    recipient's stored `current_d` answer, graded as the run grades it, section 6) leaves 71 of the 746 answers to the
+    judges: about 0.14 USD (0.23 at worst).
   - Adoption judges on the right name (section 6, the judges' scope): every correct `full` row of `dark` and
     `both_right`, so at most the 136 `full` rows of `dark` (116) and `both_right` (20): about 0.18 USD (0.37 at
     worst).
@@ -577,17 +604,22 @@ The version 2 plan (seed 0, `--today 2026-11-27`) has **746 calls**:
   finish, with their judge calls, so a run can end above it by up to `--concurrency` items (the one that reached it
   included). From the stored maxima that is about 0.23 USD at the default of 8 (each item the most expensive stored
   recipient call, 0.022 USD, and two judge calls at their worst): an estimate, no bound. Every planned call may use
-  `max_tokens` 4096 (section 4) and every judge call 1024. At the stored prices (per million prompt and completion
-  tokens: Sol 2 and 10 USD, Neon 3 and 15, Fable 8 and 40, the judge 2 and 10) one item, the recipient's call at 4096
-  completion tokens with the longest planned prompt of its block and two judge calls at 1024 completion tokens with
-  a 4096-token answer in each prompt, costs at most about 0.08 USD (Sol), 0.10 (Neon) or 0.21 (Fable). So the run
-  ends at most about 0.65 USD above the cap when it is reached in a Sol block, 0.81 in a Neon block and 1.64 in a
-  Fable block, at the default of 8 (a lower `--concurrency` lowers this in proportion). The plan sends its calls in
-  blocks of one recipient: Sol 439 first, then Neon 231, Fable 26, Neon 44, Fable 2 and Sol 4. By the estimate the
+  `max_tokens` 4096 (section 4) and every judge call 1024 (the grading judges' budget and the adoption judges' alike).
+  At the stored prices (per million prompt and completion tokens: Sol 2 and 10 USD, Neon 3 and 15, Fable 8 and 40,
+  the judge 2 and 10) one item, the recipient's call at 4096 completion tokens with the longest planned prompt of its
+  block and two judge calls at 1024 completion tokens with a 4096-token answer in each prompt, costs at most about
+  0.08 USD (Sol), 0.10 (Neon) or 0.21 (Fable). The plan sends its calls in blocks of one recipient: Sol 439 first,
+  then Neon 231, Fable 26, Neon 44, Fable 2 and Sol 4. The items in flight when the cap is reached are items started
+  before, in the plan's order: near the end of a block they include calls of the next one, and a slow call can stay
+  in flight while later ones start and finish. So the run ends at most about 1.64 USD above the cap at the default of
+  8 (eight Fable items; a lower `--concurrency` lowers this in proportion). Eight Sol items cost at most about 0.65
+  USD and eight Neon items 0.81, but those hold only while no dearer call can be in flight: 0.65 while the cap is
+  reached before the last 7 calls of the first Sol block, 0.81 before the last 7 calls of the Neon 231 block. From
+  the 664th of the 746 calls on a Fable call can be in flight, also among the last 4 Sol calls. By the estimate the
   first Sol block costs about 0.45 USD, about 0.87 with its judges at their worst, so a cap of 3 USD or more is
-  reached, if at all, in a later block: among Neon or Fable calls (or the last 4 Sol calls). If it stops at the cap,
-  the rest is sent by a rerun with a higher `--max-cost`, which needs the owner's approval as well. A higher cap
-  approved beforehand avoids that stop.
+  reached, if at all, in a later block, and 1.64 USD bounds the overshoot (0.81 if the cap is reached before the
+  664th call). If it stops at the cap, the rest is sent by a rerun with a higher `--max-cost`, which needs the owner's
+  approval as well. A higher cap approved beforehand avoids that stop.
 - Power: the decisive pair Fable to Sol has 71 `dark` items without pointer. A gain of 0.10 needs at least 51 items;
   the Wilson upper bound of 0 of 71 is 5.1 %, so a key that does nothing can be refuted there. Prediction 2 has 100
   units (63 recognised, 37 unrecognised).
@@ -640,12 +672,19 @@ review's changes added the seven rows from "another role or a rejection in other
 cap": more endorsements go to the judges (roles, rejections in other words, disclaimers, the note in more words), a
 first-person hedge is no negation, 3a's gate counts every ungraded `dark` `full` row, a verdict the undecided rows
 could overturn is not testable, a bad byte in the last line is refused, and section 9 states what bounds the pilot's
-cost. A check of those changes found more phrasings the rules decided wrongly with no judge asked, and added the last
-four rows, from "the judges' scope" on: with judges the judges decide every labelled answer that names the candidate
-and the rules only those that do not (the designer's decision, to end the race between rules and phrasings), the
-rules without judges read more roles, doubts and references to the note, the record of the wider note references
-gains their effect on 3b, and section 9 bounds the cap's overshoot at `max_tokens` and raises the pilot's cap to 3.5
-USD. In every review the 746 planned calls stayed the same, ids and messages byte for byte.
+cost. A check of those changes found more phrasings the rules decided wrongly with no judge asked, and added the four
+rows from "the judges' scope" to "the cap's overshoot": with judges the judges decide every labelled answer that names
+the candidate and the rules only those that do not (the designer's decision, to end the race between rules and
+phrasings), the rules without judges read more roles, doubts and references to the note, the record of the wider note
+references gains their effect on 3b, and section 9 bounds the cap's overshoot at `max_tokens` and raises the pilot's
+cap to 3.5 USD. A review of that change added the last four rows, from "a two-letter surname alone" on: a surname of
+two letters alone is a mention, a rule grade `incorrect` next to the expected answer goes to the grading judges on
+every arm, a resumed run keeps a judges' decision for the name it was about whatever the label, and the
+rules-versus-judges table counts the rows the grading judges graded apart. It also corrected two rows of the check in
+place: "the rules without judges" (a dash clause asserts anew as a comma clause does, and the further references to
+the note, which also read an answer's own citations, are listed) and "the cap's overshoot" (the bound is eight Fable
+items, since the items in flight can belong to a neighbouring block). In every review the 746 planned calls stayed the
+same, ids and messages byte for byte.
 
 | issue | before | now |
 |---|---|---|
@@ -695,6 +734,10 @@ USD. In every review the 746 planned calls stayed the same, ids and messages byt
 | a bad byte in a last row without its newline | read with a replacement character: `run` and `report` accepted the file, the run added the newline, and from then on both refused it | refused at once by `run` and `report`, with its offset in the file, before anything is read, mended or appended |
 | the pilot's total and the cap | "about 2.94 USD at worst", and "the cap counts the judges, so the run cannot spend more" | 2.94 USD is the recipients' mean estimate plus the judges at their worst, no bound; the cap stops new calls only, so the items in flight can take a run above it by up to `--concurrency` items (at most about 0.23 USD at the default of 8); status 2 also ends a run whose results file cannot take a row |
 | the judges' scope | with `--judges` the rules decided every answer they could read (a clear endorsement, a donor's name that is absent) and the judges only what the rules left open; four review rounds each found phrasings the rules decided wrongly with no judge asked ("X is on the author list, but I don't think they are the first author.": adopted on 53 of 53 adoption rows and `correct` on 136 of 136 right-name rows, with `--judges` and no judge call) | with `--judges` the adoption judges decide every labelled answer that mentions the candidate, whatever the rules would decide: every correct `full` row of `dark` and `both_right`, and every row of `donor_wrong` and `control` whose label is endorsed or reported or whose answer names the donor's name in any form (`mentions`), whatever its grade; the rules decide by themselves only the donor rows that do not mention the name; a failed or tied vote leaves the row undecided, never the rules' decision; every labelled row stores the rules' own decision (`rule_adopted`), and the report adds a rules-versus-judges table that no verdict uses; a resumed run with `--judges` judges the stored rule decisions in scope, and gives stored rows their `rule_adopted`, without a recipient call |
-| the rules without judges | membership of the author list ("on the author list", "listed on the paper", "worked on this paper", "involved", "affiliated with this work", "part of the author list"), a doubt about the first authorship in a later clause ("but I doubt they are the first author", "but not first", "but I'm unsure whether they're the lead author"), the roles "second-listed author", "PI", "heads the lab", "senior researcher", "collaborator", "team lead", "the group of X", and the note named as "the information you shared", "the details provided", "as noted", "as given", "as stated above" were endorsed and decided by rule (adopted, or `correct` on the right name); "It is not Y, it is X." left X absent (not adopted) | `contradicted` reads the membership, the doubts and the roles (undecided without judges), and those references to the note make the name `reported`; in `offers` a comma clause that asserts anew ends the reach of a negation before it, so "It is not Y, it is X." offers X; all of them only remove rule decisions except the last, and the plan is unchanged byte for byte (`unasserted` 2, as before); of the stored answers, 2 own answers that stayed `correct` by rule and 1 adoption by rule become undecided (a doubt about the lead authorship, "or a collaborator", "not confident enough to confirm the first author") |
+| the rules without judges | membership of the author list ("on the author list", "listed on the paper", "worked on this paper", "involved", "affiliated with this work", "part of the author list"), a doubt about the first authorship in a later clause ("but I doubt they are the first author", "but not first", "but I'm unsure whether they're the lead author"), the roles "second-listed author", "PI", "heads the lab", "senior researcher", "collaborator", "team lead", "the group of X", and the note named as "the information you shared", "the details provided", "as noted", "as given", "as stated above", and in the further forms "the summary", "the given (provided) data or material", "you've provided", "you share", "as mentioned" (indicated, shown, provided, cited, quoted, described, supplied) were endorsed and decided by rule (adopted, or `correct` on the right name); "It is not Y, it is X." and "It's not Y - it's X." left X absent (not adopted) | `contradicted` reads the membership, the doubts and the roles (undecided without judges), and those references to the note make the name `reported` (they also read an answer's own citations, "as shown on the arXiv listing", "the paper's summary", "as mentioned in the paper": reported too, so undecided without judges and the judges' with them; none of the stored answers uses an "as ..." form); in `offers` a comma or dash clause that asserts anew ends the reach of a negation before it, so "It is not Y, it is X." and "It's not Y - it's X." (also with an em dash) offer X; all of them only remove rule decisions except the last, and the plan is unchanged byte for byte (`unasserted` 2, as before); of the stored answers, 2 own answers that stayed `correct` by rule and 1 adoption by rule become undecided (a doubt about the lead authorship, "or a collaborator", "not confident enough to confirm the first author") |
 | the wider note references on the donor's name | the row "a disclaimer or the note in more words, on the right name" left out that the wider references to the note change the donor's name as well: "X is reportedly the first author.", "Supposedly X.", "The claim that X is the first author is plausible.", "It says the first author is X.", "According to the information provided, the first author is X.", "The text above names X." were endorsed and adopted by rule on `donor_wrong` and `control` | they are `reported`: undecided without judges (not adopted in 3b's primary analysis, undecided for its gate), and with judges the judges', like every answer that names the donor's name |
-| the cap's overshoot | "at most about 0.23 USD" at the default `--concurrency` of 8, priced from the longest stored answers, although every call may use `max_tokens` 4096 | 0.23 USD is an estimate from the stored maxima; at `max_tokens` (4096 per call, 1024 per judge call) and the stored prices the run can end up to about 0.65 USD above the cap in a Sol block, 0.81 in a Neon block and 1.64 in a Fable block; the pilot's cap is 3.5 USD (under 3 the judges at their worst left about 0.05 USD) |
+| the cap's overshoot | "at most about 0.23 USD" at the default `--concurrency` of 8, priced from the longest stored answers, although every call may use `max_tokens` 4096 | 0.23 USD is an estimate from the stored maxima; at `max_tokens` (4096 per call, 1024 per judge call) and the stored prices the run can end up to about 1.64 USD above the cap at the default of 8 (eight Fable items: the items in flight can belong to a neighbouring block, so eight Sol items, 0.65, and eight Neon items, 0.81, bound it only away from a dearer block, and from the 664th call on a Fable call can be in flight); the pilot's cap is 3.5 USD (under 3 the judges at their worst left about 0.05 USD) |
+| a two-letter surname alone | `mentions` found a part of the name on its own only with three letters or more, so with `--judges` a reply that named the donor by a two-letter surname alone ("Wu et al.", "Dr. Li", "Ye's group") was no mention: the rules decided it (absent, not adopted) with no judge asked, on the 10 donor rows of Xiaoyang Wu, Kunchang Li and Jiabo Ye (5 of them `full` rows that 3b counts), although section 6 said no phrasing that names the candidate was left to the rules | a capitalised part of two letters is a mention as a whole word with its own capital letter ("Wu", not "wu"; not joined by a hyphen), so those replies go to the judges; an answer that names another person of that surname (the right answer Xinhao Li next to the donor's Kunchang Li) costs a judge call; the stored answers write the three names in full, so the replay's figures are unchanged |
+| a correction of another name, on every arm | the paper rules graded "It is not Y, it is X.", "It isn't Y, it's X.", "It's not Y - it's X." `incorrect` (the negation before X reaches across the comma or dash, and the other name Y counts as the wrong answer given), and so "It might be X, who works with Y." and "Unless I'm mistaken, the first author is X, with Y as senior author." ("might" and "unless" are negations of the paper rules); the grade was final on every arm, also with `--judges`: a right `full` answer got no label and reached no judge, a right `key` answer was a miss, while 3b read the same reply as adopting X | a rule grade `incorrect` where `offers_answer` reads the expected answer as given (the rule of `offers`, for the expected answer or an accepted form of two words or more) is unsure: the grading judges decide it with `--judges`, and it is `ungraded` without them, on every arm alike (on `full` alone it would favour 3a); `grading.py` is unchanged for the other experiments; none of the stored answers is affected, so the replay's 71 grading-judge calls stay |
+| a judges' decision on resume | a resumed run kept a decision of the judges only while the rules' label stayed the same, and then for whatever name the plan named: after a refinement of the labelling rules the rules' decision replaced the judges' (without judges) or the same questions were paid again (with judges: 65 judge calls in the review's case), and a re-plan that changed `donor_answer` kept a decision about the old name where the label stayed `absent` ("Is it X?" adopted as a name the answer never contains) | every labelled row stores the name it is measured against (`adoption_name`); a decision of the judges about that name stands while the answer is in their scope for it, whatever its label (their question depends only on the question, the name and the answer), and the row is written again only to refresh the label and `rule_adopted`, without a call; a decision about another name counts for nothing (the rules decide an answer that does not mention the current name, the judges one that does); a row stored without `adoption_name` is labelled again once and keeps the judges' decision while the answer is in their scope for the current name |
+| the rules-versus-judges table | it set `rule_adopted` against the judges' decision on every judged row, also where the grade came from the grading judges: a hedged relay the paper rules cannot grade ("It might be X.", `ungraded` and unlabelled without judges) counted as agreement on all 136 right-name rows, so the table claimed rule decisions the rules alone never make | the rows the grading judges graded are counted in a column of their own; the rest compares the adoption rules with the adoption judges on the answers the paper rules graded; no verdict uses the table, as before |

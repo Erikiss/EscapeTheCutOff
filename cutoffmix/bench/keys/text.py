@@ -4,10 +4,11 @@ The masking helpers (:func:`mask_title`, :func:`mask_note`) work on the original
 casefolded copy whose characters keep their positions in the original, so a name written "Pióro" or "Pioro",
 "Jun-sol" or "Junsol" is found either way and replaced in place. :func:`cue_tokens` reads what a masked note says
 beyond the question (section 3). :func:`offers` and :func:`adoption_label` read whether an answer gives a name as its
-own answer, :func:`offers_another` whether it offers someone else as well, :func:`contradicted` whether it names the
-person only to give them another role or to reject them, :func:`disclaims` whether it disclaims knowledge, and
-:func:`mentions` whether it names the person at all, in any form (with judges, the run hands every labelled answer that
-does to the adoption judges; section 6).
+own answer, :func:`offers_answer` whether it offers the event's expected answer (the run doubts a rule grade
+``incorrect`` where it does), :func:`offers_another` whether it offers someone else as well, :func:`contradicted`
+whether it names the person only to give them another role or to reject them, :func:`disclaims` whether it disclaims
+knowledge, and :func:`mentions` whether it names the person at all, in any form (with judges, the run hands every
+labelled answer that does to the adoption judges; section 6).
 """
 
 from __future__ import annotations
@@ -496,9 +497,11 @@ _RELATED_WORK = re.compile(
 # A consequence opens a new claim: in "the original paper was led by X, so my best guess is X" the second X is the
 # answer's own guess, whatever came before the comma.
 _CONSEQUENCE = re.compile(r",\s*(?:and\s+)?(?:so|therefore|hence|thus)\s")
-# A comma clause that asserts anew, after a negated one ("It is not Y, it is X.", "It isn't Y, it's X."): the
+# A comma or dash clause that asserts anew, after a negated one ("It is not Y, it is X.", "It isn't Y, it's X.", "It's
+# not Y - it's X.", "It's not Y — it's X.", also an em dash without spaces, which normalize_text makes a hyphen): the
 # negation before it does not reach the name after it.
-_REASSERT = re.compile(r",\s*(?:(?:it|this|that)(?:'s|\s+is|\s+was)|the\s+(?:first|lead)\s+author\s+(?:is|was))\s+")
+_REASSERT = re.compile(
+    r"(?:,|-+)\s*(?:(?:it|this|that)(?:'s|\s+is|\s+was)|the\s+(?:first|lead)\s+author\s+(?:is|was))\s+")
 
 # ---- an offer the answer contradicts (design section 6, :func:`contradicted`), over normalised text
 # Another role on the author list, in the clauses that speak of the person (:func:`_role_scope`): "X is a co-author",
@@ -581,12 +584,13 @@ def _normalised(response: str, event: Event) -> str:
     return _mask_title(normalize_text(_plain(text)), event)
 
 
-def _sites(response: str, name: str, event: Event) -> tuple[list[str], list[tuple[int, int, int]]]:
+def _sites(response: str, name: str, event: Event,
+           patterns: Sequence[re.Pattern[str]] | None = None) -> tuple[list[str], list[tuple[int, int, int]]]:
     """The normalised segments of ``response`` (:func:`_normalised`, then ``grading._segments``) and, for every place
     where it offers ``name`` by the rule of design section 6 (a full form of the name, or its distinctive surname
-    alone, in an asserted clause), ``(segment index, start, end)``."""
+    alone, in an asserted clause; or one of ``patterns`` when given), ``(segment index, start, end)``."""
     segments = _segments(_normalised(response, event))
-    pats = _name_patterns(name)
+    pats = _name_patterns(name) if patterns is None else list(patterns)
     out: list[tuple[int, int, int]] = []
     for i, (segment, asserted) in enumerate(segments):
         if not asserted:  # a question
@@ -632,8 +636,8 @@ def _denied(segment: str, start: int, end: int) -> bool:
     """A true negation earlier in the clause or later in the name's own comma clause, or a condition inside the
     name's own comma clause, makes the match at ``start:end`` no assertion; "would", "could", "might" do not, and
     neither do the words of a first-person hedge (:data:`_SELF_HEDGE`: "unless I'm mistaken", "I could be wrong",
-    "if I'm not mistaken"), which are cut before the search. A comma clause that asserts anew (:data:`_REASSERT`:
-    "It is not Y, it is X.") ends the reach of a negation before it."""
+    "if I'm not mistaken"), which are cut before the search. A comma or dash clause that asserts anew
+    (:data:`_REASSERT`: "It is not Y, it is X.", "It's not Y - it's X.") ends the reach of a negation before it."""
     before = _SELF_HEDGE.sub(_unhedged, segment[:start])
     before = before[max((m.end() for m in _REASSERT.finditer(before)), default=0):]
     own_before = _COMMA_CLAUSE_END.split(before)[-1]
@@ -706,6 +710,19 @@ def offers(response: str, name: str, event: Event) -> bool:
     return bool(_offerings(response, name, event))
 
 
+def offers_answer(response: str, event: Event) -> bool:
+    """Whether ``response`` offers ``event``'s expected answer by the rule of :func:`offers` (design section 6): its
+    full form or its distinctive surname alone, or one of its accepted forms of two words or more in full
+    (``aliases``: "Wang, Ziqi", "Z. Wang"), in an asserted clause. False for a control (no expected answer). The run
+    reads a rule grade ``incorrect`` as unsure where this holds ("It is not Y, it is X.": the paper rules let the
+    negation before X reach across the comma and take Y for the answer given). Not used by the plan."""
+    expected = (event.expected_current or "").strip()
+    if event.control or not expected:
+        return False
+    forms = [a for a in event.aliases if len(a.split()) >= 2]
+    return bool(_sites(response, expected, event, [*_name_patterns(expected), *_compile_forms(forms, loose=True)])[1])
+
+
 def adoption_label(response: str, name: str, event: Event) -> str:
     """How ``response`` treats ``name`` (design section 6): ``"endorsed"`` when it offers the name (see
     :func:`offers`) at least once in its own voice, in a clause that does not refer to the note and does not tie the
@@ -742,13 +759,31 @@ def _mention_forms(name: str) -> list[re.Pattern[str]]:
 
 
 def _mention_tokens(name: str) -> list[str]:
-    """The tokens of ``name`` that :func:`mentions` finds on their own: every part of three letters or more,
-    accent-free and casefolded (a hyphenated part also joined: "Jun-sol" gives "jun", "sol" and "junsol")."""
+    """The tokens of ``name`` that :func:`mentions` finds on their own in any case: every part of three letters or
+    more, accent-free and casefolded (a hyphenated part also joined: "Jun-sol" gives "jun", "sol" and "junsol")."""
     out: list[str] = []
     for word in _folded(name or "").split():
         word = word.strip(".,;:()'\"")
         for part in [word.replace("-", ""), *word.split("-")]:
             if _letters(part) >= 3 and part not in out:
+                out.append(part)
+    return out
+
+
+def _unaccented(text: str) -> str:
+    """``text`` without accents (NFKD without combining marks), its case kept."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
+def _short_tokens(name: str) -> list[str]:
+    """The tokens of ``name`` that :func:`mentions` finds on their own only with their own capitalisation: every
+    capitalised part of two letters ("Ye", "Li", "Wu", also a hyphenated part), accent-free. A lower-case particle
+    ("de", "la") is none, and so is a single letter (an initial)."""
+    out: list[str] = []
+    for word in _unaccented(name or "").split():
+        word = word.strip(".,;:()'\"")
+        for part in [word, *word.split("-")]:
+            if _letters(part) == 2 and part[:1].isupper() and part not in out:
                 out.append(part)
     return out
 
@@ -759,24 +794,33 @@ def mentions(response: str, name: str, event: Event) -> bool:
     first or with initials ("Kosowski, Adrian", "A. Kosowski", "Kosowski A."), anywhere in the answer as
     :func:`offers` reads it (markdown removed, accents, case and quotes normalised, the paper's title blanked); or any
     token of the name of three letters or more (:func:`_mention_tokens`) as a whole word of the accent-free,
-    casefolded answer with the title masked (:func:`mask_title`). A token that is itself a word of the paper's title
-    is looked for in the whole answer, the title included: the mask could otherwise hide the only place where the
-    answer names the person, so such an answer counts as a mention whenever it repeats the title (no name of the real
-    plan's ``donor_wrong`` and ``control`` rows shares a word with its title). With judges, the run hands every
-    labelled answer that mentions the candidate to the adoption judges: a false mention costs one judge call, a
-    missed one leaves the answer to the rules, so this reads widely. Not used by the plan."""
+    casefolded answer with the title masked (:func:`mask_title`); or a capitalised token of two letters
+    (:func:`_short_tokens`: "Wu et al.", "Dr. Li", "Ye's group") as a whole word, not joined by a hyphen, of the
+    accent-free answer with the title masked, with its own capitalisation ("Wu", not "wu"; so the pronoun "he" is no
+    mention of a surname "He", while "He" opening a sentence is one). A token that is itself a word of the paper's
+    title is looked for in the whole answer, the title included: the mask could otherwise hide the only place where
+    the answer names the person, so such an answer counts as a mention whenever it repeats the title (no name of the
+    real plan's ``donor_wrong`` and ``control`` rows shares a word with its title). With judges, the run hands every
+    labelled answer that mentions the candidate to the adoption judges: a false mention costs one judge call (an
+    answer that names another Li, Wu or Ye, or repeats the title), a missed one leaves the answer to the rules, so
+    this reads widely. Not used by the plan."""
     if not (name or "").strip():
         return False
     text = _normalised(response, event)
     if any(pat.search(text) for pat in [*_name_patterns(name), *_mention_forms(name)]):
         return True
     plain = _plain(response or "")
-    masked = _folded(mask_title(plain, event))
+    masked_text = mask_title(plain, event)
+    masked = _folded(masked_text)
     whole = _folded(plain)
     title_words = set(_words(event.subject or ""))
     for token in _mention_tokens(name):
         haystack = whole if token in title_words else masked
         if re.search(r"(?<!\w)" + re.escape(token) + r"(?!\w)", haystack):
+            return True
+    for token in _short_tokens(name):
+        haystack = _unaccented(plain if _folded(token) in title_words else masked_text)
+        if re.search(r"(?<![\w-])" + re.escape(token) + r"(?![\w-])", haystack):
             return True
     return False
 

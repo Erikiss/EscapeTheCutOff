@@ -48,7 +48,7 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
   noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
-  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach fünf Prüfrunden
+  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach sechs Prüfrunden
   entscheidet mit `--judges` der Judge jede Antwort, die den Namen nennt, die festen Regeln nur noch den Rest und den
   Lauf ohne Judge. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,42 $ für den Judge (im
   ungünstigsten Fall 0,78 $; zusammen geschätzt 2,95 $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`,
@@ -486,23 +486,48 @@ Auch danach fand eine weitere Prüfung Antworten, die die Regeln falsch entschie
 etwa „X steht auf der Autorenliste, aber ich glaube nicht, dass X der Erstautor ist“: Das galt bei allen 53 falschen
 Spender-Namen als übernommen und bei allen 136 richtigen Namen als richtig, auch mit `--judges`. Statt die Regeln ein
 weiteres Mal zu erweitern, gilt jetzt: Läuft der Judge mit (`--judges`), entscheidet er jede bewertete Antwort, die den
-Namen nennt, in welcher Form auch immer (mit Initiale, Nachname zuerst, ohne Akzente), egal, was die Regeln sagen
-würden. Das sind alle als richtig bewerteten `full`-Antworten bei 3a und alle Antworten, die den Namen des Spenders
-nennen, bei 3b, auch beim erneuten Fragen (`alone`) und auch dann, wenn die Antwort als richtig bewertet ist („Die Notiz
-sagt Y, es ist aber X“). Die Regeln entscheiden allein nur noch die Antworten, die den Namen gar nicht nennen (nicht
-übernommen). Schlägt ein Judge-Aufruf fehl oder gibt es keine Mehrheit, bleibt die Antwort unentschieden: Die Regeln
-springen nicht ein, und ein späterer Lauf mit `--judges` fragt erneut, ohne den Empfänger noch einmal aufzurufen. Die
-Entscheidung der Regeln wird trotzdem in jeder Zeile gespeichert (`rule_adopted`), und der Bericht stellt sie in einer
-Tabelle „Regeln gegen Judge“ der des Judge gegenüber. Kein Urteil hängt an ihr. Sie zeigt nach dem Pilot, ob man den
-Regeln ohne Judge trauen kann, und ob der Judge selbst klare Antworten („Der Erstautor ist X.“) zurückweist. Ohne Judge
-entscheiden die Regeln wie bisher, lassen aber mehr offen: bloße Zugehörigkeit zur Autorenliste („steht auf der
+Namen nennt, in welcher Form auch immer (mit Initiale, Nachname zuerst, ohne Akzente, auch der Nachname allein; einer
+aus zwei Buchstaben wie „Wu“ zählt dabei großgeschrieben), egal, was die Regeln sagen würden. Das sind alle als richtig
+bewerteten `full`-Antworten bei 3a und alle Antworten, die den Namen des Spenders nennen, bei 3b, auch beim erneuten
+Fragen (`alone`) und auch dann, wenn die Antwort als richtig bewertet ist („Die Notiz sagt Y, es ist aber X“). Die
+Regeln entscheiden allein nur noch die Antworten, die den Namen gar nicht nennen (nicht übernommen). Schlägt ein
+Judge-Aufruf fehl oder gibt es keine Mehrheit, bleibt die Antwort unentschieden: Die Regeln springen nicht ein, und ein
+späterer Lauf mit `--judges` fragt erneut, ohne den Empfänger noch einmal aufzurufen. Die Entscheidung der Regeln wird
+trotzdem in jeder Zeile gespeichert (`rule_adopted`), und der Bericht stellt sie in einer Tabelle „Regeln gegen Judge“
+der des Judge gegenüber. Kein Urteil hängt an ihr. Sie zeigt nach dem Pilot, ob man den Übernahme-Regeln ohne Judge
+trauen kann, soweit die festen Regeln die Antwort überhaupt bewerten konnten (Antworten, die erst der Bewertungs-Judge
+bewertet hat, zählt sie gesondert), und ob der Judge selbst klare Antworten („Der Erstautor ist X.“) zurückweist. Ohne
+Judge entscheiden die Regeln wie bisher, lassen aber mehr offen: bloße Zugehörigkeit zur Autorenliste („steht auf der
 Autorenliste“, „hat an dem Paper mitgearbeitet“), Zweifel an der Erstautorschaft in einem späteren Satzteil („aber
 vermutlich nicht als Erster“), weitere Rollen (PI, Laborleitung, Kollaborateur, „die Gruppe von X“) und weitere Verweise
-auf die Notiz („laut den Informationen, die du geteilt hast“, „wie angegeben“). „Es ist nicht Y, es ist X.“ gilt jetzt
-als X zu eigen gemacht. Nachgetragen ist außerdem: Die Verweise auf die Notiz in anderen Worten aus der vorigen Runde
-(„laut den bereitgestellten Informationen“, „X ist angeblich der Erstautor“) gelten auch beim falschen Namen des
-Spenders (3b) als nur berichtet; vorher galten sie dort nach den Regeln als übernommen. Die 746 geplanten Aufrufe sind
-dieselben geblieben.
+auf die Notiz („laut den Informationen, die du geteilt hast“, „wie angegeben“, „wie erwähnt“, „die Zusammenfassung“,
+„was du bereitgestellt hast“). Diese Verweise treffen auch Quellenangaben der Antwort selbst („wie auf arXiv angegeben“,
+„laut der Zusammenfassung des Papers“): Auch die gelten jetzt als nur berichtet und bleiben ohne Judge unentschieden.
+„Es ist nicht Y, es ist X.“ gilt jetzt als X zu eigen gemacht, auch mit Gedankenstrich („Es ist nicht Y – es ist X.“).
+Nachgetragen ist außerdem: Die Verweise auf die Notiz in anderen Worten aus der vorigen Runde („laut den
+bereitgestellten Informationen“, „X ist angeblich der Erstautor“) gelten auch beim falschen Namen des Spenders (3b) als
+nur berichtet; vorher galten sie dort nach den Regeln als übernommen. Die 746 geplanten Aufrufe sind dieselben
+geblieben.
+
+Eine Prüfung dieser Änderung fand noch fünf Lücken, ebenfalls vor dem ersten echten Aufruf. Erstens erkannte die Suche
+nach dem Namen einen Nachnamen aus zwei Buchstaben allein nicht („Wu et al.“, „Dr. Li“, „die Gruppe um Ye“): Bei drei
+Spender-Namen (Xiaoyang Wu, Kunchang Li, Jiabo Ye; 10 der 106 Spender-Zeilen) entschieden dann auch mit `--judges` die
+Regeln (nicht übernommen). Jetzt zählt ein solcher Nachname als Nennung, wenn er großgeschrieben ist; eine Antwort, die
+eine andere Person dieses Namens nennt, kostet dann einen Judge-Aufruf. Zweitens bewerteten die festen Regeln eine
+Berichtigung wie „Es ist nicht Y, es ist X.“ oder „Es könnte X sein, der mit Y arbeitet.“ als falsch, endgültig und in
+jedem Arm: Die Verneinung oder das „könnte“ vor X reicht für sie über das Komma hinweg, und Y gilt dann als die gegebene
+falsche Antwort. Bei 3b galt dieselbe Antwort dagegen als X zu eigen gemacht. Jetzt ist ein „falsch“ der Regeln
+unsicher, wenn die Antwort die richtige Antwort nach der Regel von `offers` anbietet: Mit `--judges` entscheidet der
+Bewertungs-Judge, ohne ihn bleibt die Antwort unbewertet, in allen Armen gleich (bei den gespeicherten Antworten kommt
+das nicht vor). Drittens hielt ein fortgesetzter Lauf eine Entscheidung des Judge nur, solange das Etikett der Regeln
+gleich blieb: Nach einer späteren Änderung der Regeln entschieden ohne Judge wieder die Regeln, mit Judge wurde dieselbe
+Frage noch einmal bezahlt; und nach einer Neuplanung mit einem anderen Spender-Namen blieb eine Entscheidung über den
+alten Namen stehen. Jetzt speichert jede bewertete Zeile den Namen, um den es geht (`adoption_name`); die Entscheidung
+des Judge gilt, solange die Antwort diesen Namen nennt, egal welches Etikett die Regeln ihr geben, und eine Entscheidung
+über einen anderen Namen zählt nicht. Viertens zählte die Tabelle „Regeln gegen Judge“ auch Antworten, die erst der
+Bewertungs-Judge bewerten konnte („Es könnte X sein.“), als Übereinstimmung mit den Regeln; die stehen jetzt in einer
+eigenen Spalte. Fünftens hielten die Grenzen für das Überschreiten des Deckels an den Übergängen zwischen den Blöcken
+des Plans nicht (unten). Die 746 geplanten Aufrufe sind dieselben geblieben.
 
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl \
@@ -524,26 +549,28 @@ gespeicherten Antworten; begrenzt wird der Lauf nur durch den Deckel. Der Deckel
 Aufrufe an: Was beim Erreichen schon läuft, läuft mit seinen Judge-Aufrufen zu Ende. Der Lauf kann den Deckel also um
 die Kosten von bis zu `--concurrency` laufenden Aufrufen überschreiten. Aus den längsten gespeicherten Antworten
 geschätzt sind das bei der Voreinstellung 8 etwa 0,23 $, aber das ist keine Grenze: Jeder Aufruf darf `max_tokens` 4096
-ausschöpfen, ein Judge-Aufruf 1024. Zu den gespeicherten Preisen sind es dann höchstens etwa 0,65 $, wenn der Deckel
-während der Sol-Aufrufe erreicht wird, 0,81 $ bei Neon und 1,64 $ bei Fable; ein kleineres `--concurrency` senkt das
-anteilig. Der Plan schickt erst 439 Aufrufe an Sol (geschätzt etwa 0,45 $, mit dem Judge im ungünstigsten Fall etwa 0,87
-$), dann 231 an Neon, 26 an Fable, 44 an Neon, 2 an Fable und 4 an Sol; ein Deckel von 3 $ oder mehr wird also, wenn
-überhaupt, bei Neon oder Fable erreicht (oder bei den letzten 4 Sol-Aufrufen). Hält der Lauf am Deckel an, schickt ein
-weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein vorab freigegebener höherer
-Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer Unterbrechung fort.
-Der Exit-Code ist der des Halts, der als erster geplante Aufrufe am Start hinderte: 3 bei `--max-cost`, 4 nach einem
-Fehler, den kein neuer Versuch behebt (HTTP 401 oder 402: Schlüssel oder Guthaben, auch bei einem Judge-Aufruf; dann
-startet kein Aufruf mehr), 130 nach Strg-C. Treffen mehrere bei derselben Prüfung zusammen, gilt Strg-C vor dem Fehler
-vor dem Deckel; ein späteres Strg-C oder ein späterer Fehler ändert den Code nicht, und ein Strg-C nach dem Start des
-letzten Aufrufs hält nichts mehr an. Ohne einen solchen Halt endet `run` mit 4, wenn Aufrufe fehlschlugen (auch bei
-`--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler, den kein neuer Versuch behebt, erst nach dem Start des
-letzten Aufrufs kam, sonst mit 0. Das erste Strg-C lässt die laufenden Aufrufe zu Ende laufen und speichern, erst ein
-zweites bricht sofort ab. Exit-Code 2 heißt: Eingaben oder Optionen abgewiesen, vor jedem Aufruf, oder die Ergebnisdatei
-nahm während des Laufs keine Zeile mehr an (etwa bei voller Platte); dann zählen die geschriebenen Zeilen, und ein
-bezahlter Aufruf, dessen Zeile fehlt, wird beim nächsten Lauf erneut geschickt. Mit `--mock` läuft alles offline gegen
-simulierte Modelle, in eine eigene Datei (`--out runs/keys_results_mock.jsonl`). Deren Zahlen sind eingestellt, nicht
-gemessen, der Bericht kennzeichnet sie als SIMULATED. **Mit den echten Modellen ist das Experiment noch nicht
-gelaufen.**
+ausschöpfen, ein Judge-Aufruf 1024. Zu den gespeicherten Preisen sind es dann höchstens etwa 1,64 $ (acht
+Fable-Aufrufe); ein kleineres `--concurrency` senkt das anteilig. Der Plan schickt erst 439 Aufrufe an Sol (geschätzt
+etwa 0,45 $, mit dem Judge im ungünstigsten Fall etwa 0,87 $), dann 231 an Neon, 26 an Fable, 44 an Neon, 2 an Fable und
+4 an Sol. Was beim Erreichen des Deckels noch läuft, wurde vorher gestartet und kann am Ende eines Blocks schon zum
+nächsten gehören: Acht Sol-Aufrufe kosten höchstens etwa 0,65 $ und acht Neon-Aufrufe 0,81 $, aber ab dem 664. der 746
+Aufrufe kann ein Fable-Aufruf mitlaufen, auch bei den letzten 4 Sol-Aufrufen. Ein Deckel von 3 $ oder mehr wird, wenn
+überhaupt, erst nach dem ersten Sol-Block erreicht, und dann gilt die Grenze von 1,64 $. Hält der Lauf am Deckel an,
+schickt ein weiterer Lauf mit höherem `--max-cost` den Rest, was ebenfalls eine Freigabe braucht. Ein vorab
+freigegebener höherer Deckel vermeidet diesen Halt. Die Planung druckt die Schätzung pro Modell. `run` setzt nach einer
+Unterbrechung fort. Der Exit-Code ist der des Halts, der als erster geplante Aufrufe am Start hinderte: 3 bei
+`--max-cost`, 4 nach einem Fehler, den kein neuer Versuch behebt (HTTP 401 oder 402: Schlüssel oder Guthaben, auch bei
+einem Judge-Aufruf; dann startet kein Aufruf mehr), 130 nach Strg-C. Treffen mehrere bei derselben Prüfung zusammen,
+gilt Strg-C vor dem Fehler vor dem Deckel; ein späteres Strg-C oder ein späterer Fehler ändert den Code nicht, und ein
+Strg-C nach dem Start des letzten Aufrufs hält nichts mehr an. Ohne einen solchen Halt endet `run` mit 4, wenn Aufrufe
+fehlschlugen (auch bei `--limit`; der nächste Lauf schickt sie erneut) oder ein Fehler, den kein neuer Versuch behebt,
+erst nach dem Start des letzten Aufrufs kam, sonst mit 0. Das erste Strg-C lässt die laufenden Aufrufe zu Ende laufen
+und speichern, erst ein zweites bricht sofort ab. Exit-Code 2 heißt: Eingaben oder Optionen abgewiesen, vor jedem
+Aufruf, oder die Ergebnisdatei nahm während des Laufs keine Zeile mehr an (etwa bei voller Platte); dann zählen die
+geschriebenen Zeilen, und ein bezahlter Aufruf, dessen Zeile fehlt, wird beim nächsten Lauf erneut geschickt. Mit
+`--mock` läuft alles offline gegen simulierte Modelle, in eine eigene Datei (`--out runs/keys_results_mock.jsonl`).
+Deren Zahlen sind eingestellt, nicht gemessen, der Bericht kennzeichnet sie als SIMULATED. **Mit den echten Modellen ist
+das Experiment noch nicht gelaufen.**
 
 ## Den Index neu messen (themenstratifiziert)
 

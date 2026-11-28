@@ -279,12 +279,12 @@ def test_the_report_sets_rules_and_judges_side_by_side(tmp_path):
     assert {k: (v["judged"], v["rule_yes_judges_no"], v["agree"]) for k, v in versus.items()} == {
         "dark full": (4, 4, 0), "both_right full": (2, 2, 0), "donor_wrong alone": (1, 1, 0),
         "donor_wrong full": (1, 0, 1), "control alone": (1, 1, 0), "control full": (1, 1, 0)}
-    assert all(v["undecided"] == v["rule_no_judges_yes"] == v["open_yes"] == v["open_no"] == v["no_rule"] == 0
-               for v in versus.values())
+    assert all(v["undecided"] == v["graded_by_judges"] == v["rule_no_judges_yes"] == v["open_yes"] == v["open_no"]
+               == v["no_rule"] == 0 for v in versus.values())
     md = render_report(build_report(plan, results))
     assert "## Rules versus judges (diagnostic; no verdict uses it)" in md
-    assert "| dark | full | 4 | 0 | 0 | 4 | 0 | 0 | 0 |" in md
-    assert "| donor_wrong | full | 1 | 0 | 1 | 0 | 0 | 0 | 0 |" in md
+    assert "| dark | full | 4 | 0 | 0 | 0 | 4 | 0 | 0 | 0 |" in md
+    assert "| donor_wrong | full | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |" in md
     plan, results = judged_report(tmp_path / "endorse", {"j1": "ENDORSE"})
     versus = build_report(plan, results)["rules_vs_judges"]
     assert versus["dark full"]["agree"] == 4 and versus["donor_wrong full"]["rule_no_judges_yes"] == 1
@@ -307,19 +307,20 @@ def test_the_report_reads_results_without_rule_adopted(tmp_path):
 # ---- mentions: every form of the name, asserted or not --------------------------------------------------------------
 
 EVENT = paper(30, "Ada Lovelace")
-SHORT = "Jiabo Ye"  # a two-letter surname: no token of it alone, only its forms
+SHORT = "Jiabo Ye"  # a two-letter surname: found alone only with its own capitalisation ("Ye", not "ye")
 
 
 @pytest.mark.parametrize("text", [
     "The first author is Jiabo Ye.", "It is not Jiabo Ye.", "Is it Jiabo Ye?", "I doubt Jiabo Ye wrote it.",
     "J. Ye is the first author.", "J Ye", "Ye J.", "Ye, J.", "Ye, Jiabo", "Ye Jiabo et al.", "**Jiabo Ye**",
     '"Jiabo Ye"', "JIABO YE", "Jiábo Ye", "Jiabo", "The note says Jiabo-Ye, which I cannot verify.",
+    "Ye et al.", "Dr. Ye", "Ye's group", "My best guess is Yé.",                # the surname alone (review of aafe7f9)
 ])
 def test_mentions_every_form_of_the_name(text):
     assert text_mod.mentions(text, SHORT, EVENT)
 
 
-@pytest.mark.parametrize("text", ["I don't know.", "Yes.", "Ye olde paper.", "Jiabolo Ye-Ann", "Wei Chen.", ""])
+@pytest.mark.parametrize("text", ["I don't know.", "Yes.", "ye olde paper.", "YE", "Jiabolo Ye-Ann", "Wei Chen.", ""])
 def test_mentions_no_other_word(text):
     assert not text_mod.mentions(text, SHORT, EVENT)
 

@@ -29,8 +29,8 @@ from cutoffmix.types import ChatRequest, ChatResult, ModelSpec
 # ---- helpers ------------------------------------------------------------------------------------------------------
 
 ROW_FIELDS = ["id", "set", "donor", "recipient", "event_id", "arm", "response", "grade", "hedged", "grader", "adopted",
-              "adoption", "adoption_grader", "rule_adopted", "latency_s", "usage", "judge_usage", "backend",
-              "prompt_sha", "request_sha", "note_event", "today", "error"]       # design section 6, in this order
+              "adoption", "adoption_name", "adoption_grader", "rule_adopted", "latency_s", "usage", "judge_usage",
+              "backend", "prompt_sha", "request_sha", "note_event", "today", "error"]  # design section 6, in this order
 
 
 class ScriptedBackend:

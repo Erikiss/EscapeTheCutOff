@@ -1032,7 +1032,7 @@ def _keys_run_start(start: Any, limit: int | None) -> str:
         line += f" (--limit {limit})"
     if start.regrade:
         why = [f"{n} {what}" for n, what in ((start.failed, "whose grading failed"),
-                                             (start.relabel, "whose label or rule decision is out of date"),
+                                             (start.relabel, "whose label, name or rule decision is out of date"),
                                              (start.regrade - start.failed - start.relabel, "for the judges")) if n]
         line += f"; grading {start.regrade} stored answers again first, without a new call ({', '.join(why)})"
     return line + f"; cost so far ${start.cost_usd:.4f} ({start.backend})"
@@ -1519,9 +1519,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="stop sending once the summed cost of every row in --out, recipients and judges, reaches "
                            "this (required with the real models; the pilot asks for 3.5); the calls in flight finish "
                            "with their judge calls, so a run can end above it: by up to --concurrency items, at "
-                           "max_tokens and the default of 8 up to about 0.65 USD in a Sol block of the plan, 0.81 in a "
-                           "Neon block, 1.64 in a Fable block (docs/DESIGN_keys.md section 9); a run it stops exits "
-                           "with status 3")
+                           "max_tokens and the default of 8 up to about 1.64 USD (eight Fable items: the items in "
+                           "flight can belong to a neighbouring block of the plan; docs/DESIGN_keys.md section 9); a "
+                           "run it stops exits with status 3")
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",

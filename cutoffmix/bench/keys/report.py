@@ -397,18 +397,21 @@ def _never(row: _Row) -> bool:
 # the labelled rows (design section 6) in the order the diagnostic table lists them
 LABELLED: tuple[tuple[str, str], ...] = (("dark", "full"), ("both_right", "full"), ("donor_wrong", "alone"),
                                          ("donor_wrong", "full"), ("control", "alone"), ("control", "full"))
-_VERSUS = ("judged", "undecided", "agree", "rule_yes_judges_no", "rule_no_judges_yes", "open_yes", "open_no",
-           "no_rule")
+_VERSUS = ("judged", "undecided", "graded_by_judges", "agree", "rule_yes_judges_no", "rule_no_judges_yes",
+           "open_yes", "open_no", "no_rule")
 
 
 def _rules_vs_judges(rows: Iterable[_Row]) -> dict[str, dict[str, Any]]:
     """The diagnostic of design section 6 ("rules versus judges"; no verdict uses it): for the answered labelled rows
     whose label the adoption judges decided (``adoption_grader`` ``judge:<keys>``), per set and arm pooled over the
-    pairs, how the judges' decision (``adopted``) compares with the rules' own (``rule_adopted``): ``agree``, the rules
-    adopted and the judges did not (``rule_yes_judges_no``) or the reverse (``rule_no_judges_yes``), the rules left it
-    open and the judges adopted (``open_yes``) or did not (``open_no``); ``undecided`` the rows the judges' votes left
-    open, ``no_rule`` those written before ``rule_adopted`` was stored. On the ``full`` rows of ``dark`` and
-    ``both_right`` "adopted" is the right name given as the answer's own (correct)."""
+    pairs, how the judges' decision (``adopted``) compares with the adoption rules' own (``rule_adopted``) on the
+    answers the paper rules graded: ``agree``, the rules adopted and the judges did not (``rule_yes_judges_no``) or the
+    reverse (``rule_no_judges_yes``), the rules left it open and the judges adopted (``open_yes``) or did not
+    (``open_no``); ``undecided`` the rows the judges' votes left open; ``graded_by_judges`` the rows whose grade came
+    from the grading judges (``grader`` ``judge:<keys>``): the paper rules could not grade them, so without judges they
+    stay ``ungraded`` and the rules alone never decide them, and their ``rule_adopted`` (computed on the grading
+    judges' grade) is no rules-alone decision; ``no_rule`` the rows written before ``rule_adopted`` was stored. On the
+    ``full`` rows of ``dark`` and ``both_right`` "adopted" is the right name given as the answer's own (correct)."""
     out: dict[str, dict[str, Any]] = {}
     for row in rows:
         if (not row.answered or row.get("adoption") is None
@@ -420,6 +423,8 @@ def _rules_vs_judges(rows: Iterable[_Row]) -> dict[str, dict[str, Any]]:
         adopted = row.get("adopted")
         if adopted is None:
             entry["undecided"] += 1
+        elif str(row.get("grader") or "").startswith("judge"):
+            entry["graded_by_judges"] += 1
         elif "rule_adopted" not in (row.result or {}):
             entry["no_rule"] += 1
         elif row.get("rule_adopted") is None:
@@ -1127,18 +1132,21 @@ def render_report(report: Mapping[str, Any]) -> str:
                      f"{'n/a' if excess is None else f'{100 * excess:.1f} %'} |")
 
     lines += ["", "## Rules versus judges (diagnostic; no verdict uses it)", "",
-              ("The labelled rows the adoption judges were asked about, by set and arm over all pairs: the rules' own "
-               "decision (rule_adopted) next to the judges'. Yes: the answer gives the name as its own (adopted; on "
-               "the full rows of dark and both_right the right name, so correct). A judge that rejects plain answers "
-               "shows as rules yes, judges no."), ""]
+              ("The labelled rows the adoption judges were asked about, by set and arm over all pairs: the adoption "
+               "rules' own decision (rule_adopted) next to the judges', on the answers the paper rules graded. Yes: "
+               "the answer gives the name as its own (adopted; on the full rows of dark and both_right the right "
+               "name, so correct). A row the grading judges graded is counted apart: the paper rules could not grade "
+               "it, so the rules alone never decide it (without judges it stays ungraded). A judge that rejects plain "
+               "answers shows as rules yes, judges no."), ""]
     versus = report.get("rules_vs_judges") or {}
     if versus:
-        lines += [("| set | arm | judged | judges undecided | agree | rules yes, judges no | rules no, judges yes | "
-                   "rules open, judges yes | rules open, judges no |"), "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+        lines += [("| set | arm | judged | judges undecided | graded by the grading judges | agree | rules yes, judges "
+                   "no | rules no, judges yes | rules open, judges yes | rules open, judges no |"),
+                  "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
         for entry in versus.values():
             lines.append(f"| {entry['set']} | {entry['arm']} | {entry['judged']} | {entry['undecided']} | "
-                         f"{entry['agree']} | {entry['rule_yes_judges_no']} | {entry['rule_no_judges_yes']} | "
-                         f"{entry['open_yes']} | {entry['open_no']} |")
+                         f"{entry.get('graded_by_judges', 0)} | {entry['agree']} | {entry['rule_yes_judges_no']} | "
+                         f"{entry['rule_no_judges_yes']} | {entry['open_yes']} | {entry['open_no']} |")
         no_rule = sum(entry["no_rule"] for entry in versus.values())
         if no_rule:
             lines += ["", (f"{no_rule} rows the judges decided carry no rule decision (written before rule_adopted was "

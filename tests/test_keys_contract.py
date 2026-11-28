@@ -5,23 +5,30 @@ were priced like probe calls, which understated the worst case the owner approve
 paragraph, the recipients' estimate per model, the stored judge prices and the cap's overshoot are pinned too, and the
 texts of the exit statuses and of the judges' scope say what the code does (review of the final review). With the
 judges' scope (the judges decide every labelled answer that names the candidate), the counts follow that scope in the
-replay, the overshoot is bounded at max_tokens per block of the plan's order, and the pilot's cap is 3.5 USD."""
+replay, the overshoot is bounded at max_tokens, and the pilot's cap is 3.5 USD. Review of aafe7f9: the replay grades as
+the run does (a rule grade incorrect next to the expected answer is unsure), the bound is eight of the dearest item
+that can be in flight (the items in flight can belong to a neighbouring block), and the first block's own estimate,
+the README's block order, section 10's overshoot row and both judges' budget are pinned too."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import itertools
+import json
 from statistics import mean
 
 import pytest
 from keys_testlib import EVENTS, RESULTS, ROOT, TODAY
 
 import cutoffmix.cli
-from cutoffmix.bench.grading import grade_rule
+from cutoffmix.bench.grading import grade_with_judges
 from cutoffmix.bench.io import load_events, load_results
-from cutoffmix.bench.keys import build_plan, estimate_cost, row_cost
+from cutoffmix.bench.keys import build_plan, estimate_cost, row_cost, run_plan
 from cutoffmix.bench.keys.run import _JUDGE_MAX_TOKENS, adoption_judge_messages
 from cutoffmix.bench.prompts import judge_messages, probe_messages
+from cutoffmix.types import ChatResult, ModelSpec
 
 DESIGN = ROOT / "docs" / "DESIGN_keys.md"
 README = ROOT / "README.md"
@@ -31,6 +38,9 @@ CONCURRENCY = 8  # the default of 'bench keys run --concurrency'
 MAX_TOKENS = 4096  # every planned call's max_tokens (design section 4)
 CAP = 3.5  # the pilot's cap (design section 9)
 SHORT = {"gpt-6.2-sol": "Sol", "gemini-4-neon": "Neon", "claude-fable-5.2": "Fable"}
+# the judges' budget per call: the grading judges' (grading.grade_with_judges, called with its default) and the
+# adoption judges' (run._JUDGE_MAX_TOKENS); the bound of section 9 prices both at it
+BUDGET = inspect.signature(grade_with_judges).parameters["max_tokens"].default
 
 
 def readme() -> str:
@@ -63,6 +73,7 @@ def priced():
     per prompt token and the mean and longest completion; a call's prompt is the judge's messages with the recipient's
     stored answer (at worst the longest stored answer or note) in them."""
     from cutoffmix.bench.keys.run import _adoption_rule, _judged  # which alone rows are in the judges' scope
+    from cutoffmix.bench.keys.run import _rule_grade  # the run's grading step (review of aafe7f9)
 
     events = load_events(EVENTS)
     results = load_results(RESULTS)
@@ -93,12 +104,13 @@ def priced():
         return usd(adoption_judge_messages(by_id[p["event_id"]], p["donor_answer"], "x" * longest if worst
                                            else answer(p)), worst)
 
-    grading = [p for p in plan if grade_rule(by_id[p["event_id"]], "current_d", answer(p)) is None]
+    # graded as the run grades (run._rule_grade: a rule grade incorrect next to the expected answer is unsure too)
+    grading = [p for p in plan if _rule_grade(by_id[p["event_id"]], answer(p)) is None]
     right = [p for p in plan if p["set"] in ("dark", "both_right") and p["arm"] == "full"]
     adopt_full = [p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "full"]
     alone_due = []  # the alone rows of the replay that mention the donor's name: the judges decide them
     for p in (p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "alone"):
-        ruled = grade_rule(by_id[p["event_id"]], "current_d", answer(p))
+        ruled = _rule_grade(by_id[p["event_id"]], answer(p))
         _, label = _adoption_rule(p, by_id[p["event_id"]], answer(p), ruled[0] if ruled else "ungraded")
         if _judged(p, by_id[p["event_id"]], answer(p), label):
             alone_due.append(p)
@@ -134,7 +146,7 @@ def priced():
                        sum(len(m["content"]) for m in adoption_judge_messages(by_id[p["event_id"]],
                                                                               p["donor_answer"] or "", "")))
                    for p in plan)
-    judge_bound = (template / chars + MAX_TOKENS) * PROMPT_USD + _JUDGE_MAX_TOKENS * COMPLETION_USD
+    judge_bound = (template / chars + MAX_TOKENS) * PROMPT_USD + BUDGET * COMPLETION_USD
 
     def item_bound(p) -> float:
         prompt_usd, completion_usd, cpt, _, _ = prices[p["recipient"]]
@@ -145,6 +157,11 @@ def priced():
               for model, rows in ((k, list(g)) for k, g in itertools.groupby(plan, key=lambda p: p["recipient"]))]
     first = plan[: blocks[0][1]]
     first_ids = {p["id"] for p in first}
+    # the items in flight when the cap is reached were started before, in the plan's order: the call that reaches it
+    # can have up to --concurrency - 1 later calls in flight with it, so from this call on (1-based) a Fable call can be
+    # among them
+    first_fable = next(i for i, p in enumerate(plan) if p["recipient"] == "claude-fable-5.2")
+    first_neon = next(i for i, p in enumerate(plan) if p["recipient"] == "gemini-4-neon")
     first_judges = sum(usd(judge_messages(by_id[p["event_id"]], "current_d", "x" * longest), True)
                        for p in grading if p["id"] in first_ids)
     first_judges += sum(adoption(p, True) for p in right + adopt_full + alone_due if p["id"] in first_ids)
@@ -155,7 +172,10 @@ def priced():
             "overshoot": CONCURRENCY * (worst_call + 2 * worst_judge), "prices": prices, "blocks": blocks,
             "bound": {SHORT[m]: CONCURRENCY * max(b for k, _, b in blocks if k == m) for m in recipients},
             "item": {SHORT[m]: max(b for k, _, b in blocks if k == m) for m in recipients},
-            "first": estimate_cost(first, results)["total_usd"] + first_judges}
+            "first_estimate": estimate_cost(first, results)["total_usd"],
+            "first": estimate_cost(first, results)["total_usd"] + first_judges,
+            "fable_from": first_fable - CONCURRENCY + 2, "neon_from": first_neon - CONCURRENCY + 2,
+            "plan": plan, "events": by_id}
 
 
 def test_section_9_prices_every_judge_call_from_its_prompt(priced):
@@ -236,8 +256,10 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     """The cap is checked before an item starts and the items in flight finish with their judge calls (section 6), so
     the run can end above it: by up to --concurrency items (review of the final review: section 9 and the README said
     the run cannot spend more). The stored maxima give an estimate only; every call may use max_tokens, so section 9
-    bounds the overshoot per block of the plan's order at max_tokens (review of 863ca47: "at most about 0.23 USD" was
-    no bound)."""
+    bounds the overshoot at max_tokens (review of 863ca47: "at most about 0.23 USD" was no bound). The items in flight
+    were started before, in the plan's order, so near a block's end they belong to the next block: the bound is eight
+    of the dearest item that can be in flight, eight Fable items from the call on that can have a Fable call in flight
+    with it (review of aafe7f9: the figures per block failed there, also for the last 4 Sol calls)."""
     text, text_de = section(9), readme()
     overshoot, worst_call = priced["overshoot"], priced["worst_call"]
     assert f"From the stored maxima that is about {overshoot:.2f} USD at the default of {CONCURRENCY} (each item the " \
@@ -255,28 +277,116 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     item, bound = priced["item"], priced["bound"]
     assert f"costs at most about {item['Sol']:.2f} USD (Sol), {item['Neon']:.2f} (Neon) or {item['Fable']:.2f} " \
         "(Fable)" in text
-    assert f"ends at most about {bound['Sol']:.2f} USD above the cap when it is reached in a Sol block, " \
-        f"{bound['Neon']:.2f} in a Neon block and {bound['Fable']:.2f} in a Fable block, at the default of " \
-        f"{CONCURRENCY}" in text
+    # the bound: eight of the dearest item, Fable's; eight Sol or Neon items only away from a dearer block
+    top = max(bound.values())
+    assert top == bound["Fable"] and bound["Sol"] < bound["Neon"] < top
+    calls, later = priced["calls"], CONCURRENCY - 1
+    assert f"So the run ends at most about {top:.2f} USD above the cap at the default of {CONCURRENCY} (eight Fable " \
+        "items; a lower `--concurrency` lowers this in proportion)" in text
+    assert f"Eight Sol items cost at most about {bound['Sol']:.2f} USD and eight Neon items {bound['Neon']:.2f}, but " \
+        f"those hold only while no dearer call can be in flight: {bound['Sol']:.2f} while the cap is reached before " \
+        f"the last {later} calls of the first Sol block, {bound['Neon']:.2f} before the last {later} calls of the " \
+        f"Neon {priced['blocks'][1][1]} block." in text
+    assert priced["neon_from"] == priced["blocks"][0][1] - later + 1                # the Sol block's last 7 calls
+    last = priced["blocks"][-1]
+    assert f"From the {priced['fable_from']}th of the {calls} calls on a Fable call can be in flight, also among the " \
+        f"last {last[1]} {SHORT[last[0]]} calls." in text
+    assert f"{top:.2f} USD bounds the overshoot ({bound['Neon']:.2f} if the cap is reached before the " \
+        f"{priced['fable_from']}th call)" in text
+    assert "when it is reached in a Sol block" not in text and "(or the last 4 Sol calls)" not in text
     order = ", then ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][:2])
     rest = ", ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][2:-1])
-    last = priced["blocks"][-1]
     assert f"blocks of one recipient: {order.replace(' 439', ' 439 first')}, {rest} and {SHORT[last[0]]} {last[1]}" \
         in text
-    assert f"first Sol block costs about {priced['by_model']['gpt-6.2-sol']['estimate_usd']:.2f} USD, about " \
-        f"{priced['first']:.2f} with its judges at their worst" in text
+    # the first block's own estimate (review of aafe7f9: the test read the estimate of all Sol calls)
+    assert priced["first_estimate"] != priced["by_model"]["gpt-6.2-sol"]["estimate_usd"]
+    assert f"first Sol block costs about {priced['first_estimate']:.2f} USD, about {priced['first']:.2f} with its " \
+        "judges at their worst" in text
+    # both judges' budget, as section 9 and the README state it
+    assert BUDGET == _JUDGE_MAX_TOKENS == 1024
+    assert f"every judge call {BUDGET} (the grading judges' budget and the adoption judges' alike)" in text
+    assert f"Jeder Aufruf darf `max_tokens` {MAX_TOKENS} ausschöpfen, ein Judge-Aufruf {BUDGET}." in text_de
+    # the README: the estimate, the bound, the block order with the first block's estimate, where a Fable call can be
+    # in flight
     assert f"Aus den längsten gespeicherten Antworten geschätzt sind das bei der Voreinstellung {CONCURRENCY} etwa " \
-        f"{comma(overshoot)} $, aber das ist keine Grenze" in " ".join(text_de.split())
-    assert f"höchstens etwa {comma(bound['Sol'])} $, wenn der Deckel während der Sol-Aufrufe erreicht wird, " \
-        f"{comma(bound['Neon'])} $ bei Neon und {comma(bound['Fable'])} $ bei Fable" in text_de
-    assert f"mit dem Judge im ungünstigsten Fall etwa {comma(priced['first'])} $" in text_de
+        f"{comma(overshoot)} $, aber das ist keine Grenze" in text_de
+    assert f"Zu den gespeicherten Preisen sind es dann höchstens etwa {comma(top)} $ (acht Fable-Aufrufe)" in text_de
+    blocks_de = [(SHORT[m], n) for m, n, _ in priced["blocks"]]
+    tail = ", ".join(f"{n} an {name}" for name, n in blocks_de[1:-1]) + f" und {blocks_de[-1][1]} an {blocks_de[-1][0]}"
+    assert f"Der Plan schickt erst {blocks_de[0][1]} Aufrufe an {blocks_de[0][0]} (geschätzt etwa " \
+        f"{comma(priced['first_estimate'])} $, mit dem Judge im ungünstigsten Fall etwa {comma(priced['first'])} $), " \
+        f"dann {tail}." in text_de
+    assert f"Acht Sol-Aufrufe kosten höchstens etwa {comma(bound['Sol'])} $ und acht Neon-Aufrufe " \
+        f"{comma(bound['Neon'])} $, aber ab dem {priced['fable_from']}. der {calls} Aufrufe kann ein Fable-Aufruf " \
+        f"mitlaufen, auch bei den letzten {last[1]} Sol-Aufrufen." in text_de
+    assert f"und dann gilt die Grenze von {comma(top)} $" in text_de
+    assert "wenn der Deckel während der Sol-Aufrufe erreicht wird" not in text_de
     assert "cannot spend more" not in text and "mehr wird also nicht ausgegeben" not in text_de
     assert "so a run can end above the cap by what the items in flight cost" in section(6)
     assert _keys_run_parser().get_default("concurrency") == CONCURRENCY           # the default the figure assumes
     max_cost = next(a for a in _keys_run_parser()._actions if "--max-cost" in a.option_strings)
     help_text = " ".join((max_cost.help or "").split())
-    assert f"up to about {bound['Sol']:.2f} USD in a Sol block of the plan, {bound['Neon']:.2f} in a Neon block, " \
-        f"{bound['Fable']:.2f} in a Fable block" in help_text and "the pilot asks for 3.5" in help_text
+    assert f"at max_tokens and the default of {CONCURRENCY} up to about {top:.2f} USD (eight Fable items: the items " \
+        "in flight can belong to a neighbouring block of the plan" in help_text
+    assert "the pilot asks for 3.5" in help_text
+    assert "in a Sol block of the plan" not in help_text
+
+
+class _AtTheBound:
+    """A recipient backend for the boundary cases of the cap's overshoot: every call costs the per-item bound of its
+    model (section 9) and takes the latency the case gives its item; no judges."""
+
+    def __init__(self, cost, latency):
+        self.cost, self.latency = cost, latency
+
+    async def chat(self, model, req):
+        await asyncio.sleep(self.latency(req.metadata["item"], model.key))
+        return ChatResult(text="I don't know.", usage={"cost": self.cost[model.key]}, finish_reason="stop")
+
+    def stream_continuation(self, model, req):  # pragma: no cover - unused
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize("case", ["neon_block_end", "last_sol_calls"])
+def test_the_items_in_flight_at_a_block_boundary_can_belong_to_a_dearer_block(tmp_path, priced, case):
+    """Section 9's bound is eight of the dearest item that can be in flight, not eight of the block that reaches the
+    cap (review of aafe7f9): the real run_plan on two windows of the real plan, every call at its model's per-item
+    bound. At the end of the Neon 231 block a slow Neon call reaches the cap while the first 7 Fable calls are in
+    flight; among the last 4 Sol calls, the last Neon and the 2 Fable calls are still in flight. Either way the run
+    ends above the cap by more than eight items of the block that reached it, and by at most eight Fable items."""
+    plan, item = priced["plan"], priced["item"]
+    cost = {model: item[name] for model, name in SHORT.items()}
+    first_fable = next(i for i, p in enumerate(plan) if p["recipient"] == "claude-fable-5.2")
+    last_sol = len(plan) - priced["blocks"][-1][1]
+    if case == "neon_block_end":                          # a slow Neon call (the block's last) reaches the cap
+        lo, hi, slow, crossing = first_fable - 20, first_fable + 30, {first_fable - 1: 0.12}, "gemini-4-neon"
+        latency = {"claude-fable-5.2": 0.25}
+    else:                                                 # a Sol call of the last block reaches it
+        lo, hi, slow, crossing = len(plan) - 20, len(plan), dict.fromkeys(range(last_sol - 4, last_sol), 0.25), \
+            "gpt-6.2-sol"
+        latency = {"gpt-6.2-sol": 0.08}
+    window = plan[lo:hi]
+    slow_ids = {plan[i]["id"]: t for i, t in slow.items()}
+    first_slow = min(slow)
+    assert plan[first_slow]["recipient"] == "gemini-4-neon" and plan[first_fable - 1]["recipient"] == "gemini-4-neon"
+    cap = sum(cost[p["recipient"]] for p in plan[lo:first_slow]) + 0.01      # crossed by the next call to finish
+    backend = _AtTheBound(cost, lambda item_id, model: slow_ids.get(item_id, latency.get(model, 0.002)))
+    models = [ModelSpec(key=k, provider_id=f"x/{k}") for k in SHORT]
+    out = tmp_path / "keys.jsonl"
+    got = asyncio.run(run_plan(backend, models, window, out, events=priced["events"], max_cost=cap,
+                               concurrency=CONCURRENCY, backend_name="scripted"))
+    assert got.stopped_by == ("max_cost" if case == "neon_block_end" else None)
+    spent = 0.0
+    for row in (json.loads(line) for line in out.read_text("utf-8").splitlines() if line.strip()):  # as written
+        spent += row_cost(row)
+        if spent >= cap:
+            assert row["recipient"] == crossing                                  # the call that reached the cap
+            break
+    else:
+        pytest.fail("the cap was never reached")
+    top = CONCURRENCY * max(cost.values())
+    assert top == pytest.approx(priced["bound"]["Fable"])
+    assert CONCURRENCY * cost[crossing] < got.cost_usd - cap <= top        # beyond its block's figure, within the bound
 
 
 def test_the_pilot_asks_for_a_cap_of_3_5_usd():
@@ -348,24 +458,55 @@ def test_the_judges_scope_is_stated_for_each_name():
         in seven and "an answered row is undecided only when the judges' votes failed or tied" in seven
 
 
-def test_section_10_records_the_judges_scope_and_its_refinements():
+def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     """The check of 863ca47 added four rows to the refinements table: the judges' scope, the rules without judges, the
     3b effect of the wider note references (the row on the note in more words named only the right name) and the
-    cap's overshoot; the intro counts the rows each review added."""
+    cap's overshoot; the intro counts the rows each review added. The review of aafe7f9 added four more (a two-letter
+    surname alone, a correction of another name, a judges' decision on resume, the rules-versus-judges table) and
+    corrected two of the check's rows in place: the dash clause and the further references to the note in "the rules
+    without judges", and the bound in "the cap's overshoot", whose figures are pinned here."""
     text = DESIGN.read_text("utf-8")
     table = text[text.index("### Refinements during the implementation review"):]
     titles = [line.split(" | ")[0].removeprefix("| ") for line in table.splitlines() if line.startswith("| ")][1:]
-    assert titles[-4:] == ["the judges' scope", "the rules without judges",
-                           "the wider note references on the donor's name", "the cap's overshoot"]
+    check = ["the judges' scope", "the rules without judges", "the wider note references on the donor's name",
+             "the cap's overshoot"]
+    review = ["a two-letter surname alone", "a correction of another name, on every arm",
+              "a judges' decision on resume", "the rules-versus-judges table"]
+    assert titles[-8:] == check + review
     seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
     assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
     intro = " ".join(table[: table.index("| issue | before | now |")].split())
     assert "added the seven rows from \"another role or a rejection in other words\" to \"the pilot's total and the " \
         "cap\"" in intro
-    assert "added the last four rows, from \"the judges' scope\" on" in intro
+    assert "added the four rows from \"the judges' scope\" to \"the cap's overshoot\"" in intro
+    assert "A review of that change added the last four rows, from \"a two-letter surname alone\" on" in intro
+    assert "corrected two rows of the check in place: \"the rules without judges\"" in intro
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
     assert "\"Supposedly X.\"" in rows["the wider note references on the donor's name"]
     assert "adopted by rule on `donor_wrong` and `control`" in rows["the wider note references on the donor's name"]
-    assert "0.23 USD is an estimate from the stored maxima" in rows["the cap's overshoot"]
     assert "`rule_adopted`" in rows["the judges' scope"] and "`mentions`" in rows["the judges' scope"]
-    assert "the plan is unchanged byte for byte" in rows["the rules without judges"]
+    without = rows["the rules without judges"]
+    assert "the plan is unchanged byte for byte" in without
+    assert "a comma or dash clause that asserts anew" in without and "\"It's not Y - it's X.\"" in without
+    for form in ("\"the summary\"", "\"you've provided\"", "\"you share\"", "\"as mentioned\" (indicated, shown,"):
+        assert form in without, form
+    assert "an answer's own citations, \"as shown on the arXiv listing\", \"the paper's summary\"" in without
+    # the cap's overshoot: the figures of section 9 (review of aafe7f9: the row's figures were not pinned)
+    over = rows["the cap's overshoot"]
+    bound, f = priced["bound"], priced["figures"]
+    total = priced["recipients"] + sum(f[k][2] for k in ("grading", "right", "adopt_full", "alone"))
+    assert "0.23 USD is an estimate from the stored maxima" in over
+    assert f"(4096 per call, {BUDGET} per judge call)" in over
+    assert f"up to about {max(bound.values()):.2f} USD above the cap at the default of {CONCURRENCY} (eight Fable " \
+        f"items: the items in flight can belong to a neighbouring block, so eight Sol items, {bound['Sol']:.2f}, and " \
+        f"eight Neon items, {bound['Neon']:.2f}, bound it only away from a dearer block, and from the " \
+        f"{priced['fable_from']}th call on a Fable call can be in flight)" in over
+    assert f"the pilot's cap is 3.5 USD (under 3 the judges at their worst left about {3.0 - total:.2f} USD)" in over
+    assert "in a Sol block, 0.81 in a Neon block" not in over
+    added = {k: rows[k] for k in review}
+    assert "`mentions` found a part of the name on its own only with three letters or more" in \
+        added["a two-letter surname alone"]
+    correction = added["a correction of another name, on every arm"]
+    assert "`offers_answer`" in correction and f"the replay's {f['grading'][0]} grading-judge calls stay" in correction
+    assert "`adoption_name`" in added["a judges' decision on resume"]
+    assert "a column of their own" in added["the rules-versus-judges table"]

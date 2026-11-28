@@ -20,9 +20,11 @@
   can concern one request, e.g. a moderation flag) is an error row, or a missing vote for a judge, and the run goes on.
   An answer without visible text that was not cut at ``max_tokens`` is no answer: its row is a send error, and the
   next run sends the call again.
-- Grading: with judges, stored answers the rules left undecided, stored labelled rows still undecided, and stored
-  labelled rows the rules decided that are now the judges' (below) are graded again from their stored response,
-  without a new recipient call.
+- Grading: the paper rules (``grading.grade_response``), except that their ``incorrect`` is unsure where the answer
+  offers the expected answer (``text.offers_answer``: "It is not Y, it is X."), on every arm; with judges the grading
+  judges decide what the rules leave unsure. With judges, stored answers the rules left undecided, stored labelled
+  rows still undecided, and stored labelled rows the rules decided that are now the judges' (below) are graded again
+  from their stored response, without a new recipient call.
 - The judges' scope: with judges, the adoption judges decide every labelled answer that mentions the name it is
   measured against, whatever the rules would decide: every ``correct`` ``full`` row of ``dark`` and ``both_right``,
   and every row of ``donor_wrong`` and ``control`` whose label is endorsed or reported or whose answer names the
@@ -30,7 +32,7 @@
   mention the name (not adopted). ENDORSE adopts (a right-name row stays ``correct``), REPORT or REJECT does not (it
   becomes ``incorrect``), no majority or a failed call leaves it undecided; the rules' decision never replaces a
   failed vote. Every labelled row stores the rules' own decision (``rule_adopted``), for the report's rules-versus-
-  judges table.
+  judges table, and the name it is measured against (``adoption_name``).
 - Without judges, the rules decide. The right name (the ``full`` rows of ``dark`` and ``both_right``, whose note shows
   the expected answer): a ``correct`` grade stands by rule only where the answer gives that name as its own
   (``text.adoption_label`` endorsed, and clear: nobody else offered, ``text.offers_another``; no other role or
@@ -39,10 +41,11 @@
   ``control``): the three-way label of ``text.adoption_label`` (endorsed, reported, absent); absent is not adopted,
   endorsed is adopted by rule only when nothing contradicts it (the grade is ``incorrect`` and the endorsement is
   clear, as above), and the rest is undecided.
-- A stored row whose label no longer matches the name it is measured against (a re-plan changed the donor answer,
-  which neither sha covers), or whose label, rule decision or ``rule_adopted`` the current rules would give otherwise
-  (or that has no ``rule_adopted``), is labelled again from its stored response; a decision of the judges on a label
-  that is still current stands.
+- A stored row whose label or ``adoption_name`` no longer matches the name it is measured against (a re-plan changed
+  the donor answer, which neither sha covers), or whose label, rule decision or ``rule_adopted`` the current rules
+  would give otherwise (or that has no ``rule_adopted`` or ``adoption_name``), is labelled again from its stored
+  response. A decision of the judges about the same name stands while the answer is in their scope, whatever its
+  label now (their question does not depend on it); one about another name counts for nothing.
 """
 
 from __future__ import annotations
@@ -62,7 +65,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from cutoffmix.backends.base import BackendError
-from cutoffmix.bench.grading import _json_objects, grade_response
+from cutoffmix.bench.grading import _json_objects, grade_response, grade_rule, grade_with_judges
 from cutoffmix.bench.io import append_jsonl
 from cutoffmix.bench.keys import text as _text  # looked up at call time: adoption_label can be swapped in tests
 from cutoffmix.bench.keys.common import PROBE, judge_cost, prompt_sha, row_cost
@@ -399,6 +402,13 @@ def _by_judges(row: Mapping[str, Any]) -> bool:
     return str(row.get("adoption_grader") or "").startswith("judge")
 
 
+def _asked_about(row: Mapping[str, Any], name: str) -> bool:
+    """Whether a stored row's decision is about ``name``: its ``adoption_name`` is ``name``, or it has none (a row
+    written before the name was stored; its decision then counts while the answer is in the judges' scope for
+    ``name``, design section 6)."""
+    return "adoption_name" not in row or str(row.get("adoption_name") or "").strip() == name
+
+
 def _judge_due(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) -> bool:
     """Whether a run with judges grades a stored answer again (design section 6): the rules left it ``ungraded`` (not
     a refusal, with a response); or it carries a label for the name it is measured against (the donor's name on
@@ -425,19 +435,22 @@ def _judge_due(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) ->
 
 def _label_changed(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) -> bool:
     """Whether a stored answer's ``adoption`` is not the label its response gets now, or its ``rule_adopted`` is not
-    the rules' decision now (or missing), or the rules would now decide it otherwise: the label for the plan row's
-    donor answer on ``donor_wrong`` and ``control``, for the right name on a ``full`` row of ``dark`` or
-    ``both_right`` that was graded ``correct`` (:func:`_graded`; such a row with another grade has no label), None on
-    every other row; and, for a row whose label the rules decided or left undecided (``adoption_grader`` ``rule``),
-    its ``grade`` and ``adopted`` as :func:`_rule_decision` gives them now. A decision of the judges on a label that
-    is still current stands: such a row is labelled again only to store the rules' current decision next to it
-    (:func:`_decide` keeps the judges'). Neither sha covers ``donor_answer``, so a re-plan that names another name
-    with the same messages (or a changed labelling rule) leaves labels measured against a name the plan no longer
-    names; such a row is labelled again from its stored response, without a new call. So is a correct ``full`` row of
+    the rules' decision now (or missing), or its ``adoption_name`` is not the name it is measured against now (or
+    missing), or the rules would now decide it otherwise: the label for the plan row's donor answer on ``donor_wrong``
+    and ``control``, for the right name on a ``full`` row of ``dark`` or ``both_right`` that was graded ``correct``
+    (:func:`_graded`; such a row with another grade has no label), None on every other row; for a row whose label the
+    rules decided or left undecided (``adoption_grader`` ``rule``), its ``grade`` and ``adopted`` as
+    :func:`_rule_decision` gives them now; and for a row the judges decided, whether its answer is still in their
+    scope (:func:`_judged`). A decision of the judges about the same name stands while the answer is in their scope,
+    whatever the label: such a row is labelled again only to store the current label and rules' decision next to it
+    (:func:`_decide` keeps the judges'), and one whose answer is out of their scope now (the name changed) is labelled
+    again and decided by the rules. Neither sha covers ``donor_answer``, so a re-plan that names another name with
+    the same messages (or a changed labelling rule) leaves labels measured against a name the plan no longer names;
+    such a row is labelled again from its stored response, without a new call. So is a correct ``full`` row of
     ``dark`` or ``both_right`` stored without a label (written before the check of the right name), a labelled row
-    stored without ``rule_adopted`` (written before it was stored), and a row a rule decided that the rules now leave
-    open. A label that cannot be computed counts as changed, so the failure is recorded as a grading failure instead
-    of the old label being kept."""
+    stored without ``rule_adopted`` or ``adoption_name`` (written before they were stored), and a row a rule decided
+    that the rules now leave open. A label or scope that cannot be computed counts as changed, so the failure is
+    recorded as a grading failure instead of the old label being kept."""
     if row.get("error") or row.get("grader") == "refusal":
         return False
     if not (_shows_right_name(item) or item.get("set") in ADOPTION_SETS):
@@ -445,7 +458,8 @@ def _label_changed(item: Mapping[str, Any], row: Mapping[str, Any], event: Event
     response, graded = str(row.get("response") or ""), _graded(item, row)[0]
     try:
         grade, adopted, label = _rule_decision(item, event, response, graded)
-    except Exception:
+        out_of_scope = _by_judges(row) and label is not None and not _judged(item, event, response, label)
+    except Exception:  # noqa: BLE001 -- a label or scope that cannot be computed: the re-grade records the failure
         return True
     if label != row.get("adoption"):
         return True
@@ -453,8 +467,10 @@ def _label_changed(item: Mapping[str, Any], row: Mapping[str, Any], event: Event
         return False
     if "rule_adopted" not in row or row.get("rule_adopted") != adopted:
         return True
+    if row.get("adoption_name") != _candidate(item, event):  # another name, or none stored
+        return True
     if _by_judges(row):
-        return False
+        return out_of_scope
     return (grade, adopted) != (row.get("grade"), row.get("adopted"))
 
 
@@ -721,38 +737,76 @@ def _judged(item: Mapping[str, Any], event: Event, response: str, label: str | N
     return bool(_text.mentions(response, _candidate(item, event), event))
 
 
+def _unsure_incorrect(event: Event, response: str, grade: str) -> bool:
+    """Whether the paper rules' grade is an ``incorrect`` they cannot vouch for (design section 6): the answer offers
+    the event's expected answer by the rule of :func:`~cutoffmix.bench.keys.text.offers`
+    (:func:`~cutoffmix.bench.keys.text.offers_answer`). The paper rules let a negation or hedge before the expected
+    answer reach across a comma and take any other name for the answer given ("It is not Y, it is X.", "It might be
+    X, who works with Y.", "Unless I'm mistaken, the first author is X, with Y as senior author."), so such a grade
+    goes to the grading judges, on every arm alike."""
+    return grade == "incorrect" and _text.offers_answer(response, event)
+
+
+def _rule_grade(event: Event, response: str) -> tuple[str, bool] | None:
+    """The grading step's rule grade ``(grade, hedged)`` of an answer, or None where the rules are unsure (design
+    section 6): ``grading.grade_rule``, and None for an ``incorrect`` that :func:`_unsure_incorrect` doubts. With
+    judges, None goes to the grading judges; without them it is ``ungraded``."""
+    ruled = grade_rule(event, PROBE, response)
+    if ruled is not None and _unsure_incorrect(event, response, ruled[0]):
+        return None
+    return ruled
+
+
+async def _grade(event: Event, response: str, backend: Backend,
+                 judges: Sequence[ModelSpec] | None) -> tuple[str, bool, str]:
+    """The grading step ``(grade, hedged, grader)`` of an answer (design section 6): ``grading.grade_response`` (the
+    paper rules; the grading judges, when given, where the rules are unsure), except that a rule grade ``incorrect``
+    that :func:`_unsure_incorrect` doubts is unsure as well: the grading judges decide it, and without judges it is
+    ``ungraded`` (as :func:`_rule_grade` gives it). ``grading.py`` itself is unchanged for the other experiments."""
+    graded = await grade_response(event, PROBE, response, backend=backend, judges=judges or None)
+    if graded[2] != "rule" or not _unsure_incorrect(event, response, graded[0]):
+        return graded
+    if judges:
+        return await grade_with_judges(backend, judges, event, PROBE, response)
+    return "ungraded", False, "rule"
+
+
 async def _decide(item: Mapping[str, Any], event: Event, response: str, graded: tuple[str, bool, str],
                   backend: Backend, judges: Sequence[ModelSpec] | None,
                   stored: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The grade and adoption fields of a result row (``grade``, ``hedged``, ``grader``, ``adopted``, ``adoption``,
-    ``adoption_grader``, ``rule_adopted``) from the grading step's ``graded`` = ``(grade, hedged, grader)`` (design
-    section 6); ``hedged`` and ``grader`` as graded.
+    ``adoption_name``, ``adoption_grader``, ``rule_adopted``) from the grading step's ``graded`` = ``(grade, hedged,
+    grader)`` (design section 6); ``hedged`` and ``grader`` as graded.
 
     - The rules' decision (:func:`_rule_decision`) is stored on every labelled row as ``rule_adopted``, whoever
-      decides it; the adoption fields are None on a row without a label.
+      decides it, and the name the label is measured against (:func:`_candidate`) as ``adoption_name``; the adoption
+      fields are None on a row without a label.
     - With ``judges``, the adoption judges decide every row in their scope (:func:`_judged`), whatever the rules
       give: ENDORSE gives ``adopted`` True (a right-name row keeps ``correct``), REPORT or REJECT False (a right-name
       row becomes ``incorrect``), no majority or a failed call None (a right-name row ``ungraded``); a failure never
       falls back to the rules' decision. ``adoption_grader`` is ``judge:<keys>``.
     - Otherwise the rules decide (``adoption_grader`` ``rule``; what they leave open stays None).
-    - ``stored`` (a re-grade): a decision of the judges on the same label stands, without a call, and so do their
-      undecided votes when this run has no judges to ask again; only ``rule_adopted`` is brought up to date (and the
-      grade of a donor row, which the judges' decision does not touch)."""
+    - ``stored`` (a re-grade): a decision of the judges about the same name (:func:`_asked_about`) stands while the
+      answer is in their scope, whatever its label now (their question does not depend on it), without a call, and so
+      do their undecided votes when this run has no judges to ask again; only the label and ``rule_adopted`` are
+      brought up to date (and the grade of a donor row, which the judges' decision does not touch). A decision about
+      another name (a re-plan) counts for nothing: the rules or the judges decide the current name."""
     grade, hedged, grader = graded
     ruled, rule_adopted, label = _rule_decision(item, event, response, grade)
     fields: dict[str, Any] = {"grade": ruled, "hedged": hedged, "grader": grader, "adopted": rule_adopted,
-                              "adoption": label, "adoption_grader": None if label is None else "rule",
-                              "rule_adopted": rule_adopted}
+                              "adoption": label, "adoption_name": None, "adoption_grader": None, "rule_adopted": None}
     if label is None:
         return fields
-    if (stored is not None and stored.get("adoption") == label and _by_judges(stored)
-            and (stored.get("adopted") is not None or not judges)):
+    name = _candidate(item, event)
+    fields.update(adoption_name=name, adoption_grader="rule", rule_adopted=rule_adopted)
+    if (stored is not None and _by_judges(stored) and _asked_about(stored, name)
+            and (stored.get("adopted") is not None or not judges) and _judged(item, event, response, label)):
         kept = str(stored.get("grade")) if _shows_right_name(item) else grade
         return {**fields, "grade": kept, "adopted": stored.get("adopted"),
                 "adoption_grader": stored.get("adoption_grader")}
     if not judges or not _judged(item, event, response, label):
         return fields
-    adopted, by = await _judge_adoption(backend, judges, event, _candidate(item, event), response, str(item["id"]))
+    adopted, by = await _judge_adoption(backend, judges, event, name, response, str(item["id"]))
     if _shows_right_name(item):
         grade = {True: "correct", False: "incorrect", None: "ungraded"}[adopted]
     return {**fields, "grade": grade, "adopted": adopted, "adoption_grader": by}
@@ -763,8 +817,8 @@ async def _decide(item: Mapping[str, Any], event: Event, response: str, graded: 
 
 def _row(item: Mapping[str, Any], provenance: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
     """A result row with the fields in the order of design section 6."""
-    order = ("response", "grade", "hedged", "grader", "adopted", "adoption", "adoption_grader", "rule_adopted",
-             "latency_s", "usage", "judge_usage")
+    order = ("response", "grade", "hedged", "grader", "adopted", "adoption", "adoption_name", "adoption_grader",
+             "rule_adopted", "latency_s", "usage", "judge_usage")
     row = {k: item[k] for k in ("id", "set", "donor", "recipient", "event_id", "arm")}
     row.update({k: fields[k] for k in order})
     row.update({k: provenance.get(k) for k in ("backend", "prompt_sha", "request_sha", "note_event", "today")})
@@ -778,8 +832,8 @@ def _failed_row(item: Mapping[str, Any], provenance: Mapping[str, Any], response
     judges' calls made so far kept (the cap counts them), and an ``error`` that starts with :data:`GRADING_FAILED`,
     so that the next run grades the stored answer again instead of sending the call again."""
     return _row(item, provenance, response=response, grade="ungraded", hedged=False, grader="none", adopted=None,
-                adoption=None, adoption_grader=None, rule_adopted=None, latency_s=latency_s, usage=usage,
-                judge_usage=judge_usage, error=f"{GRADING_FAILED}{type(exc).__name__}: {exc}"[:500])
+                adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None, latency_s=latency_s,
+                usage=usage, judge_usage=judge_usage, error=f"{GRADING_FAILED}{type(exc).__name__}: {exc}"[:500])
 
 
 def check_plan(plan: Sequence[Mapping[str, Any]]) -> None:
@@ -822,7 +876,9 @@ async def run_plan(
 
     - Each call is ``ChatRequest(messages, max_tokens, temperature=0.0, metadata={event_id, probe: "current_d",
       model, arm, set, donor, item, donor_answer})`` to the recipient model. The answer is graded with
-      :func:`cutoffmix.bench.grading.grade_response` (the paper rules; ``judges`` only when given). A policy refusal
+      :func:`cutoffmix.bench.grading.grade_response` (the paper rules; ``judges`` only when given), except that a rule
+      grade ``incorrect`` is unsure where the answer offers the expected answer (:func:`_grade`, every arm: "It is not
+      Y, it is X."): the grading judges decide it, or it is ``ungraded`` without them. A policy refusal
       (``content_filter``) is ``ungraded`` with grader ``refusal``; an exception becomes an ``ungraded`` row with
       ``error``. When the call raises, the row has no answer (``usage`` None) and the next run sends it again. An
       answer without visible text whose ``finish_reason`` is neither ``length`` (cut at ``max_tokens``, which is
@@ -834,8 +890,8 @@ async def run_plan(
       carries the ``error`` (:class:`_JudgeMeter`), and ``RunOutcome.judge_failed`` counts this run's (a failure the
       grading retried without JSON mode is marked ``retried`` and not counted: its retry is).
     - Rows: ``{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, adopted, adoption,
-      adoption_grader, rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha, note_event,
-      today, error}`` (design section 6). ``backend`` is ``backend_name`` (default: :func:`_backend_name` of
+      adoption_name, adoption_grader, rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha, request_sha,
+      note_event, today, error}`` (design section 6). ``backend`` is ``backend_name`` (default: :func:`_backend_name` of
       ``backend``), ``prompt_sha`` the :func:`prompt_sha` of the planned messages, ``request_sha`` the
       :func:`request_sha` of the call; ``note_event`` and ``today`` are copied from the plan row (None when it has
       none). ``judge_usage`` lists every judge call of the row (``[]`` without one).
@@ -857,7 +913,8 @@ async def run_plan(
       (:func:`cutoffmix.bench.keys.text.mentions`) is the judges', whatever its grade (the majority as in grading;
       True only for ENDORSE; unparseable or tied votes, or failed calls, leave it None); the rules decide only the
       rows that do not mention the name (``absent``, False). ``adoption_grader`` is ``rule`` or ``judge:<keys>``;
-      ``rule_adopted`` holds the rules' own decision on every labelled row (None elsewhere), whoever decided it.
+      ``rule_adopted`` holds the rules' own decision on every labelled row (None elsewhere), whoever decided it, and
+      ``adoption_name`` the name the label is measured against (the donor's name, or the right name).
     - Safety: the plan must pass :func:`check_plan` (no repeated id); ``out_path`` must be a regular file (or new)
       that holds rows of an earlier keys run only (see :func:`_existing`) and that this run can append to (checked
       before the first call); an exclusive lock on ``<out_path>.lock`` (next to the file a symlink resolves to) is
@@ -876,15 +933,16 @@ async def run_plan(
       again; an answer whose grading failed is graded again instead (below).
     - Re-grade, before any new call, from the stored response and without a recipient call; each appends a row under
       the same id with ``adopted`` recomputed: every current answer whose grading failed; every current row whose
-      ``adoption`` is not the label its response gets now, whose ``rule_adopted`` is missing or not the rules'
-      decision now, or whose rule decision the rules would now give otherwise (:func:`_label_changed`: for the plan
-      row's ``donor_answer`` on the adoption sets, for the right name on a correct ``full`` row of ``dark`` or
-      ``both_right``; the name changed in a re-plan with the same messages, or the labelling rule changed: the row is
-      labelled again; a decision of the judges on a label that is still current stands, :func:`_decide`); and, with
-      ``judges``, every current row that is ``ungraded`` without error, not a refusal and with a non-empty response,
-      every current labelled row with ``adopted`` None, and every current labelled row the rules decided that is in
-      the judges' scope now (:func:`_judge_due`; a labelled ``full`` row of ``dark`` or ``both_right`` goes straight
-      to the adoption judges: its grading step said ``correct``, see :func:`_graded`). The new row keeps
+      ``adoption`` is not the label its response gets now, whose ``rule_adopted`` or ``adoption_name`` is missing or
+      not the rules' decision or the name now, whose rule decision the rules would now give otherwise, or whose
+      judges' decision is out of their scope now (:func:`_label_changed`: for the plan row's ``donor_answer`` on the
+      adoption sets, for the right name on a correct ``full`` row of ``dark`` or ``both_right``; the name changed in a
+      re-plan with the same messages, or the labelling rule changed: the row is labelled again; a decision of the
+      judges about the same name stands while the answer is in their scope, whatever its label, :func:`_decide`); and,
+      with ``judges``, every current row that is ``ungraded`` without error, not a refusal and with a non-empty
+      response, every current labelled row with ``adopted`` None, and every current labelled row the rules decided
+      that is in the judges' scope now (:func:`_judge_due`; a labelled ``full`` row of ``dark`` or ``both_right`` goes
+      straight to the adoption judges: its grading step said ``correct``, see :func:`_graded`). The new row keeps
       ``latency_s`` and the provenance; its ``usage`` is None and its ``judge_usage`` lists the new judge calls: the
       recipient's call stays billed in the row it re-grades, so the summed cost of all rows counts every paid call
       once. A re-grade that raises appends a grading failure as well (its judge calls counted).
@@ -1069,23 +1127,24 @@ async def _run_locked(
             if _no_retry_fixes(e):
                 note_fatal(error)
             return _row(item, provenance, response="", grade="ungraded", hedged=False, grader="none", adopted=None,
-                        adoption=None, adoption_grader=None, rule_adopted=None,
+                        adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None,
                         latency_s=round(time.perf_counter() - start_time, 4), usage=None, judge_usage=[], error=error)
         latency = round(result.latency_s if result.latency_s > 0 else time.perf_counter() - start_time, 4)
         text = result.text or ""
         if result.finish_reason == "content_filter":  # a policy refusal says nothing about knowledge
             return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="refusal",
-                        adopted=None, adoption=None, adoption_grader=None, rule_adopted=None, latency_s=latency,
-                        usage=result.usage, judge_usage=[], error=None)
+                        adopted=None, adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None,
+                        latency_s=latency, usage=result.usage, judge_usage=[], error=None)
         if not text.strip() and result.finish_reason != "length":
             # no visible text and not cut at the pre-registered max_tokens: no answer (e.g. a provider's empty reply
             # inside an HTTP 200); the usage is kept for the cap, and the next run sends the call again
             return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="none", adopted=None,
-                        adoption=None, adoption_grader=None, rule_adopted=None, latency_s=latency, usage=result.usage,
-                        judge_usage=[], error=f"empty answer (finish_reason {result.finish_reason})")
+                        adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None, latency_s=latency,
+                        usage=result.usage, judge_usage=[],
+                        error=f"empty answer (finish_reason {result.finish_reason})")
         meter = _JudgeMeter(backend, note_fatal)
         try:
-            graded = await grade_response(event, PROBE, text, backend=meter, judges=judges or None)
+            graded = await _grade(event, text, meter, judges)
             fields = await _decide(item, event, text, graded, meter, judges)
         except Exception as e:  # the answer is paid for: kept and counted, graded again by the next run, never re-sent
             log.info("%s: grading the answer failed (%s: %s); the next run grades it again", item_id,
@@ -1101,7 +1160,7 @@ async def _run_locked(
         try:
             graded = _graded(item, row)  # a labelled full row goes straight to the adoption judges
             if _grading_failed(row) or (judges and graded[0] == "ungraded"):
-                graded = await grade_response(event, PROBE, text, backend=meter, judges=judges or None)
+                graded = await _grade(event, text, meter, judges)
             fields = await _decide(item, event, text, graded, meter, judges, stored=row)
         except Exception as e:  # as in send(): the judges' calls made so far stay counted
             log.info("%s: grading the stored answer again failed (%s: %s)", item["id"], type(e).__name__, e)
