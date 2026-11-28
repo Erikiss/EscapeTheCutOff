@@ -596,8 +596,11 @@ takes the expected answer for another person (section 6): a name with a word the
 none of its lists ("Researcher Guo", "Dean Guo"), or a slip that is no near spelling of it or of an accepted form ("Ziyu
 Mi" for Ziyu Ma). With judges such an answer goes to the grading judges, and a lost vote leaves it a miss without a
 check of the open offers (the run and the report count it among the undecided answers); without judges the rules grade
-most of them `incorrect`, and the few they leave open ("Dean Guo" for Daya Guo, by their test of initials) count as
-misses. The sensitivity line, with ungraded rows left out, shows the difference. Refusals are left out and counted.
+most of them `incorrect`, but by their test of initials they leave open, for an expected given name without a hyphen,
+every name of the expected surname whose given name is one word with the expected initial, so such a name more than one
+slip away from the expected given name ("Lingwei Mei" for Lingrui Mei, "Dean Guo" for Daya Guo) is ungraded and counts
+as a miss without a check of the open offers. The sensitivity line, with ungraded rows left out, shows the difference.
+Refusals are left out and counted.
 
 ## 7. Pre-registered predictions (version 2, written before any real call)
 

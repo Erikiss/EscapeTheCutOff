@@ -942,8 +942,16 @@ def test_an_open_offer_is_an_ungraded_answer_that_names_the_expected_answer(pric
         "leicht verschrieben nach dem Maß, mit dem die Bewertung eine mögliche Verschreibung dem Judge überlässt " \
         "(„Daya Guoo“; auch bei einer angenommenen Form wie „Mei Lingrui“); nur eine Nennung im Namen einer anderen " \
         "Person zählt nicht („Yutong Mei“ bei Lingrui Mei), und als Name einer anderen Person gilt auch ein Name mit " \
-        "einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), sowie eine Verschreibung jenseits " \
-        "dieses Maßes („Ziyu Mi“ bei Ziyu Ma)." in text_de                  # review of 4fd7637: the lists, the limits
+        "einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), ein Name mit demselben Nachnamen und " \
+        "Anfangsbuchstaben, den die Bewertung nur deshalb offen lässt und dessen Vorname um mehr als einen " \
+        "Buchstaben abweicht („Lingwei Mei“ bei Lingrui Mei), sowie eine Verschreibung jenseits dieses Maßes " \
+        "(„Ziyu Mi“ bei Ziyu Ma)." in text_de  # reviews of 4fd7637 (lists, limits) and 171196d (test of initials)
+    assert "(„Researcher Guo“), sowie eine Verschreibung jenseits dieses Maßes" not in text_de
+    assert "but by their test of initials they leave open, for an expected given name without a hyphen, every name " \
+        "of the expected surname whose given name is one word with the expected initial, so such a name more than " \
+        "one slip away from the expected given name (\"Lingwei Mei\" for Lingrui Mei, \"Dean Guo\" for Daya Guo) is " \
+        "ungraded and counts as a miss without a check of the open offers." in six
+    assert "and the few they leave open (\"Dean Guo\" for Daya Guo, by their test of initials)" not in six
     assert "auch mit Titel („Professor Guo“) oder im vollen Namen leicht verschrieben" not in text_de
     assert "obwohl sie die richtige Antwort anbieten. Der Pilot" not in text_de
     assert "unbewertete Antworten, die die richtige Antwort nennen (unten)" in text_de

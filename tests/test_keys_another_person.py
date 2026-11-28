@@ -211,8 +211,9 @@ def test_a_near_spelling_of_an_accepted_form_writes_the_expected_answer(real):
 
 
 def test_a_different_given_name_of_the_same_surname_stays_another_person(real):
-    # grading._near_name's test of initials reads any given name as initials, so it accepts "Zhaoyang Li" for Zhiyu Li
-    # (the paper rules leave that stored answer open); more than a slip away it stays another person
+    # grading._near_name's test of initials reads an expected given name without a hyphen as a string of initials,
+    # so it accepts "Zhaoyang Li" for Zhiyu Li (the paper rules leave that stored answer open); more than a slip away
+    # it stays another person
     zhiyu = real.events["paper:2507.03724"]
     assert _near_name("Zhaoyang Li", "Zhiyu Li") and _near_name("Zhaoyang Li", "Z. Li")
     assert grade_rule(zhiyu, "current_d", "The first author is Zhaoyang Li.") is None
@@ -221,6 +222,24 @@ def test_a_different_given_name_of_the_same_surname_stays_another_person(real):
     ziyu = next(e for e in real.named if e.expected_current == "Ziyu Ma")
     assert ratio("Ziyo Ma", "Ziyu Ma") < _NEAR_NAME_RATIO and named("The first author is Ziyo Ma.", ziyu)
     assert not named("The first author is Zhaoyu Ma.", ziyu)                     # two slips: another person
+
+
+def test_the_rules_leave_open_every_given_name_with_the_expected_initial(real):
+    """Check of 171196d: by its test of initials the paper grader leaves open, for an expected given name without a
+    hyphen, every name of the expected surname whose given name is one word with the expected initial; more than one
+    slip away from the expected given name such a name is another person for the open offers, so without judges it is
+    an ungraded miss with no check (DESIGN section 6 and the README's status line say so)."""
+    for event_id, other in (("paper:2507.13334", "Lingwei Mei"), ("paper:2507.13334", "Larry Mei"),
+                            ("paper:2401.14196", "Dean Guo"), ("paper:2401.14196", "David Guo"),
+                            ("paper:2507.03724", "Zihan Li")):
+        event = real.events[event_id]
+        answer = f"The first author is {other}."
+        assert _near_name(other, event.expected_current) and grade_rule(event, "current_d", answer) is None, other
+        assert not named(answer, event) and not text_mod.offers_answer(answer, event), other
+    for event_id, near in (("paper:2507.13334", "Lingru Mei"), ("paper:2401.14196", "Dayan Guo")):  # one slip
+        assert named(f"The first author is {near}.", real.events[event_id]), near
+    shih = next(e for e in real.events.values() if e.expected_current == "Shih-Yang Liu")  # a hyphen: none open
+    assert grade_rule(shih, "current_d", "The first author is Sheng Liu.") == ("incorrect", False)
 
 
 # ---- another person -----------------------------------------------------------------------------------------------

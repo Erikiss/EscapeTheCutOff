@@ -56,10 +56,12 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   Titel wie „Professor“ („Professor Guo“) oder leicht verschrieben nach dem Maß, mit dem die Bewertung eine mögliche
   Verschreibung dem Judge überlässt („Daya Guoo“; auch bei einer angenommenen Form wie „Mei Lingrui“); nur eine Nennung
   im Namen einer anderen Person zählt nicht („Yutong Mei“ bei Lingrui Mei), und als Name einer anderen Person gilt auch
-  ein Name mit einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), sowie eine Verschreibung jenseits
-  dieses Maßes („Ziyu Mi“ bei Ziyu Ma). Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,45 $ für den
-  Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt 3,00 $, eine Schätzung, keine Obergrenze: die setzt
-  `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
+  ein Name mit einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), ein Name mit demselben Nachnamen
+  und Anfangsbuchstaben, den die Bewertung nur deshalb offen lässt und dessen Vorname um mehr als einen Buchstaben
+  abweicht („Lingwei Mei“ bei Lingrui Mei), sowie eine Verschreibung jenseits dieses Maßes („Ziyu Mi“ bei Ziyu Ma). Der
+  Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,45 $ für den Judge (im ungünstigsten Fall 0,83 $;
+  zusammen geschätzt 3,00 $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`, freigegeben werden sollen 3,5 $)
+  und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
