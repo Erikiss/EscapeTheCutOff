@@ -416,12 +416,20 @@ def rally_summary(rally: Mapping[str, Any], models: Mapping[str, ModelSpec] | No
     if isinstance(skipped, list) and skipped:
         lines.append("  skipped hand-overs: " + ", ".join(
             f"{name(str(row.get('model')))} ({row.get('reason')})" for row in skipped if isinstance(row, Mapping)))
+    # the opening note's 'Known:' lines are no reply labels, so adds_by_model leaves them out; count them from the notes
+    known: dict[str, int] = {}
+    for note in rally.get("notes") if isinstance(rally.get("notes"), list) else []:
+        labels = note.get("labels") if isinstance(note, Mapping) else None
+        count = labels.get("known") if isinstance(labels, Mapping) else None
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            known[str(note.get("model"))] = known.get(str(note.get("model")), 0) + count
     adds = rally.get("adds_by_model") if isinstance(rally.get("adds_by_model"), Mapping) else {}
     for key, row in adds.items():
         if isinstance(row, Mapping):
             words = (("update", "update"), ("newer", "newer"), ("confirm", "confirm"), ("unverified", "unverified"),
                      ("nothing_newer", "nothing newer"))
-            bits = [f"{row[label]} {word}" for label, word in words if row.get(label)]
+            bits = [f"{known[key]} known"] if known.get(key) else []
+            bits += [f"{row[label]} {word}" for label, word in words if row.get(label)]
             lines.append(f"  {name(key)}: " + (", ".join(bits) or "no labelled lines"))
     return lines
 

@@ -1,0 +1,8 @@
+# live probe (DESIGN_rally.md 4.1): Fable with the FULL rally prompt, at most 2 notes + the answer
+relay:
+  max_segments: 3
+rally:
+  ring: [claude-fable-5.2, gemini-4-neon]
+  light_schema_models: []
+  min_turns: 2
+  max_turns: 2

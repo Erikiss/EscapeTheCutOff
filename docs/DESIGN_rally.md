@@ -1,7 +1,8 @@
 # Rally preset: models pass the record back and forth to lift each other's recency
 
-Status: design contract (2026-11-26). Everything below is implemented offline against the simulated backend; the
-live behaviour of the three models under these prompts is **not** verified (no key was available when it was built).
+Status: design contract (2026-11-26). Everything below is implemented and tested offline against the simulated
+backend. Live, only a short probe has run (2026-11-28, section 4.1): two rallies of two notes each between Fable 5.2
+and Neon. Whether the rally lifts the effective cutoff is not measured (section 9).
 
 ## 1. Idea
 
@@ -138,12 +139,27 @@ Tail (`RELAY_TAIL_RALLY = "END OF THE SHARED NOTES. Write note {k}. {directive}"
 
 Anthropic's input filter blocked schema-heavy prompts for Fable 5.2 in the explore preset (DESIGN.md 7.8: a threshold
 on the amount of schema; rewording did not help). The rally prompt has seven labels in the system prompt and up to
-six in the reply tail, which is nearer to the blocked shapes than to the verified ones, and it has not been tried
-live. Models in `light_schema_models` (the preset lists Fable) therefore get the default relay system prompt and a
-prose tail: the one-sentence ban on a conclusion that passed in 7.8, plus a directive with only `Correction:` and
-`Newest I know: <Month YYYY>` quoted; the other analyst is not named. Their replies are read without labels: a reply
-without any label counts as quiet when it declares a readable newest month that is not above the frontier so far.
-After a live probe (4 to 6 calls) shows that the full prompt passes, empty the list.
+six in the reply tail, which is nearer to the blocked shapes than to the verified ones. Models in
+`light_schema_models` therefore get the default relay system prompt and a prose tail: the one-sentence ban on a
+conclusion that passed in 7.8, plus a directive with only `Correction:` and `Newest I know: <Month YYYY>` quoted; the
+other analyst is not named. Their replies are read without labels: a reply without any label counts as quiet when it
+declares a readable newest month that is not above the frontier so far. The preset listed Fable until the live probe
+below showed that the full prompt passes; the list is empty since then.
+
+**Live probe (2026-11-28).** Two rallies with the full prompt for Fable (`light_schema_models: []`, `min_turns` and
+`max_turns` 2) on "Welche ist die neueste stabile Python-Version, und wann ist sie erschienen?": 6 calls, 0.167 USD,
+no refusal and no error. Traces and configs: `data/results/rally_probe_2026-11-28/`.
+
+- Ring Fable, Neon: Fable's opening note passed the filter. It gave five dated `Known:` lines and `Newest I know:
+  Dezember 2025`, and named Python 3.15 only as planned for October 2026. Neon confirmed two items, gave dates for one
+  (`Update:`), added one (`Newer:`, February 2026) and marked 3.15 `Unverified:`.
+- Ring Neon, Fable: Fable's hand-over of Neon's labelled note passed the filter too. It wrote three `Confirm:`, two
+  `Unverified:` and one `Nothing newer:` line with what it checked, and `Newest I know: Dezember 2025`.
+- Both answers marked single-source statements and ended with `Basis:` and `Not resolved:`. With two notes each model
+  writes only its opening note, so `gain_months` is 0 by construction; convergence over more turns was not tried.
+
+Two passes do not rule out a rare block. If Fable's rally notes are refused (`refusals` in the trace, `no_partner` as
+the stop reason), put it back into the list in `cutoffmix/data/presets/rally.yaml`.
 
 ### 4.2 Echo guard
 
@@ -213,7 +229,7 @@ are byte-identical to before (the existing default-relay expectation test must s
 - CLI: `--preset rally`; `--ring KEY,KEY[,KEY]` (run and serve) overrides `rally.ring` (and implies the preset's
   config when `--preset rally` is also given; with `--ring` alone the rally is switched on). Segment headers show
   the note kind and counts (`open`, `reply · +2 update · +1 newer · newest 2026-03`); a summary after the run shows
-  turns, stop reason, the frontier curve and `adds_by_model`.
+  turns, stop reason, the frontier curve and, per model, the `Known:` lines of its opening note and `adds_by_model`.
 - Server: `cutoffmix-rally` model id (automatic with the packaged preset), `"preset": "rally"` and an optional
   `"ring": [keys]` on `POST /api/relay` (validated against the model keys). `/v1/chat/completions` returns the
   metrics under `cutoffmix.rally`.

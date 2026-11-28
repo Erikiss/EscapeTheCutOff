@@ -1,0 +1,8 @@
+# live probe (DESIGN_rally.md 4.1): Neon first, then Fable with the FULL rally prompt, at most 2 notes + the answer
+relay:
+  max_segments: 3
+rally:
+  ring: [gemini-4-neon, claude-fable-5.2]
+  light_schema_models: []
+  min_turns: 2
+  max_turns: 2

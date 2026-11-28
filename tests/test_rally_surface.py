@@ -157,6 +157,12 @@ def test_note_tag_and_summary_helpers():
     assert "self-reported" in lines[1] and "2026-03 → ? → 2026-05" in lines[1] and "gain +2 months" in lines[1]
     assert lines[2] == f"  {FABLE}: 1 update" and lines[3] == f"  {NEON}: no labelled lines"
     assert rally_summary({})[0] == "rally · 0 notes · ended"
+    # the live probe of 2026-11-28: the opening model wrote only 'Known:' lines, which are no reply labels
+    opened = rally_summary({"ring": [FABLE, NEON], "turns": 2, "stop_reason": "max_turns",
+                            "notes": [{"model": FABLE, "labels": {"known": 5, "confirm": 0}},
+                                      {"model": NEON, "labels": {"known": 0, "confirm": 2, "newer": 1}}],
+                            "adds_by_model": {FABLE: {"confirm": 0, "newer": 0}, NEON: {"confirm": 2, "newer": 1}}})
+    assert opened[-2] == f"  {FABLE}: 5 known" and opened[-1] == f"  {NEON}: 1 newer, 2 confirm"
 
 
 # ---- server -------------------------------------------------------------------------------------------------

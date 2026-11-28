@@ -24,7 +24,8 @@ rally:
   answer_basis: true              # the answer ends with 'Basis:' and 'Not resolved:'
   answer_from_ring: true
   partner_failures: 2             # consecutive failed hand-overs (errors, not refusals) that take a ring model out
-  # Fable gets the light notes (the default system prompt, a prose tail, no label list): Anthropic's input filter
-  # blocked schema-heavy prompts for it in the explore preset (DESIGN.md 7.8). Whether the full rally prompt passes
-  # is not verified live; empty this list after a live probe shows that it does.
-  light_schema_models: [claude-fable-5.2]
+  # Models listed here get the light notes (the default system prompt, a prose tail, no label list). Anthropic's input
+  # filter blocked schema-heavy prompts for Fable in the explore preset (DESIGN.md 7.8), so Fable was listed until the
+  # live probe of 2026-11-28 (DESIGN_rally.md 4.1): the full rally prompt passed for Fable both as the opening note
+  # and as the hand-over of a labelled note. Put claude-fable-5.2 back here if its rally notes are refused.
+  light_schema_models: []

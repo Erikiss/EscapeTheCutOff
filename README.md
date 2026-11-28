@@ -42,10 +42,12 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
     löst die Sperre fast immer aus, mit vorhandenen Notizen seltener. Welches Wort genau, ließ sich nicht isolieren;
     es wirkt wie ein Schwellenwert-Klassifikator, den die Schema-Anweisung überschreitet. Deshalb bekommt Fable im
     Explore-Modus eine abgeschwächte Vorgabe (siehe unten).
-- **Rally-Preset (Schaukel zwischen den Modellen): nur offline geprüft.** Ablauf, Ring-Reihenfolge, Abbruchregel,
-  Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle; mit den echten drei Modellen wurde das Preset
-  **noch nicht** gelaufen (kein Schlüssel in der Entwicklungsumgebung). Offen sind vor allem, ob Fables Eingangsfilter
-  die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
+- **Rally-Preset (Schaukel zwischen den Modellen): offline geprüft, live nur kurz angetestet.** Ablauf,
+  Ring-Reihenfolge, Abbruchregel, Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle. Ein Live-Test am
+  28.11.2026 (zwei Rallys Fable ↔ Neon mit je zwei Notizen, 6 Aufrufe, 0,17 $) zeigt: Fables Eingangsfilter lässt die
+  volle Rally-Vorgabe durch, als erste Notiz wie als Übernahme einer Notiz mit Labels, und beide Modelle nutzen
+  `Confirm:`, `Update:`, `Newer:`, `Unverified:` und `Nothing newer:` wie vorgesehen. Ob die Rally den effektiven
+  Cutoff über das beste Einzelmodell hebt, ist nicht gemessen.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen noch
   nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob
   es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach zehn Prüfrunden entscheidet mit
@@ -347,12 +349,14 @@ ausfällt (bei einem nicht wiederholbaren Fehler sofort), ist für den Lauf raus
 `relay.disable_after_refusals` (Preset: 3). Die Schaukel endet dann mit `no_partner`, statt zum Selbstgespräch zu
 werden, und die Antwort wird aus den bisherigen Notizen geschrieben. Übersprungene Übergaben stehen in den Kennzahlen.
 
-**Fable bekommt die leichte Variante.** Im Explore-Modus hat Anthropics Eingangsfilter Fable bei Prompts mit vielen
-Labels gesperrt (siehe oben). Die Rally-Anweisung hat noch mehr Labels und ist live nicht geprüft, deshalb steht Fable
-im Preset unter `rally.light_schema_models`: der normale System-Prompt, eine Anweisung in Prosa ohne Label-Liste, das
-andere Modell wird nicht beim Namen genannt. Fables Notizen werden dann ohne Labels gelesen (ruhig ist eine Antwort ohne
-Labels, wenn ihr „Newest I know:“ nicht über dem bisherigen Stand liegt). Nach einem kurzen Live-Test (4–6 Aufrufe)
-lässt sich die Liste leeren, falls die volle Anweisung durchgeht.
+**Leichte Variante, falls ein Modell gesperrt wird.** Im Explore-Modus hat Anthropics Eingangsfilter Fable bei Prompts
+mit vielen Labels gesperrt (siehe oben). Ein Modell unter `rally.light_schema_models` bekommt deshalb den normalen
+System-Prompt und eine Anweisung in Prosa ohne Label-Liste, das andere Modell wird nicht beim Namen genannt, und seine
+Notizen werden ohne Labels gelesen (ruhig ist eine Antwort ohne Labels, wenn ihr „Newest I know:“ nicht über dem
+bisherigen Stand liegt). Fable stand dort bis zum Live-Test vom 28.11.2026. Die volle Rally-Anweisung ging dabei beide
+Male durch, als erste Notiz und als Übernahme, deshalb ist die Liste im Preset jetzt leer. Zwei Durchläufe schließen
+eine seltene Sperre nicht aus: Wird Fable in der Rally gesperrt, gehört es wieder in die Liste (eine Zeile in
+`cutoffmix/data/presets/rally.yaml`).
 
 **Robust gegen Abschneiden und Wiederholung.** Eine Notiz wird aus dem vollständigen Text gelesen, bevor die
 Längengrenze greift; die Grenze liegt im Preset bei 1500 Zeichen, damit die letzte Zeile („Newest I know:“) selten
@@ -362,7 +366,7 @@ verloren geht. Eine ruhige Notiz darf fast wortgleich mit der vorigen sein, ohne
 (`converged`, `max_turns`, `no_partner`, `max_segments`, `empty`, `error`), pro Notiz die Label-Zahlen und der
 angegebene neueste Monat, die **Frontier-Kurve** (laufendes Maximum dieser Monate) mit `gain_months` (wie weit sie über
 den besten ersten Eintrag hinausgeht) und pro Modell, wie viel es korrigiert (`update`), Neues gebracht (`newer`)
-und bestätigt hat.
+und bestätigt hat; die CLI-Zusammenfassung nennt bei der ersten Notiz eines Modells auch die Zahl ihrer `Known:`-Punkte.
 
 **Grenzen, ehrlich:**
 
@@ -374,8 +378,8 @@ und bestätigt hat.
 - **Gemessen wird das später mit dem Benchmark:** dieselben Aktuell-Fragen nach den Cutoffs der Modelle, drei Arme
   (jedes Modell allein, Router-Relay, Rally), Trefferquote nach Ereignismonat (`docs/DESIGN_rally.md`, Abschnitt 9).
   Das ist noch nicht gebaut und kostet echtes Geld, also nur mit Freigabe.
-- **Mit echten Modellen nicht gelaufen** (siehe „Ehrlicher Stand“). Die simulierten Modelle konvergieren, weil sie so
-  gebaut sind. Das sagt nichts darüber, wie die echten schreiben.
+- **Mit echten Modellen nur kurz gelaufen** (siehe „Ehrlicher Stand“): zwei Rallys mit je zwei Notizen. Die simulierten
+  Modelle konvergieren, weil sie so gebaut sind; ob die echten über mehrere Runden konvergieren, ist noch offen.
 - **Geprüft:** ein unabhängiges Review mit Gegenprüfung fand 17 echte Probleme im Kern (u. a. Selbstbestätigung nach
   einem Ausfall, verlorene letzte Zeile durch die Längengrenze, ein künftiger Monat, der als gültiges Jahr durchrutschte,
   ein Regex, der bei langen Leerzeichenfolgen Sekunden brauchte). Alle sind behoben und mit Tests abgedeckt.
