@@ -6,7 +6,10 @@ comparisons and the verdicts on the pre-registered predictions (docs/DESIGN_keys
   ``prompt_sha`` differs from :func:`prompt_sha` of the plan row's messages is stale, and a row of an id the plan does
   not hold is foreign. All three are left out and counted; the cost of the foreign rows is reported on its own.
 - Primary analysis: an answered row (no ``error``, grader not ``refusal``) counts, and ``ungraded`` counts as not
-  correct. Refusals are left out and counted. The sensitivity line leaves the ungraded rows out as well.
+  correct. Refusals are left out and counted. The sensitivity line leaves the ungraded rows out as well. An open offer
+  is an ungraded answered row whose answer offers the expected answer (``offers_expected``, stored by ``run``): no
+  verdict of predictions 1, 1b, 2, 3a or 4 stands that the open offers, resolved against it, would overturn (section
+  7); a row without the field (written before it was stored) is counted apart and read as not offering.
 - Costs: over every row of the results file (each line, not only the last per id), the recipients (``usage``) and the
   judges (``judge_usage``) apart. The joined answers' cost counts, per joined id, every row of the request its last
   row answered (the call, a failed grading, the re-grades of ``run --judges``, whose ``usage`` is None).
@@ -101,6 +104,18 @@ class _Row:
     @property
     def ungraded(self) -> bool:
         return self.answered and self.grade == "ungraded"
+
+    @property
+    def open_offer(self) -> bool:
+        """An open offer (design section 7): an answered ``ungraded`` row whose answer offers the expected answer
+        (``offers_expected`` true): the rules, or judges whose votes failed or tied, left open an answer that gives
+        the expected answer, so it may well be correct."""
+        return self.ungraded and self.get("offers_expected") is True
+
+    @property
+    def offer_unknown(self) -> bool:
+        """An answered row written before ``offers_expected`` was stored: read as not offering, and counted apart."""
+        return self.answered and self.result is not None and "offers_expected" not in self.result
 
     @property
     def adopted(self) -> bool:
@@ -201,6 +216,10 @@ def _is_ungraded(row: _Row) -> bool:
     return row.ungraded
 
 
+def _is_open_offer(row: _Row) -> bool:
+    return row.open_offer
+
+
 def _arm_entry(rows: Sequence[_Row], success: Callable[[_Row], bool] = _is_correct) -> dict[str, Any]:
     """An arm's planned rows: the counts per status, the rate of ``success`` among the answered rows (the primary
     analysis: ungraded is not correct) with its Wilson interval, the same with the ungraded rows left out
@@ -212,7 +231,9 @@ def _arm_entry(rows: Sequence[_Row], success: Callable[[_Row], bool] = _is_corre
     entry.update({"planned": len(rows), "answered": len(answered)})
     entry.update({key: sum(1 for r in rows if r.status == status) for status, key in _COUNTED.items()})
     entry.update({"ungraded": ungraded, "sensitivity": _rate(sum(1 for r in graded if success(r)), len(graded)),
-                  "ungraded_flag": _share_above(ungraded, len(answered), UNGRADED_FLAG)})
+                  "ungraded_flag": _share_above(ungraded, len(answered), UNGRADED_FLAG),
+                  "open_offers": sum(1 for r in answered if r.open_offer),
+                  "offer_unknown": sum(1 for r in answered if r.offer_unknown)})
     return entry
 
 
@@ -245,6 +266,23 @@ def _against(items: Iterable[_Item], first: str, second: str, success: Callable[
     both = [(it.rows[first], it.rows[second]) for it in items if it.answered(first, second)]
     return {"refute": _discordant(both, lambda r: success(r) or unsure_first(r), success),
             "support": _discordant(both, success, lambda r: success(r) or unsure_second(r))}
+
+
+def _significant(comparison: Mapping[str, Any]) -> bool:
+    """b > c and the exact McNemar p below :data:`ALPHA` (the confound check of prediction 1)."""
+    return comparison["b"] > comparison["c"] and mcnemar_exact(comparison["b"], comparison["c"]) < ALPHA
+
+
+def _checked(raw: str, against: Mapping[str, Any], margin: float) -> str:
+    """A three-way verdict ``raw`` once the rows it may not rest on are resolved against it (design section 7,
+    ``against`` from :func:`_against`): a refutation stands only if it still holds with the ``refute`` counts (the
+    tested arm's rows counted as successes: b can only rise), a support only if it still holds with the ``support``
+    counts (the other arm's rows counted as successes: b can only fall and c rise); otherwise
+    :data:`UNDECIDED_VERDICT`. Every other verdict (inconclusive, not testable) stays as it is."""
+    for verdict, case in (("refuted", "refute"), ("supported", "support")):
+        if raw == verdict and _three_way(against[case], margin)["verdict"] != verdict:
+            return UNDECIDED_VERDICT
+    return raw
 
 
 def _three_way(comparison: Mapping[str, Any], margin: float) -> dict[str, Any]:
@@ -388,12 +426,6 @@ def _not_correct(row: _Row) -> bool:
     return not row.correct
 
 
-def _never(row: _Row) -> bool:
-    """No row of this arm is undecided: in 3a an ungraded ``key`` row counts as not correct (the key never shows the
-    name, so the rules leave almost only misses ungraded; design section 6)."""
-    return False
-
-
 # the labelled rows (design section 6) in the order the diagnostic table lists them
 LABELLED: tuple[tuple[str, str], ...] = (("dark", "full"), ("both_right", "full"), ("donor_wrong", "alone"),
                                          ("donor_wrong", "full"), ("control", "alone"), ("control", "full"))
@@ -408,9 +440,10 @@ def _rules_vs_judges(rows: Iterable[_Row]) -> dict[str, dict[str, Any]]:
     answers the paper rules graded: ``agree``, the rules adopted and the judges did not (``rule_yes_judges_no``) or the
     reverse (``rule_no_judges_yes``), the rules left it open and the judges adopted (``open_yes``) or did not
     (``open_no``); ``undecided`` the rows the judges' votes left open; ``graded_by_judges`` the rows whose grade came
-    from the grading judges (``grader`` ``judge:<keys>``): the paper rules could not grade them, so without judges they
-    stay ``ungraded`` and the rules alone never decide them, and their ``rule_adopted`` (computed on the grading
-    judges' grade) is no rules-alone decision; ``no_rule`` the rows written before ``rule_adopted`` was stored. On the
+    from the grading judges (``grader`` ``judge:<keys>``): the paper rules could not grade them, or graded them
+    ``incorrect`` or ``abstain`` although they name the expected answer (the grading scope), so the rules alone never
+    decide them that way, and their ``rule_adopted`` (computed on the grading judges' grade) is no rules-alone
+    decision; ``no_rule`` the rows written before ``rule_adopted`` was stored. On the
     ``full`` rows of ``dark`` and ``both_right`` "adopted" is the right name given as the answer's own (correct)."""
     out: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -439,11 +472,15 @@ def _rules_vs_judges(rows: Iterable[_Row]) -> dict[str, dict[str, Any]]:
 
 def _harm(items: Sequence[_Item]) -> dict[str, Any]:
     """``both_right``: the not-correct rate per arm and ``key`` against ``alone`` with b = alone correct and key not,
-    c = key correct and alone not, and the excess harm (b - c) / n (design section 7, prediction 4)."""
+    c = key correct and alone not, and the excess harm (b - c) / n (design section 7, prediction 4); ``against`` the
+    same with the open offers resolved against a verdict (``refute``: alone's counted correct, which can only raise the
+    excess harm; ``support``: the key's, which can only lower it), and the open offers of both arms."""
     paired = _compare(items, "alone", "key")
     n = paired["n_items"]
     paired["excess_harm"] = (paired["b"] - paired["c"]) / n if n else None
-    return {"items": len(items), "arms": _arms_table("both_right", items, _not_correct), "key_vs_alone": paired}
+    return {"items": len(items), "arms": _arms_table("both_right", items, _not_correct), "key_vs_alone": paired,
+            "against": _against(items, "alone", "key", _is_correct, _is_open_offer, _is_open_offer),
+            "open_offers": _offer_counts(items, ("key", "alone"))}
 
 
 def _group(units: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -454,6 +491,7 @@ def _group(units: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             **{arm: _rate(sum(1 for u in units if u[arm]), len(units)) for arm in ("alone", "key", "wrong_key")}}
 
 
+_UNIT_ARMS = ("alone", "key", "wrong_key")  # the arms a unit of prediction 2 reads
 _UNIT_SCOPES: dict[str, Callable[[_Item], bool]] = {
     "no_pointer": lambda item: not item.pointer, "all": lambda item: True, "pointer": lambda item: item.pointer}
 
@@ -461,7 +499,8 @@ _UNIT_SCOPES: dict[str, Callable[[_Item], bool]] = {
 def _units(dark: Mapping[str, Sequence[_Item]], priority: Callable[[str], tuple[Any, ...]],
            scope: str = "no_pointer") -> dict[str, Any]:
     """The units of prediction 2 (design section 7, :data:`UNIT_RULE`) with d = [key correct] - [alone correct] and
-    d_w = [key correct] - [wrong_key correct] (ungraded is not correct), per group and per pair and group. ``scope``:
+    d_w = [key correct] - [wrong_key correct] (ungraded is not correct), per group and per pair and group; each unit
+    lists the arms whose row is an open offer (``open_offers``) or carries no ``offers_expected``. ``scope``:
     the items without pointer (the units the verdict reads), ``all`` items or the ``pointer`` items on their own (the
     numbers printed next to the verdict)."""
     keep = _UNIT_SCOPES[scope]
@@ -476,7 +515,9 @@ def _units(dark: Mapping[str, Sequence[_Item]], priority: Callable[[str], tuple[
         key, alone, wrong = (kept.rows[arm].correct for arm in ("key", "alone", "wrong_key"))
         units.append({"pair": kept.pair, "recipient": recipient, "event_id": event_id,
                       "recognised": kept.recognised, "key": key, "alone": alone, "wrong_key": wrong,
-                      "d": int(key) - int(alone), "d_w": int(key) - int(wrong)})
+                      "d": int(key) - int(alone), "d_w": int(key) - int(wrong),
+                      "open_offers": [arm for arm in _UNIT_ARMS if kept.rows[arm].open_offer],
+                      "offer_unknown": [arm for arm in _UNIT_ARMS if kept.rows[arm].offer_unknown]})
     known = [u for u in units if u["recognised"] is not None]
     groups = {"recognised": [u for u in known if u["recognised"]],
               "unrecognised": [u for u in known if not u["recognised"]]}
@@ -541,10 +582,59 @@ class _Context:
         return [it for pair in chosen for it in self.items.get((pair, set_), [])]
 
 
+_ARM_NAMES = {"wrong_key": "wrong key"}
+
+
+def _offer_counts(items: Sequence[_Item], arms: Sequence[str]) -> dict[str, dict[str, int]]:
+    """Per arm, the open offers (:attr:`_Row.open_offer`) and the answered rows written before ``offers_expected`` was
+    stored (:attr:`_Row.offer_unknown`, read as not offering) among the items' rows of that arm."""
+    out: dict[str, dict[str, int]] = {}
+    for arm in arms:
+        rows = [it.rows[arm] for it in items if arm in it.rows]
+        out[arm] = {"open_offers": sum(1 for r in rows if r.open_offer),
+                    "offer_unknown": sum(1 for r in rows if r.offer_unknown)}
+    return out
+
+
+def _fmt_offers(counts: Mapping[str, Mapping[str, int]]) -> str:
+    """The open offers per arm, and the rows without ``offers_expected`` per arm when there are any."""
+    text = "open offers (ungraded answers that offer the expected answer): " + ", ".join(
+        f"{_ARM_NAMES.get(arm, arm)} {c['open_offers']}" for arm, c in counts.items())
+    unknown = [f"{_ARM_NAMES.get(arm, arm)} {c['offer_unknown']}" for arm, c in counts.items() if c["offer_unknown"]]
+    return text + (f" (rows without offers_expected, read as not offering: {', '.join(unknown)})" if unknown else "")
+
+
+def _fmt_checks(checks: Sequence[tuple[str, str, str, Mapping[str, Any]]],
+                counts: Mapping[str, Mapping[str, int]]) -> str:
+    """The comparisons ``(label, first, second, against)`` with the open offers resolved against the verdict
+    (:func:`_against`), numbers only, for those whose arms hold open offers: the second arm's counted correct (against
+    a support), then the first arm's (against a refutation); empty when no arm holds one."""
+    parts = []
+    for label, first, second, against in checks:
+        if counts[first]["open_offers"] or counts[second]["open_offers"]:
+            r, s = against["refute"], against["support"]
+            parts.append(f"{label} with {_ARM_NAMES.get(second, second)}'s counted correct b={s['b']}, c={s['c']}, "
+                         f"with {_ARM_NAMES.get(first, first)}'s b={r['b']}, c={r['c']}")
+    return "" if not parts else "; resolved against the verdict: " + "; ".join(parts)
+
+
+def _arrow(raw: str, checked: str, voice: _Voice, interim: str | None) -> str:
+    """`` -> <verdict>`` after a comparison whose three-way verdict ``raw`` the check against the open offers changed
+    (stated as :class:`_Voice` states it); nothing when it did not, or when the voice gives no label (withheld,
+    interim)."""
+    label = voice.label(checked, interim)
+    return "" if checked == raw or label is None else f" -> {label}"
+
+
 def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[str, Any], str]:
     """Predictions 1 and 1b on the decisive pair's dark items without pointer (design section 7), with their numbers
     over all items and on the pointer items on their own; also prediction 1's verdict before :class:`_Voice` states
-    it (the gate of prediction 2)."""
+    it (the gate of prediction 2). Each comparison's verdict stands only if the open offers, resolved against it,
+    leave it as it is (:func:`_checked`: a support with the other arm's open offers counted correct, a refutation with
+    the key's), else it is :data:`UNDECIDED_VERDICT`; the comparisons then combine as before. The confound check is
+    treated alike: a support stands only if no such resolution changes it, its qualifier included (an unconfounded one
+    only if blank vs wrong key stays without a significant gain with blank's open offers counted correct, a confounded
+    one only if the gain stays significant with the wrong key's counted correct)."""
     pair = ctx.decisive
     every = ctx.of("dark", [pair] if pair else [])
     plain = [it for it in every if not it.pointer]
@@ -555,13 +645,35 @@ def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[st
     kw = _three_way(tests["key_vs_wrong_key"], KEY_MARGIN)
     kb = _three_way(tests["key_vs_blank"], KEY_MARGIN)
     bw = tests["blank_vs_wrong_key"]
-    confounded = bw["b"] > bw["c"] and mcnemar_exact(bw["b"], bw["c"]) < ALPHA
-    raw = _combine([ka["verdict"], kw["verdict"]])
-    if raw == "supported" and confounded:
-        raw = CONFOUNDED
-    raw_b = _combine([kb["verdict"]])
+    confounded = _significant(bw)
+    pairs = {"key_vs_alone": ("key", "alone"), "key_vs_wrong_key": ("key", "wrong_key"),
+             "key_vs_blank": ("key", "blank"), "blank_vs_wrong_key": ("blank", "wrong_key")}
+    against = {name: _against(plain, first, second, _is_correct, _is_open_offer, _is_open_offer)
+               for name, (first, second) in pairs.items()}
+    raws = {"key_vs_alone": str(ka["verdict"]), "key_vs_wrong_key": str(kw["verdict"]),
+            "key_vs_blank": str(kb["verdict"])}
+    checked = {name: _checked(raw, against[name], KEY_MARGIN) for name, raw in raws.items()}
+    raw = _combine([checked["key_vs_alone"], checked["key_vs_wrong_key"]])
+    if raw == "supported":  # its qualifier too: wrong_key's open offers can undo a confound, blank's can make one
+        if confounded != _significant(against["blank_vs_wrong_key"]["support" if confounded else "refute"]):
+            raw = UNDECIDED_VERDICT
+        elif confounded:
+            raw = CONFOUNDED
+    raw_b = _combine([checked["key_vs_blank"]])
     withheld = bool(voice.withheld or interim)  # no verdict, so no qualifier of one either
     label_ka, label_kw, label_kb = (_stated(entry, voice, interim) for entry in (ka, kw, kb))
+    for name, entry in (("key_vs_alone", ka), ("key_vs_wrong_key", kw), ("key_vs_blank", kb)):
+        entry["against"] = against[name]
+        entry["checked"] = voice.verdict(checked[name], interim)
+    bw = {**bw, "against": against["blank_vs_wrong_key"]}
+    arrow_ka, arrow_kw, arrow_kb = (_arrow(raws[n], checked[n], voice, interim)
+                                    for n in ("key_vs_alone", "key_vs_wrong_key", "key_vs_blank"))
+    counts = _offer_counts(plain, ("key", "alone", "wrong_key", "blank"))
+    checks = _fmt_checks([("key vs alone", "key", "alone", against["key_vs_alone"]),
+                          ("key vs wrong key", "key", "wrong_key", against["key_vs_wrong_key"]),
+                          ("blank vs wrong key", "blank", "wrong_key", against["blank_vs_wrong_key"])], counts)
+    counts_b = {arm: counts[arm] for arm in ("key", "blank")}
+    checks_b = _fmt_checks([("key vs blank", "key", "blank", against["key_vs_blank"])], counts_b)
     all_tests = _dark_comparisons(every)
     pointer_tests = _dark_comparisons(pointed)
     arms = _arms_table("dark", plain)
@@ -569,13 +681,13 @@ def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[st
     if pair is None:
         scope = "no keyed pair in the plan (no dark items)"
     else:
-        counts = ctx.planned_dark[pair]
-        scope = (f"decisive pair {pair} ({counts['no_pointer']} planned dark items without pointer, "
-                 f"{counts['all']} in all)")
+        counts_planned = ctx.planned_dark[pair]
+        scope = (f"decisive pair {pair} ({counts_planned['no_pointer']} planned dark items without pointer, "
+                 f"{counts_planned['all']} in all)")
     pointer_scope = f"pointer items (B resolves A's pointer; {len(pointed)} items)"
-    evidence = (f"{scope}; without pointer: key vs alone {_fmt_verdict(ka, label_ka)}; key vs wrong key "
-                f"{_fmt_verdict(kw, label_kw)}; blank vs alone {_fmt_test(tests['blank_vs_alone'])} (the note's "
-                f"presence); blank vs wrong key {_fmt_test(bw)} (the harm of a mismatched cue"
+    evidence = (f"{scope}; without pointer: key vs alone {_fmt_verdict(ka, label_ka)}{arrow_ka}; key vs wrong key "
+                f"{_fmt_verdict(kw, label_kw)}{arrow_kw}; blank vs alone {_fmt_test(tests['blank_vs_alone'])} (the "
+                f"note's presence); blank vs wrong key {_fmt_test(bw)} (the harm of a mismatched cue"
                 f"{', significant: confounded' if confounded and not withheld else ''}); correct: key "
                 f"{_fmt_rate(arms.get('key'))}, alone {_fmt_rate(arms.get('alone'))}, wrong key "
                 f"{_fmt_rate(arms.get('wrong_key'))}, blank {_fmt_rate(arms.get('blank'))}; all items: key vs alone "
@@ -583,18 +695,18 @@ def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[st
                 f"{pointer_scope}: key vs alone {_fmt_test(pointer_tests['key_vs_alone'])}, key vs wrong key "
                 f"{_fmt_test(pointer_tests['key_vs_wrong_key'])}, correct: key {_fmt_rate(pointer_arms.get('key'))}, "
                 f"alone {_fmt_rate(pointer_arms.get('alone'))}, wrong key {_fmt_rate(pointer_arms.get('wrong_key'))}; "
-                f"expected: key 10-30 %, wrong key under 10 %")
-    evidence_b = (f"{scope}; without pointer: key vs blank {_fmt_verdict(kb, label_kb)}; correct: key "
+                f"expected: key 10-30 %, wrong key under 10 %; without pointer, {_fmt_offers(counts)}{checks}")
+    evidence_b = (f"{scope}; without pointer: key vs blank {_fmt_verdict(kb, label_kb)}{arrow_kb}; correct: key "
                   f"{_fmt_rate(arms.get('key'))}, blank {_fmt_rate(arms.get('blank'))}; all items: key vs blank "
                   f"{_fmt_test(all_tests['key_vs_blank'])}; {pointer_scope}: key vs blank "
                   f"{_fmt_test(pointer_tests['key_vs_blank'])}, correct: key {_fmt_rate(pointer_arms.get('key'))}, "
-                  f"blank {_fmt_rate(pointer_arms.get('blank'))}")
+                  f"blank {_fmt_rate(pointer_arms.get('blank'))}; without pointer, {_fmt_offers(counts_b)}{checks_b}")
     one = {"id": 1, "text": "On dark items without pointer of the decisive pair, key beats alone and wrong_key "
                             "(paired exact McNemar, margin 0.10).",
            "verdict": voice.verdict(raw, interim), "evidence": evidence, "pair": pair, "items": len(plain),
            "comparisons": {"key_vs_alone": ka, "key_vs_wrong_key": kw, "blank_vs_alone": tests["blank_vs_alone"],
                            "blank_vs_wrong_key": bw},
-           "confounded": None if withheld else confounded,
+           "confounded": None if withheld else confounded, "open_offers": counts,
            "all_items": {k: all_tests[k] for k in ("key_vs_alone", "key_vs_wrong_key")},
            "pointer_items": {"items": len(pointed), "key_vs_alone": pointer_tests["key_vs_alone"],
                              "key_vs_wrong_key": pointer_tests["key_vs_wrong_key"], "key": pointer_arms.get("key"),
@@ -602,7 +714,8 @@ def _prediction_1(ctx: _Context, voice: _Voice) -> tuple[dict[str, Any], dict[st
     one_b = {"id": "1b", "text": "key beats blank on the same items: the donor's content, not the presence of a "
                                  "note, does the work (margin 0.10).",
              "verdict": voice.verdict(raw_b, interim), "evidence": evidence_b, "pair": pair, "items": len(plain),
-             "comparisons": {"key_vs_blank": kb}, "all_items": {"key_vs_blank": all_tests["key_vs_blank"]},
+             "comparisons": {"key_vs_blank": kb}, "open_offers": counts_b,
+             "all_items": {"key_vs_blank": all_tests["key_vs_blank"]},
              "pointer_items": {"items": len(pointed), "key_vs_blank": pointer_tests["key_vs_blank"],
                                "key": pointer_arms.get("key"), "blank": pointer_arms.get("blank")}}
     return one, one_b, interim or raw
@@ -626,8 +739,11 @@ def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str
                   every: Mapping[str, Any], pointed: Mapping[str, Any]) -> dict[str, Any]:
     """Prediction 2 (design section 7): the key's gain over ``alone`` is larger on recognised units; gated on
     prediction 1 (``gate``: its verdict before :class:`_Voice`, ``gate_stated``: as stated) and at least 10 units per
-    group; supported or inconclusive, never refuted. ``every`` and ``pointed``: the units over all items and of the
-    pointer items on their own, printed next to it."""
+    group; supported or inconclusive, never refuted. A support stands only if none of the units the test reads holds
+    an open offer (alone, key or wrong_key), else it is :data:`UNDECIDED_VERDICT`: the stratified permutation test
+    moves with a unit's d either way (each permutation's statistic does), so no one resolution of the open offers
+    bounds it. An inconclusive verdict stays inconclusive. ``every`` and ``pointed``: the units over all items and of
+    the pointer items on their own, printed next to it."""
     interim = _interim(*_completed(ctx.of("dark", ctx.keyed)))
     groups = units["groups"]
     rec, unrec = groups["recognised"], groups["unrecognised"]
@@ -647,11 +763,16 @@ def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str
         a = rec["b"] > rec["c"] and mcnemar_exact(rec["b"], rec["c"]) < ALPHA
         gain_d, gain_dw = ((tested[n]["statistic"] > 0 and tested[n]["p"] < ALPHA) for n in ("d", "d_w"))
         if a and gain_d and gain_dw:
-            raw = "supported"
+            raw = UNDECIDED_VERDICT if any(u["open_offers"] for u in known) else "supported"
         else:
             raw = (f"inconclusive (stratified difference of d {_fmt_number(tested['d']['difference'], sign=True)}"
                    f", p={tested['d']['p']:.4g}; of d_w {_fmt_number(tested['d_w']['difference'], sign=True)}, "
                    f"p={tested['d_w']['p']:.4g})")
+    known_units = [u for u in units["list"] if u["recognised"] is not None]
+    offers = {arm: {"open_offers": sum(1 for u in known_units if arm in u["open_offers"]),
+                    "offer_unknown": sum(1 for u in known_units if arm in u["offer_unknown"])}
+              for arm in ("key", "alone", "wrong_key")}
+    held = sum(1 for u in known_units if u["open_offers"])
     d, dw = units["d"], units["d_w"]
     p_d = f", p={d['p']:.4g}" if "p" in d else ""
     p_dw = f", p={dw['p']:.4g}" if "p" in dw else ""
@@ -665,30 +786,29 @@ def _prediction_2(ctx: _Context, voice: _Voice, units: dict[str, Any], gate: str
                 f"{_fmt_rate(rec['alone'])}, unrecognised {_fmt_rate(unrec['alone'])}; guess-corrected recognised "
                 f"share {_fmt_number(units['guess_corrected'])}; all items (pointer included): {_fmt_units(every)}; "
                 f"pointer items on their own (B resolves A's pointer): {_fmt_units(pointed)}; gate: prediction 1 "
-                f"{_verb(gate_stated)}")
+                f"{_verb(gate_stated)}; in the units the test reads, {_fmt_offers(offers)} ({held} units hold one)")
     return {"id": 2, "text": "The key's gain over alone is larger on recognised than on unrecognised units (distinct "
                              "units, permutation test stratified by pair; gated on prediction 1).",
             "verdict": voice.verdict(raw, interim), "evidence": evidence, "units": units["units"],
-            "groups": {"recognised": rec, "unrecognised": unrec}, "tests": tested,
+            "groups": {"recognised": rec, "unrecognised": unrec}, "tests": tested, "open_offers": offers,
+            "units_with_open_offers": held,
             "all_items": _brief(every), "pointer_items": _brief(pointed)}
 
 
 def _gated(comparison: Mapping[str, Any], undecided: Mapping[str, Any], against: Mapping[str, Any],
            margin: float) -> str:
     """A half of prediction 3 (design section 7): the floor, then the undecided share of its full rows (more than
-    :data:`UNDECIDED_LIMIT`: :data:`UNDECIDED_VERDICT`), then the three-way verdict, which stands only if the undecided
-    rows resolved against it (``against``, :func:`_against`) leave it as it is: a refutation that the undecided first
-    rows counted as successes would overturn, or a support that the undecided second rows counted as successes would,
-    is :data:`UNDECIDED_VERDICT` as well."""
+    :data:`UNDECIDED_LIMIT`: :data:`UNDECIDED_VERDICT`), then the three-way verdict, which stands only if the rows it
+    may not rest on, resolved against it (``against``, :func:`_against`; 3a: every ungraded full row and the key's open
+    offers, 3b: the undecided rows), leave it as it is (:func:`_checked`): a refutation that the first arm's rows
+    counted as successes would overturn, or a support that the second arm's rows counted as successes would, is
+    :data:`UNDECIDED_VERDICT` as well."""
     raw = str(comparison["verdict"])
     if raw == NOT_TESTABLE_N:
         return NOT_TESTABLE_N
     if _share_above(undecided["undecided"], undecided["full_rows"], UNDECIDED_LIMIT):
         return UNDECIDED_VERDICT
-    for verdict, case in (("refuted", "refute"), ("supported", "support")):
-        if raw == verdict and _three_way(against[case], margin)["verdict"] != verdict:
-            return UNDECIDED_VERDICT
-    return _combine([raw])
+    return _combine([_checked(raw, against, margin)])
 
 
 def _fmt_undecided(undecided: Mapping[str, Any]) -> str:
@@ -710,9 +830,10 @@ def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> di
     vs alone on ``adopted`` True pooled over donor_wrong and control of every pair (margin 0.20). Each half checks the
     floor, then the undecided share of its full rows (3a: the dark full rows left ungraded, 3b: adoption undecided;
     more than 20 % undecided is not testable, since an undecided row counts as a miss), then the three-way verdict,
-    which must survive the undecided rows resolved against it (3a: the ungraded full rows counted as correct; 3b: the
-    undecided full rows, or the undecided alone rows, counted as adopted), else the half is not testable either.
-    Each half is interim on its own rows; the prediction is interim when one half is (k and N summed over both)."""
+    which must survive the rows it may not rest on resolved against it (3a: a refutation the ungraded full rows
+    counted as correct, a support the key's open offers counted as correct; 3b: the undecided full rows, or the
+    undecided alone rows, counted as adopted), else the half is not testable either. Each half is interim on its own
+    rows; the prediction is interim when one half is (k and N summed over both)."""
     done_a, planned_a = _completed(ctx.of("dark", ctx.keyed))
     adoption_items = [it for s in ADOPTION_SETS for it in ctx.of(s)]
     done_b, planned_b = _completed(adoption_items)
@@ -733,39 +854,54 @@ def _prediction_3(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> di
                 f"donor_wrong and control of every pair: {_fmt_verdict(b, label_b)} -> {half_b}; full rows undecided "
                 f"{_fmt_undecided(undecided)}; {_fmt_against(against_b, 'full', 'alone', 'adopted')}; adopted: full "
                 f"{_fmt_rate(pooled['adoption_arms'].get('full'))}, alone "
-                f"{_fmt_rate(pooled['adoption_arms'].get('alone'))}")
+                f"{_fmt_rate(pooled['adoption_arms'].get('alone'))}; 3a, {_fmt_offers(pooled['full_vs_key_offers'])}"
+                + ("" if not pooled["full_vs_key_offers"]["key"]["open_offers"] else
+                   f"; key's counted correct b={against_a['support']['b']}, c={against_a['support']['c']}"))
     return {"id": 3, "text": "full beats key on dark items (3a, margin 0.10), and full makes the recipient endorse a "
                              "wrong donor answer far more often than alone (3b, adopted true, margin 0.20).",
             "verdict": voice.verdict(_combine([raw_a, raw_b]), interim), "evidence": evidence,
             "halves": {"3a": {"verdict": half_a, "comparison": a, "answered": done_a, "planned": planned_a,
-                              "undecided": undecided_a, "against": against_a},
+                              "undecided": undecided_a, "against": against_a,
+                              "open_offers": pooled["full_vs_key_offers"]},
                        "3b": {"verdict": half_b, "comparison": b, "answered": done_b, "planned": planned_b,
                               "undecided": undecided, "against": against_b}}}
 
 
 def _prediction_4(ctx: _Context, voice: _Voice, pooled: Mapping[str, Any]) -> dict[str, Any]:
-    """Prediction 4 (design section 7): on both_right, the excess harm (b - c) / n of key over alone is under 10 %."""
+    """Prediction 4 (design section 7): on both_right, the excess harm (b - c) / n of key over alone is under 10 %. A
+    support stands only if the excess harm stays under 10 % with alone's open offers counted correct, a "not
+    supported" only if it stays at 10 % or more with the key's counted correct; otherwise :data:`UNDECIDED_VERDICT`."""
     interim = _interim(*_completed(ctx.of("both_right")))
     harm = pooled["both_right"]
-    paired = harm["key_vs_alone"]
+    paired, against = harm["key_vs_alone"], harm["against"]
     n, excess = paired["n_items"], paired["excess_harm"]
+
+    def under(entry: Mapping[str, Any]) -> bool:
+        return Fraction(entry["b"] - entry["c"], n) < Fraction(str(HARM_LIMIT))
     if n < MIN_HARM_ITEMS:
         raw = NOT_TESTABLE_N
-    elif Fraction(paired["b"] - paired["c"], n) < Fraction(str(HARM_LIMIT)):
-        raw = "supported"
+    elif under(paired):
+        raw = "supported" if under(against["refute"]) else UNDECIDED_VERDICT
     else:
-        raw = "not supported"
+        raw = "not supported" if not under(against["support"]) else UNDECIDED_VERDICT
     verdict = voice.verdict(raw, interim)
-    arms = harm["arms"]
+    arms, offers = harm["arms"], harm["open_offers"]
+    resolved = ""
+    if n and (offers["alone"]["open_offers"] or offers["key"]["open_offers"]):
+        r, s = against["refute"], against["support"]
+        resolved = (f"; resolved against the verdict: alone's counted correct b={r['b']}, c={r['c']}, excess harm "
+                    f"{100 * (r['b'] - r['c']) / n:.1f} %, the key's b={s['b']}, c={s['c']}, excess harm "
+                    f"{100 * (s['b'] - s['c']) / n:.1f} %")
     evidence = (f"both_right, all pairs: {n} items with alone and key answered; b (alone correct, key not)="
                 f"{paired['b']}, c (key correct, alone not)={paired['c']}, p={paired['p']:.4g}; excess harm "
                 f"(b - c) / n {'n/a' if excess is None else f'{100 * excess:.1f} %'} (under 10 % supports; at least 10 "
                 f"items); "
                 f"not correct: alone {_fmt_rate(arms.get('alone'))} (re-ask noise), key {_fmt_rate(arms.get('key'))}, "
-                f"full {_fmt_rate(arms.get('full'))}")
+                f"full {_fmt_rate(arms.get('full'))}; {_fmt_offers(offers)}{resolved}")
     return {"id": 4, "text": "The notes rarely break a correct recall: on both_right, the excess harm of key over "
                              "re-asking alone is under 10 %.",
-            "verdict": verdict, "evidence": evidence, "items": n, "excess_harm": excess, "comparison": paired}
+            "verdict": verdict, "evidence": evidence, "items": n, "excess_harm": excess, "comparison": paired,
+            "against": against, "open_offers": offers}
 
 
 # ------------------------------------------------------------------------------------------------------- report
@@ -820,6 +956,8 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
         "superseded_rows": len(results) - len(last), "joined": len(joined),
         **{key: statuses[status] for status, key in _COUNTED.items()},
         "answered": statuses[_ANSWERED], "ungraded": sum(1 for r in rows.values() if r.ungraded),
+        "open_offers": sum(1 for r in rows.values() if r.open_offer),
+        "offer_unknown": sum(1 for r in rows.values() if r.offer_unknown),
         "foreign_ids": len({str(r.get("id")) for r in foreign_rows}), "foreign_rows": len(foreign_rows),
         "backends": backends,
         "by_recipient": dict(Counter(str(r.plan.get("recipient")) for r in joined)),
@@ -894,7 +1032,8 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
         "full_undecided": {"undecided": undecided_dark, "full_rows": len(dark_full),
                            "share": undecided_dark / len(dark_full) if dark_full else None},
         "full_vs_key_against": _against(ctx.of("dark", keyed), "full", "key", _is_correct, _is_ungraded,
-                                        _never),
+                                        _is_open_offer),
+        "full_vs_key_offers": _offer_counts(ctx.of("dark", keyed), ("full", "key")),
         "adoption_full_vs_alone": _compare(adoption_items, "full", "alone", _adopted, _undecided),
         "adoption_full_undecided": {"undecided": undecided, "full_rows": len(full_rows),
                                     "share": undecided / len(full_rows) if full_rows else None},
@@ -956,6 +1095,13 @@ def _flags(report: Mapping[str, Any], rows: Mapping[str, _Row], repeated: int) -
                      f"{t['cost']['foreign']['total_usd']:.4f} USD)")
     if t["refusals"]:
         flags.append(f"{t['refusals']} refusals are left out")
+    if t["open_offers"]:
+        flags.append(f"{t['open_offers']} open offers (ungraded answers that offer the expected answer): a verdict "
+                     "they could overturn, resolved against it, is not testable (grade with --judges)")
+    if t["offer_unknown"]:
+        flags.append(f"{t['offer_unknown']} answered rows carry no offers_expected (written before it was stored): "
+                     "read as not offering the expected answer, so no verdict is checked against them; a later "
+                     "'bench keys run' stores it without a call")
     open_rows = sum(1 for r in rows.values() if not r.complete)
     if open_rows:
         flags.append(f"{open_rows} planned rows are not answered (missing {t['missing']}, errors {t['errors']}, stale "
@@ -1136,8 +1282,8 @@ def render_report(report: Mapping[str, Any]) -> str:
                "rules' own decision (rule_adopted) next to the judges', on the answers the paper rules graded. Yes: "
                "the answer gives the name as its own (adopted; on the full rows of dark and both_right the right "
                "name, so correct). A row the grading judges graded is counted apart: the paper rules could not grade "
-               "it, so the rules alone never decide it (without judges it stays ungraded). A judge that rejects plain "
-               "answers shows as rules yes, judges no."), ""]
+               "it, or graded it incorrect or abstain although it names the expected answer, so the rules alone never "
+               "decide it that way. A judge that rejects plain answers shows as rules yes, judges no."), ""]
     versus = report.get("rules_vs_judges") or {}
     if versus:
         lines += [("| set | arm | judged | judges undecided | graded by the grading judges | agree | rules yes, judges "
@@ -1155,7 +1301,9 @@ def render_report(report: Mapping[str, Any]) -> str:
         lines.append("No labelled row was decided by the adoption judges.")
 
     lines += ["", "## Pre-registered predictions (docs/DESIGN_keys.md section 7)", "",
-              "Interim and not testable give no verdict; verdicts count only on the complete plan.", ""]
+              ("Interim and not testable give no verdict; verdicts count only on the complete plan. A verdict stands "
+               "only if the open offers (ungraded answers that offer the expected answer) and the undecided rows, "
+               "resolved against it, leave it as it is."), ""]
     for p in report["predictions"]:
         lines.append(f"- **{p['id']}** {p['text']} **{p['verdict']}**: {p['evidence']}")
     return "\n".join(lines) + "\n"

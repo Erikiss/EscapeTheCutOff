@@ -41,15 +41,17 @@ the calls offline from stored graded results (does a donor's note with the answe
 it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
 and never a file that is not a plan);
 ``run`` sends them (``--max-cost`` is required for the real models and counts the judges; it stops new calls, and the
-calls in flight finish, so a run can end above it; with ``--judges`` the judges decide every labelled answer that names
-the candidate, the rules only those that do not). Its exit status is that of the stop that first kept planned calls
+calls in flight finish, so a run can end above it; with ``--judges`` the judges decide every rule grade incorrect or
+abstain of an answer that names the expected answer and every labelled answer that names the candidate, the rules only
+the answers that do not name them). Its exit status is that of the stop that first kept planned calls
 from starting: 3 for the cap, 4 for an error no retry can fix (HTTP 401 or 402, on a recipient's call or a judge's),
 130 for Ctrl-C (the first lets the calls in flight finish); stops met at one check rank Ctrl-C, then the error, then
 the cap, and a later Ctrl-C or error keeps the first stop's status. Without such a stop it is 4 when planned calls
 failed (also at ``--limit``) or an error no retry can fix came after the last call had started, else 0; 2 is a refused
 input before any call, or a results file that cannot take a row during the run. A results file holds one backend's
 rows, so a mock run writes to its own file. ``report`` joins plan and results offline into rates, paired tests and
-adoption rates (it never writes its ``--json`` or ``--md`` over its inputs).
+adoption rates (it never writes its ``--json`` or ``--md`` over its inputs); no verdict stands that the open offers
+(ungraded answers that offer the expected answer) could overturn.
 """
 
 from __future__ import annotations
@@ -1031,9 +1033,13 @@ def _keys_run_start(start: Any, limit: int | None) -> str:
     if start.to_send < start.pending:
         line += f" (--limit {limit})"
     if start.regrade:
+        judges = start.regrade - start.failed - start.rule_grade - start.relabel - start.offer_flag
         why = [f"{n} {what}" for n, what in ((start.failed, "whose grading failed"),
+                                             (start.rule_grade, "whose rule grade is out of date"),
                                              (start.relabel, "whose label, name or rule decision is out of date"),
-                                             (start.regrade - start.failed - start.relabel, "for the judges")) if n]
+                                             (judges, "for the judges"),
+                                             (start.offer_flag, "whose offers_expected is missing or out of date"))
+               if n]
         line += f"; grading {start.regrade} stored answers again first, without a new call ({', '.join(why)})"
     return line + f"; cost so far ${start.cost_usd:.4f} ({start.backend})"
 
@@ -1520,19 +1526,24 @@ def build_parser() -> argparse.ArgumentParser:
                            "this (required with the real models; the pilot asks for 3.5); the calls in flight finish "
                            "with their judge calls, so a run can end above it: by up to --concurrency items, at "
                            "max_tokens and the default of 8 up to about 1.64 USD (eight Fable items: the items in "
-                           "flight can belong to a neighbouring block of the plan; docs/DESIGN_keys.md section 9); a "
-                           "run it stops exits with status 3")
+                           "flight can belong to a later block of the plan), 0.65 if the cap is reached before the "
+                           "first Neon call has started and 0.81 before the first Fable call has "
+                           "(docs/DESIGN_keys.md section 9); a run it stops exits with status 3")
     krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
     krun.add_argument("--concurrency", type=int, default=8)
     krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
-                      help="judge models for answers the rules cannot grade and for every labelled answer that "
-                           "names the candidate in any form, whatever the rules would decide: the right name of a "
-                           "correct full answer (dark, both_right) and the donor's name on donor_wrong and control "
-                           "(alone and full, whatever the grade); the rules decide alone only the answers that do not "
-                           "name the donor's name. A failed or tied vote leaves the answer undecided, never to the "
-                           "rules, and a later run with --judges asks again; stored rows that are undecided, or that "
-                           "the rules decided and the judges decide now, are graded again first, without a new call "
-                           "(default: none: the rules decide, and what they leave open stays undecided)")
+                      help="judge models for answers the rules cannot grade, for every rule grade incorrect or "
+                           "abstain of an answer that names the expected answer in any form (every arm and set), and "
+                           "for every labelled answer that names the candidate in any form, whatever the rules would "
+                           "decide: the right name of a correct full answer (dark, both_right) and the donor's name on "
+                           "donor_wrong and control (alone and full, whatever the grade); the rules decide alone only "
+                           "a grade correct and the answers that do not name the expected answer, and for adoption "
+                           "the answers that do not name the donor's name. A failed or tied vote leaves the answer "
+                           "undecided, never to the rules, and a later run with --judges asks again; stored rows that "
+                           "are undecided, or that the rules graded or decided and the judges decide now, are graded "
+                           "again first, without a new call (default: none: the rules decide, what they leave open "
+                           "stays undecided, and the report gives no verdict that the open offers, ungraded answers "
+                           "that offer the expected answer, could overturn)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "
                            "settings changed); the newest row counts (default: stop)")

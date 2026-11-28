@@ -8,7 +8,11 @@ judges' scope (the judges decide every labelled answer that names the candidate)
 replay, the overshoot is bounded at max_tokens, and the pilot's cap is 3.5 USD. Review of aafe7f9: the replay grades as
 the run does (a rule grade incorrect next to the expected answer is unsure), the bound is eight of the dearest item
 that can be in flight (the items in flight can belong to a neighbouring block), and the first block's own estimate,
-the README's block order, section 10's overshoot row and both judges' budget are pinned too."""
+the README's block order, section 10's overshoot row and both judges' budget are pinned too. Check of 8cc83c5: the
+replay grades with the grading scope (with judges every rule grade incorrect or abstain of an answer that names the
+expected answer goes to the grading judges), the overshoot's qualifiers name what has started (the 440th and the 671st
+call) instead of where the cap is reached, the counts of the two-letter donor names are derived from the plan, and
+section 10's rows of the grading scope, the open offers and the overshoot's position are pinned."""
 
 from __future__ import annotations
 
@@ -104,20 +108,25 @@ def priced():
         return usd(adoption_judge_messages(by_id[p["event_id"]], p["donor_answer"], "x" * longest if worst
                                            else answer(p)), worst)
 
-    # graded as the run grades (run._rule_grade: a rule grade incorrect next to the expected answer is unsure too)
-    grading = [p for p in plan if _rule_grade(by_id[p["event_id"]], answer(p)) is None]
+    # graded as the run grades with judges (run._rule_grade: a rule grade incorrect next to the expected answer is
+    # unsure, and with judges every rule grade incorrect or abstain of an answer that names it is the judges'; check of
+    # 8cc83c5); `before`: the grading judges' calls without that scope, as the rows written before it priced them
+    grading = [p for p in plan if _rule_grade(by_id[p["event_id"]], answer(p), judges=True) is None]
+    before = [p for p in plan if _rule_grade(by_id[p["event_id"]], answer(p)) is None]
+    extra = [p for p in grading if p not in before]
     right = [p for p in plan if p["set"] in ("dark", "both_right") and p["arm"] == "full"]
     adopt_full = [p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "full"]
     alone_due = []  # the alone rows of the replay that mention the donor's name: the judges decide them
     for p in (p for p in plan if p["set"] in ("donor_wrong", "control") and p["arm"] == "alone"):
-        ruled = _rule_grade(by_id[p["event_id"]], answer(p))
+        ruled = _rule_grade(by_id[p["event_id"]], answer(p), judges=True)
         _, label = _adoption_rule(p, by_id[p["event_id"]], answer(p), ruled[0] if ruled else "ungraded")
         if _judged(p, by_id[p["event_id"]], answer(p), label):
             alone_due.append(p)
+    def graded(rows):
+        return (len(rows), sum(usd(judge_messages(by_id[p["event_id"]], "current_d", answer(p))) for p in rows),
+                sum(usd(judge_messages(by_id[p["event_id"]], "current_d", "x" * longest), True) for p in rows))
     figures = {
-        "grading": (len(grading), sum(usd(judge_messages(by_id[p["event_id"]], "current_d", answer(p)))
-                                      for p in grading),
-                    sum(usd(judge_messages(by_id[p["event_id"]], "current_d", "x" * longest), True) for p in grading)),
+        "grading": graded(grading), "extra": graded(extra), "before": graded(before),
         "right": (len(right), sum(adoption(p) for p in right), sum(adoption(p, True) for p in right)),
         "adopt_full": (len(adopt_full), sum(adoption(p) for p in adopt_full),
                        sum(adoption(p, True) for p in adopt_full)),
@@ -162,6 +171,8 @@ def priced():
     # among them
     first_fable = next(i for i, p in enumerate(plan) if p["recipient"] == "claude-fable-5.2")
     first_neon = next(i for i, p in enumerate(plan) if p["recipient"] == "gemini-4-neon")
+    # calls start in the plan's order: while no call of a dearer recipient has started, none can be in flight (check of
+    # 8cc83c5: the positions of the call that reaches the cap bounded nothing)
     first_judges = sum(usd(judge_messages(by_id[p["event_id"]], "current_d", "x" * longest), True)
                        for p in grading if p["id"] in first_ids)
     first_judges += sum(adoption(p, True) for p in right + adopt_full + alone_due if p["id"] in first_ids)
@@ -174,8 +185,8 @@ def priced():
             "item": {SHORT[m]: max(b for k, _, b in blocks if k == m) for m in recipients},
             "first_estimate": estimate_cost(first, results)["total_usd"],
             "first": estimate_cost(first, results)["total_usd"] + first_judges,
-            "fable_from": first_fable - CONCURRENCY + 2, "neon_from": first_neon - CONCURRENCY + 2,
-            "plan": plan, "events": by_id}
+            "first_neon_call": first_neon + 1, "first_fable_call": first_fable + 1,
+            "plan": plan, "events": by_id, "stored": stored}
 
 
 def test_section_9_prices_every_judge_call_from_its_prompt(priced):
@@ -188,6 +199,10 @@ def test_section_9_prices_every_judge_call_from_its_prompt(priced):
     n, typical, worst = f["grading"]
     assert f"leaves {n} of the {priced['calls']} answers to the judges: about {typical:.2f} USD ({worst:.2f} at worst)" \
         in text
+    # the grading scope's share of them (check of 8cc83c5): three dark items on five arms in the replay
+    n_extra, typical, worst = f["extra"]
+    assert (n_extra, n - n_extra) == (15, 71) and f"{n_extra} of them come from the grading scope (section 6)" in text
+    assert f"on all five arms: about {typical:.2f} USD ({worst:.2f} at worst)" in text
     # the judges' scope (review of 863ca47): every correct right-name row and every donor row that names the donor's
     # name goes to the judges; the replay counts the alone rows that mention it (14 of 53; the rules left 10 open)
     n, typical, worst = f["right"]
@@ -209,7 +224,8 @@ def test_section_9_prices_every_judge_call_from_its_prompt(priced):
     assert 3.0 - 0.1 < total < CAP and f"Added to the recipients' estimate that is about {total:.2f} USD, about " \
         f"{CAP - total:.2f} USD under the pilot's cap of 3.5 USD. It is no bound:" in text
     assert f"Under the cap of 3 USD of the earlier drafts the judges at their worst would leave about " \
-        f"{3.0 - total:.2f} USD" in text
+        f"{3.0 - total:.3f} USD" in text
+    assert f"which still leaves about {CAP - total:.2f} USD with the grading scope" in text
     assert "USD at worst: under the pilot's cap" not in text
     # the README states the same figures (in German, decimal comma)
     text_de = readme()
@@ -218,12 +234,14 @@ def test_section_9_prices_every_judge_call_from_its_prompt(priced):
         "sollen 3,5 $)" in text_de
     n_right, n_adopt, n_alone = f["right"][0], f["adopt_full"][0], f["alone"][0]
     cents = round(100 * (CAP - total))
-    assert f"etwa {comma(f['grading'][1])} $ für die Antworten, die die Regeln nicht bewerten können, und, da er " \
-        f"jede Antwort mit dem Namen entscheidet, bis etwa {comma(every)} $ (bis zu {n_right} Aufrufe für den " \
-        f"richtigen Namen, {n_adopt} für den falschen in den `full`-Antworten, in der Nachrechnung {n_alone} beim " \
-        f"erneuten Fragen), im ungünstigsten Fall etwa {comma(at_worst)} $. Mit der Schätzung für die Empfänger " \
-        f"sind das etwa {comma(total)} $, also etwa {cents} Cent unter `--max-cost 3.5`. Unter dem früheren Deckel " \
-        f"von 3 $ blieben nur etwa {round(100 * (3.0 - total))} Cent" in text_de
+    assert f"etwa {comma(f['grading'][1])} $ für die Antworten, die die Regeln nicht bewerten können oder gegen die " \
+        f"genannte richtige Antwort werten (in der Nachrechnung {f['grading'][0]}, davon {f['extra'][0]} durch die " \
+        f"neue Regel), und, da er jede Antwort mit dem Namen entscheidet, bis etwa {comma(every)} $ (bis zu " \
+        f"{n_right} Aufrufe für den richtigen Namen, {n_adopt} für den falschen in den `full`-Antworten, in der " \
+        f"Nachrechnung {n_alone} beim erneuten Fragen), im ungünstigsten Fall etwa {comma(at_worst)} $. Mit der " \
+        f"Schätzung für die Empfänger sind das etwa {comma(total)} $, also etwa {cents} Cent unter `--max-cost " \
+        f"3.5`. Unter dem früheren Deckel von 3 $ bliebe nur etwa {f'{100 * (3.0 - total):.1f}'.replace('.', ',')} " \
+        "Cent" in text_de
     assert "im ungünstigsten Fall etwa 2" not in text_de and "Zusammen sind das im ungünstigsten Fall" not in text_de
     assert "unter `--max-cost 3`" not in text_de
 
@@ -258,8 +276,10 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     the run cannot spend more). The stored maxima give an estimate only; every call may use max_tokens, so section 9
     bounds the overshoot at max_tokens (review of 863ca47: "at most about 0.23 USD" was no bound). The items in flight
     were started before, in the plan's order, so near a block's end they belong to the next block: the bound is eight
-    of the dearest item that can be in flight, eight Fable items from the call on that can have a Fable call in flight
-    with it (review of aafe7f9: the figures per block failed there, also for the last 4 Sol calls)."""
+    of the dearest item that can be in flight (review of aafe7f9: the figures per block failed there, also for the last
+    4 Sol calls). A slow call keeps its slot while later calls start and finish, so the position of the call that
+    reaches the cap bounds nothing; calls start in the plan's order, so what has started does: eight Sol items while no
+    Neon call has started, eight Neon items while no Fable call has (check of 8cc83c5)."""
     text, text_de = section(9), readme()
     overshoot, worst_call = priced["overshoot"], priced["worst_call"]
     assert f"From the stored maxima that is about {overshoot:.2f} USD at the default of {CONCURRENCY} (each item the " \
@@ -277,23 +297,22 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     item, bound = priced["item"], priced["bound"]
     assert f"costs at most about {item['Sol']:.2f} USD (Sol), {item['Neon']:.2f} (Neon) or {item['Fable']:.2f} " \
         "(Fable)" in text
-    # the bound: eight of the dearest item, Fable's; eight Sol or Neon items only away from a dearer block
+    # the bound: eight of the dearest item that can be in flight, by what has started (calls start in the plan's order)
     top = max(bound.values())
     assert top == bound["Fable"] and bound["Sol"] < bound["Neon"] < top
-    calls, later = priced["calls"], CONCURRENCY - 1
-    assert f"So the run ends at most about {top:.2f} USD above the cap at the default of {CONCURRENCY} (eight Fable " \
-        "items; a lower `--concurrency` lowers this in proportion)" in text
-    assert f"Eight Sol items cost at most about {bound['Sol']:.2f} USD and eight Neon items {bound['Neon']:.2f}, but " \
-        f"those hold only while no dearer call can be in flight: {bound['Sol']:.2f} while the cap is reached before " \
-        f"the last {later} calls of the first Sol block, {bound['Neon']:.2f} before the last {later} calls of the " \
-        f"Neon {priced['blocks'][1][1]} block." in text
-    assert priced["neon_from"] == priced["blocks"][0][1] - later + 1                # the Sol block's last 7 calls
+    neon, fable = priced["first_neon_call"], priced["first_fable_call"]
+    assert (neon, fable) == (priced["blocks"][0][1] + 1, sum(n for _, n, _ in priced["blocks"][:2]) + 1) == (440, 671)
+    assert f"So at the default of {CONCURRENCY} the run ends at most about {bound['Sol']:.2f} USD above the cap when " \
+        f"the cap is reached before the first Neon call has started (before the {neon}th call: eight Sol items), at " \
+        f"most about {bound['Neon']:.2f} when it is reached before the first Fable call has started (before the " \
+        f"{fable}st: eight Neon items), and at most about {top:.2f} USD otherwise (eight Fable items); a lower " \
+        "`--concurrency` lowers each in proportion." in text
     last = priced["blocks"][-1]
-    assert f"From the {priced['fable_from']}th of the {calls} calls on a Fable call can be in flight, also among the " \
-        f"last {last[1]} {SHORT[last[0]]} calls." in text
-    assert f"{top:.2f} USD bounds the overshoot ({bound['Neon']:.2f} if the cap is reached before the " \
-        f"{priced['fable_from']}th call)" in text
-    assert "when it is reached in a Sol block" not in text and "(or the last 4 Sol calls)" not in text
+    assert f"{top:.2f} USD bounds the overshoot ({bound['Neon']:.2f} if the cap is reached before the first Fable " \
+        "call has started)" in text
+    for gone in ("the last 7 calls of", "664", "away from a dearer block", "when it is reached in a Sol block",
+                 "(or the last 4 Sol calls)"):
+        assert gone not in text, gone
     order = ", then ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][:2])
     rest = ", ".join(f"{SHORT[m]} {n}" for m, n, _ in priced["blocks"][2:-1])
     assert f"blocks of one recipient: {order.replace(' 439', ' 439 first')}, {rest} and {SHORT[last[0]]} {last[1]}" \
@@ -316,10 +335,14 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     assert f"Der Plan schickt erst {blocks_de[0][1]} Aufrufe an {blocks_de[0][0]} (geschätzt etwa " \
         f"{comma(priced['first_estimate'])} $, mit dem Judge im ungünstigsten Fall etwa {comma(priced['first'])} $), " \
         f"dann {tail}." in text_de
-    assert f"Acht Sol-Aufrufe kosten höchstens etwa {comma(bound['Sol'])} $ und acht Neon-Aufrufe " \
-        f"{comma(bound['Neon'])} $, aber ab dem {priced['fable_from']}. der {calls} Aufrufe kann ein Fable-Aufruf " \
-        f"mitlaufen, auch bei den letzten {last[1]} Sol-Aufrufen." in text_de
-    assert f"und dann gilt die Grenze von {comma(top)} $" in text_de
+    assert f"Höchstens etwa {comma(bound['Sol'])} $ über dem Deckel endet der Lauf, wenn der Deckel erreicht wird, " \
+        f"bevor der erste Neon-Aufruf gestartet ist (vor dem {neon}. Aufruf: acht Sol-Aufrufe), höchstens etwa " \
+        f"{comma(bound['Neon'])} $, wenn er erreicht wird, bevor der erste Fable-Aufruf gestartet ist (vor dem " \
+        f"{fable}.: acht Neon-Aufrufe), sonst höchstens etwa {comma(top)} $." in text_de
+    assert f"und dann gilt die Grenze von {comma(top)} $ ({comma(bound['Neon'])} $, solange kein Fable-Aufruf " \
+        "gestartet ist)" in text_de
+    assert "aber ab dem 664. der 746 Aufrufe kann ein Fable-Aufruf mitlaufen" not in text_de     # the old qualifiers
+    assert "(„vor den letzten 7 Aufrufen eines Blocks“, „ab dem 664. Aufruf“) keine Grenzen" in text_de
     assert "wenn der Deckel während der Sol-Aufrufe erreicht wird" not in text_de
     assert "cannot spend more" not in text and "mehr wird also nicht ausgegeben" not in text_de
     assert "so a run can end above the cap by what the items in flight cost" in section(6)
@@ -327,7 +350,8 @@ def test_the_cap_stops_new_calls_and_the_calls_in_flight_can_pass_it(priced):
     max_cost = next(a for a in _keys_run_parser()._actions if "--max-cost" in a.option_strings)
     help_text = " ".join((max_cost.help or "").split())
     assert f"at max_tokens and the default of {CONCURRENCY} up to about {top:.2f} USD (eight Fable items: the items " \
-        "in flight can belong to a neighbouring block of the plan" in help_text
+        f"in flight can belong to a later block of the plan), {bound['Sol']:.2f} if the cap is reached before the " \
+        f"first Neon call has started and {bound['Neon']:.2f} before the first Fable call has" in help_text
     assert "the pilot asks for 3.5" in help_text
     assert "in a Sol block of the plan" not in help_text
 
@@ -389,6 +413,186 @@ def test_the_items_in_flight_at_a_block_boundary_can_belong_to_a_dearer_block(tm
     assert CONCURRENCY * cost[crossing] < got.cost_usd - cap <= top        # beyond its block's figure, within the bound
 
 
+class _SlowCall:
+    """A recipient backend for one slow call: it returns only once every other call of its block has returned and the
+    other ``CONCURRENCY - 1`` slots hold calls of the next block, which return only after it; every call costs the
+    per-item bound of its model. It records, in one sequence, when each call starts and returns (its row is written
+    right after, with no judges, so the cap's spending follows the returns)."""
+
+    def __init__(self, cost, slow_id, others, next_block):
+        self.cost, self.slow_id, self.others, self.next_block = cost, slow_id, others, next_block
+        self.events, self.next_started = [], 0
+        self.others_done, self.next_ready, self.slow_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def chat(self, model, req):
+        item = req.metadata["item"]
+        self.events.append(("start", item, model.key))
+        if item == self.slow_id:
+            await self.others_done.wait()
+            await self.next_ready.wait()
+        elif model.key == self.next_block:
+            self.next_started += 1
+            if self.next_started == CONCURRENCY - 1:
+                self.next_ready.set()
+            await self.slow_done.wait()
+        else:
+            await asyncio.sleep(0)
+        self.events.append(("finish", item, model.key))
+        if item == self.slow_id:
+            self.slow_done.set()
+        elif model.key != self.next_block:
+            self.others -= 1
+            if self.others == 0:
+                self.others_done.set()
+        return ChatResult(text="I don't know.", usage={"cost": self.cost[model.key]}, finish_reason="stop")
+
+    def stream_continuation(self, model, req):  # pragma: no cover - unused
+        raise NotImplementedError
+
+
+@pytest.mark.parametrize("case", ["sol_101st", "neon_601st"])
+def test_what_has_started_bounds_the_overshoot_and_the_position_of_the_crossing_call_does_not(tmp_path, priced, case):
+    """Check of 8cc83c5: section 9 qualified the bound by the position of the call that reaches the cap ("0.65 while
+    the cap is reached before the last 7 calls of the first Sol block", "0.81 if the cap is reached before the 664th
+    call"). A slow call keeps its slot while later calls start and finish, so the 101st call (a Sol call) can reach the
+    cap with the first 7 Neon calls in flight, and the 601st (a Neon call) with the first 7 Fable calls: above the old
+    figure. What has started bounds it: eight Neon items while no Fable call has started, eight Fable items
+    otherwise. The real run_plan on windows of the real plan, every call at its model's per-item bound; section 10's
+    row quotes the two overshoots."""
+    plan, item, bound = priced["plan"], priced["item"], priced["bound"]
+    cost = {model: item[name] for model, name in SHORT.items()}
+    if case == "sol_101st":   # the 101st call, Sol, slow; Sol 102-439 finish, Neon 440-446 start and stay in flight
+        lo, hi, slow, next_block, old = 90, 460, 100, "gemini-4-neon", bound["Sol"]
+    else:                     # the 601st call, Neon, slow; Neon 602-670 finish, Fable 671-677 start and stay
+        lo, hi, slow, next_block, old = 580, 690, 600, "claude-fable-5.2", bound["Neon"]
+    crossing = plan[slow]["recipient"]
+    assert plan[slow - 1]["recipient"] == plan[slow + 1]["recipient"] == crossing != next_block
+    window = plan[lo:hi]
+    slow_id = plan[slow]["id"]
+    # every call of the crossing call's block but the slow one finishes first; the cap is crossed by the slow one
+    cap = sum(cost[p["recipient"]] for i, p in enumerate(window, lo) if i != slow and p["recipient"] == crossing) + 0.01
+    others = sum(1 for i, p in enumerate(window, lo) if i != slow and p["recipient"] == crossing)
+    assert all(p["recipient"] in (crossing, next_block) for p in window)
+    backend = _SlowCall(cost, slow_id, others, next_block)
+    models = [ModelSpec(key=k, provider_id=f"x/{k}") for k in SHORT]
+    got = asyncio.run(run_plan(backend, models, window, tmp_path / "keys.jsonl", events=priced["events"],
+                               max_cost=cap, concurrency=CONCURRENCY, backend_name="scripted"))
+    assert got.stopped_by == "max_cost"
+    spent, started = 0.0, set()
+    for kind, item_id, model in backend.events:            # the call whose row reaches the cap, and what had started
+        if kind == "start":
+            started.add(model)
+            continue
+        spent += cost[model]
+        if spent >= cap:
+            assert item_id == slow_id
+            break
+    over = got.cost_usd - cap
+    assert next_block in started and over > old                                 # the old qualifier was no bound
+    fable_started = "claude-fable-5.2" in started
+    assert fable_started == (case == "neon_601st")
+    assert over <= (bound["Fable"] if fable_started else bound["Neon"])          # what has started bounds it
+    quoted = {"sol_101st": "a Sol call, the 101st, reaching the cap with 7 Neon calls in flight: "
+                           f"{over:.2f} USD above it",
+              "neon_601st": f"a Neon call, the 601st, with 7 Fable calls in flight: {over:.2f})"}[case]
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    row = next(line for line in table.splitlines() if line.startswith("| the position of the cap's overshoot |"))
+    assert quoted in row
+
+
+def test_the_two_letter_donor_names_are_counted_from_the_plan(priced):
+    """The V1 counts of section 6, its section 10 row and the README (check of 8cc83c5: they were not pinned): the donor
+    rows of donor_wrong and control whose donor name has a capitalised part of two letters, by name, and how many of
+    them are full rows."""
+    from cutoffmix.bench.keys.text import _short_tokens
+
+    plan = priced["plan"]
+    donor = [p for p in plan if p["set"] in ("donor_wrong", "control")]
+    short = [p for p in donor if _short_tokens(p["donor_answer"])]
+    by_name = {name: sum(1 for p in short if p["donor_answer"] == name) for name in sorted({p["donor_answer"]
+                                                                                            for p in short})}
+    full = sum(1 for p in short if p["arm"] == "full")
+    assert (len(donor), len(short), full) == (106, 10, 5)
+    assert by_name == {"Jiabo Ye": 4, "Kunchang Li": 2, "Xiaoyang Wu": 4}
+    six = section(6)
+    assert f"so \"Wu et al.\", \"Dr. Li\" and \"Ye's group\" mention Xiaoyang Wu, Kunchang Li and Jiabo Ye (the " \
+        f"three donor names of the real plan with such a surname, {len(short)} of its {len(donor)} donor rows)" in six
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    row = next(line for line in table.splitlines() if line.startswith("| a two-letter surname alone |"))
+    assert f"on the {len(short)} donor rows of Xiaoyang Wu, Kunchang Li and Jiabo Ye ({full} of them `full` rows " \
+        "that 3b counts)" in row
+    assert f"(Xiaoyang Wu, Kunchang Li, Jiabo Ye; {len(short)} der {len(donor)} Spender-Zeilen)" in readme()
+
+
+def test_the_grading_scope_and_the_open_offers_have_their_figures(priced):
+    """The figures of the grading scope and the open offers in sections 6 and 10 and the README (check of 8cc83c5): on
+    the 136 right-name rows a correction with the surname alone, or the given name alone, stayed incorrect by rule
+    with no judge asked (105 and 134); with the grading scope every one of them goes to the grading judges; the replay
+    adds 15 grading-judge calls; and of the 57 stored answers the rules leave undecided none offers the expected
+    answer (the one correct among them is a fake paper's abstention)."""
+    from cutoffmix.bench.grading import grade_rule
+    from cutoffmix.bench.keys.run import _rule_grade
+    from cutoffmix.bench.keys.text import offers_answer
+
+    plan, events, f = priced["plan"], priced["events"], priced["figures"]
+    right = [p for p in plan if p["set"] in ("dark", "both_right") and p["arm"] == "full"]
+    final = {}
+    for part in ("surname", "given"):
+        def text(p, part=part):
+            name = p["donor_answer"].split()
+            return f"It is not Sanjay Ramaswamy, it is {name[-1] if part == 'surname' else ' '.join(name[:-1])}."
+        ruled = [_rule_grade(events[p["event_id"]], text(p)) for p in right]
+        final[part] = sum(1 for r in ruled if r is not None and r[0] == "incorrect")     # without the scope: final
+        assert all(_rule_grade(events[p["event_id"]], text(p), judges=True) is None for p in right)
+    assert (len(right), final["surname"], final["given"]) == (136, 105, 134)
+    six = section(6)
+    assert f"(on the {len(right)} right-name rows of the real plan, {final['surname']} such corrections with the " \
+        f"surname alone and {final['given']} with the given name alone)" in six
+    total = priced["recipients"] + sum(f[k][2] for k in ("grading", "right", "adopt_full", "alone"))
+    n, n_extra = f["grading"][0], f["extra"][0]
+    assert f"in the replay of section 9, 3 `dark` items whose stored Sol answer names another person of the same " \
+        f"surname (\"Yutong Mei\" for Lingrui Mei), {n_extra} calls" in six
+    assert n_extra == 3 * len(ARMS_DARK) and {p["set"] for p in plan if _rule_grade(
+        events[p["event_id"]], stored_answer(priced, p), judges=True) is None and _rule_grade(
+        events[p["event_id"]], stored_answer(priced, p)) is not None} == {"dark"}
+    # the stored answers the rules leave undecided: none offers the expected answer
+    results = [r for r in load_results(RESULTS) if r.probe == "current_d"]
+    undecided = [r for r in results if grade_rule(events[r.event_id], "current_d", r.response or "") is None]
+    offering = [r for r in undecided if offers_answer(r.response or "", events[r.event_id])]
+    correct = [r for r in undecided if r.grade == "correct"]
+    assert (len(undecided), len(offering), len(correct)) == (57, 0, 1) and events[correct[0].event_id].control
+    assert f"of the {len(undecided)} `current_d` answers the rules leave undecided, all of them `alone` answers, " \
+        f"{len(correct)} is correct, a fake paper's abstention, and none offers the expected answer" in six
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
+    scope = rows["the grading scope"]
+    assert f"(on the {len(right)} right-name rows {final['surname']} with the surname alone, {final['given']} with " \
+        "the given name alone)" in scope
+    assert f"in the replay {n_extra} more grading-judge calls ({n} in all: three `dark` items" in scope
+    at_worst = sum(f[k][2] for k in ("grading", "right", "adopt_full", "alone"))
+    assert f"the judges about {at_worst:.2f} USD at worst and the pilot about {total:.2f} USD with the recipients' " \
+        f"estimate, {CAP - total:.2f} under the cap of 3.5 (under 3 about {3.0 - total:.3f} would be left)" in scope
+    offers = rows["open offers"]
+    assert f"of the {len(undecided)} stored answers the rules leave undecided none is an open offer" in offers
+    assert "`offers_expected`" in offers and "the confound check of 1 alike" in offers
+    text_de = readme()
+    assert f"(bei {final['surname']} bzw. {final['given']} der {len(right)} richtigen Namen)" in text_de
+    assert f"In der Nachrechnung kostet das {n_extra} Judge-Aufrufe mehr" in text_de
+    assert f"Von den {len(undecided)} gespeicherten Antworten, die die Regeln offen lassen, bietet keine die " \
+        "richtige Antwort an." in text_de
+    assert "nach sieben Prüfrunden" in text_de
+
+
+ARMS_DARK = ("alone", "key", "full", "wrong_key", "blank")
+
+
+def stored_answer(priced, p):
+    return priced["stored"][(p["event_id"], p["recipient"])].response
+
+
 def test_the_pilot_asks_for_a_cap_of_3_5_usd():
     """The judges' worst case left about 5 cents under the cap of 3 USD, so the pilot's command asks the owner to
     approve 3.5 USD (review of 863ca47), in the design and the README alike."""
@@ -446,7 +650,13 @@ def test_the_judges_scope_is_stated_for_each_name():
     judges = next(a for a in _keys_run_parser()._actions if "--judges" in a.option_strings)
     help_text = " ".join((judges.help or "").split())
     assert "every labelled answer that names the candidate in any form, whatever the rules would decide" in help_text
-    assert "the rules decide alone only the answers that do not name the donor's name" in help_text
+    # the grading scope (check of 8cc83c5): the grade too, wherever the rules would grade against the named answer
+    assert "for every rule grade incorrect or abstain of an answer that names the expected answer in any form (every " \
+        "arm and set)" in help_text
+    assert "the rules decide alone only a grade correct and the answers that do not name the expected answer, and " \
+        "for adoption the answers that do not name the donor's name" in help_text
+    assert "the report gives no verdict that the open offers, ungraded answers that offer the expected answer, could " \
+        "overturn" in help_text
     assert "A failed or tied vote leaves the answer undecided, never to the rules" in help_text
     assert "for the right name also another spelling or a doubt" not in help_text
     six = section(6)
@@ -454,8 +664,14 @@ def test_the_judges_scope_is_stated_for_each_name():
         "the name it is measured against, whatever the rules would decide" in six
     assert "`mentions(text, name, event)` reads widely" in six and "rule_adopted" in six
     seven = section(7)
-    assert "The gates, the 20 % limit and the check against the undecided rows are the same whoever decides the rows." \
-        in seven and "an answered row is undecided only when the judges' votes failed or tied" in seven
+    assert "The gates, the 20 % limit and the checks against the undecided rows and the open offers are the same " \
+        "whoever decides the rows." in seven
+    assert "an answered row is undecided, and an open offer, only when the judges' votes failed or tied" in seven
+    # the grading scope (check of 8cc83c5): the same principle for the grade
+    assert "**The grading scope** (with `--judges`). The principle of the judges' scope (next point) holds for the " \
+        "grade as well: the grading judges decide every answer that names the expected answer wherever the rules " \
+        "would grade it against that answer" in six
+    assert "what they leave open stays undecided for the report's gates" not in six
 
 
 def test_section_10_records_the_judges_scope_and_its_refinements(priced):
@@ -464,7 +680,9 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     cap's overshoot; the intro counts the rows each review added. The review of aafe7f9 added four more (a two-letter
     surname alone, a correction of another name, a judges' decision on resume, the rules-versus-judges table) and
     corrected two of the check's rows in place: the dash clause and the further references to the note in "the rules
-    without judges", and the bound in "the cap's overshoot", whose figures are pinned here."""
+    without judges", and the bound in "the cap's overshoot", whose figures are pinned here. The check of 8cc83c5 added
+    the last three (the grading scope, open offers, the position of the cap's overshoot) and corrected two rows in
+    place: the correction's claim about 3a, and the overshoot's qualifiers."""
     text = DESIGN.read_text("utf-8")
     table = text[text.index("### Refinements during the implementation review"):]
     titles = [line.split(" | ")[0].removeprefix("| ") for line in table.splitlines() if line.startswith("| ")][1:]
@@ -472,15 +690,20 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
              "the cap's overshoot"]
     review = ["a two-letter surname alone", "a correction of another name, on every arm",
               "a judges' decision on resume", "the rules-versus-judges table"]
-    assert titles[-8:] == check + review
+    latest = ["the grading scope", "open offers", "the position of the cap's overshoot"]
+    assert titles[-11:] == check + review + latest
     seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
     assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
     intro = " ".join(table[: table.index("| issue | before | now |")].split())
     assert "added the seven rows from \"another role or a rejection in other words\" to \"the pilot's total and the " \
         "cap\"" in intro
     assert "added the four rows from \"the judges' scope\" to \"the cap's overshoot\"" in intro
-    assert "A review of that change added the last four rows, from \"a two-letter surname alone\" on" in intro
+    assert "A review of that change added the four rows from \"a two-letter surname alone\" to \"the " \
+        "rules-versus-judges table\"" in intro
     assert "corrected two rows of the check in place: \"the rules without judges\"" in intro
+    assert "A check of that review's changes added the last three rows, from \"the grading scope\" on" in intro
+    assert "It corrected two rows in place as well: \"a correction of another name, on every arm\"" in intro
+    assert "and \"the cap's overshoot\" (its qualifiers)" in intro
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
     assert "\"Supposedly X.\"" in rows["the wider note references on the donor's name"]
     assert "adopted by rule on `donor_wrong` and `control`" in rows["the wider note references on the donor's name"]
@@ -494,19 +717,34 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     # the cap's overshoot: the figures of section 9 (review of aafe7f9: the row's figures were not pinned)
     over = rows["the cap's overshoot"]
     bound, f = priced["bound"], priced["figures"]
-    total = priced["recipients"] + sum(f[k][2] for k in ("grading", "right", "adopt_full", "alone"))
+    # the row's room under 3 USD is the one its review computed: the grading judges' calls before the grading scope
+    earlier = priced["recipients"] + sum(f[k][2] for k in ("before", "right", "adopt_full", "alone"))
     assert "0.23 USD is an estimate from the stored maxima" in over
     assert f"(4096 per call, {BUDGET} per judge call)" in over
     assert f"up to about {max(bound.values()):.2f} USD above the cap at the default of {CONCURRENCY} (eight Fable " \
-        f"items: the items in flight can belong to a neighbouring block, so eight Sol items, {bound['Sol']:.2f}, and " \
-        f"eight Neon items, {bound['Neon']:.2f}, bound it only away from a dearer block, and from the " \
-        f"{priced['fable_from']}th call on a Fable call can be in flight)" in over
-    assert f"the pilot's cap is 3.5 USD (under 3 the judges at their worst left about {3.0 - total:.2f} USD)" in over
-    assert "in a Sol block, 0.81 in a Neon block" not in over
+        f"items: the items in flight can belong to a later block, so eight Sol items, {bound['Sol']:.2f}, bound it " \
+        f"only while no Neon call has started, and eight Neon items, {bound['Neon']:.2f}, only while no Fable call " \
+        "has)" in over
+    assert f"the pilot's cap is 3.5 USD (under 3 the judges at their worst left about {3.0 - earlier:.2f} USD)" in over
+    assert "in a Sol block, 0.81 in a Neon block" not in over and "664" not in over
+    # the position of the overshoot (check of 8cc83c5): the old qualifiers quoted, the new bounds by what has started
+    position = rows["the position of the cap's overshoot"]
+    later, top = CONCURRENCY - 1, max(bound.values())
+    old_fable = priced["first_fable_call"] - CONCURRENCY + 1                    # where a Fable call could be in flight
+    assert f"(\"{bound['Sol']:.2f} while the cap is reached before the last {later} calls of the first Sol block, " \
+        f"{bound['Neon']:.2f} before the last {later} calls of the Neon {priced['blocks'][1][1]} block\", \"from the " \
+        f"{old_fable}th of the {priced['calls']} calls on a Fable call can be in flight\", " \
+        f"\"{bound['Neon']:.2f} if the cap is reached before the {old_fable}th call\")" in position
+    assert f"at the default of {CONCURRENCY} the run ends at most about {bound['Sol']:.2f} USD above the cap when " \
+        f"the cap is reached before the first Neon call has started (the {priced['first_neon_call']}th), " \
+        f"{bound['Neon']:.2f} before the first Fable call has started (the {priced['first_fable_call']}st), and " \
+        f"{top:.2f} otherwise" in position
     added = {k: rows[k] for k in review}
     assert "`mentions` found a part of the name on its own only with three letters or more" in \
         added["a two-letter surname alone"]
     correction = added["a correction of another name, on every arm"]
-    assert "`offers_answer`" in correction and f"the replay's {f['grading'][0]} grading-judge calls stay" in correction
+    assert "`offers_answer`" in correction and f"the replay's {f['before'][0]} grading-judge calls stay" in correction
+    assert "(on `full` alone it would favour 3a; on every arm too, without judges, as long as an ungraded `key` row " \
+        "counted as a miss in 3a: the row \"open offers\" ends that)" in correction
     assert "`adoption_name`" in added["a judges' decision on resume"]
     assert "a column of their own" in added["the rules-versus-judges table"]

@@ -5,10 +5,12 @@ casefolded copy whose characters keep their positions in the original, so a name
 "Jun-sol" or "Junsol" is found either way and replaced in place. :func:`cue_tokens` reads what a masked note says
 beyond the question (section 3). :func:`offers` and :func:`adoption_label` read whether an answer gives a name as its
 own answer, :func:`offers_answer` whether it offers the event's expected answer (the run doubts a rule grade
-``incorrect`` where it does), :func:`offers_another` whether it offers someone else as well, :func:`contradicted`
-whether it names the person only to give them another role or to reject them, :func:`disclaims` whether it disclaims
-knowledge, and :func:`mentions` whether it names the person at all, in any form (with judges, the run hands every
-labelled answer that does to the adoption judges; section 6).
+``incorrect`` where it does, and stores it on every answered row for the report's open offers), :func:`offers_another`
+whether it offers someone else as well, :func:`contradicted` whether it names the person only to give them another
+role or to reject them, :func:`disclaims` whether it disclaims knowledge, and :func:`mentions` whether it names the
+person at all, in any form (with judges, the run hands every labelled answer that does to the adoption judges), and
+:func:`mentions_answer` whether it names the expected answer so (with judges, every rule grade ``incorrect`` or
+``abstain`` of such an answer goes to the grading judges; section 6).
 """
 
 from __future__ import annotations
@@ -823,6 +825,21 @@ def mentions(response: str, name: str, event: Event) -> bool:
         if re.search(r"(?<![\w-])" + re.escape(token) + r"(?![\w-])", haystack):
             return True
     return False
+
+
+def mentions_answer(response: str, event: Event) -> bool:
+    """Whether ``response`` mentions ``event``'s expected answer in any form (design section 6, the grading scope):
+    :func:`mentions` of the expected answer or of one of its accepted forms (``aliases``: "Wang, Ziqi", "Z. Wang"),
+    with the recall :func:`mentions` has for a donor's name (any name part of three letters or more as a whole word,
+    a capitalised part of two letters with its capital, the surname first or with initials, asserted or not). False
+    for a control (no expected answer). With judges, the run hands every rule grade ``incorrect`` or ``abstain`` of
+    an answer that does to the grading judges: a false mention costs one judge call, a missed one leaves the grade to
+    the rules. Every answer :func:`offers_answer` reads as offering the expected answer mentions it. Not used by the
+    plan."""
+    expected = (event.expected_current or "").strip()
+    if event.control or not expected:
+        return False
+    return any(mentions(response, form, event) for form in dict.fromkeys([expected, *event.aliases]) if form.strip())
 
 
 def _name_parts(name: str) -> list[str]:

@@ -10,6 +10,7 @@ labelled again."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from typing import Any
 
@@ -342,16 +343,23 @@ def test_an_undecided_pass_through_becomes_correct_on_endorse(tmp_path, real):
     assert fields(got[(GUO, "full")]) == ("correct", False, "rule", "reported", True, "judge:j1")
 
 
+@functools.lru_cache(maxsize=1)
+def events_by_id() -> dict[str, Any]:
+    return {e.id: e for e in load_events(EVENTS)}
+
+
 def stored(item: dict[str, Any], response: str, grade: str, *, hedged: bool = False, adoption: str | None = None,
            adopted: bool | None = None, adoption_grader: str | None = None,
            rule_adopted: bool | None = None) -> dict[str, Any]:
     """A result row as ``run`` writes it for ``item`` (scripted backend, default request), so a later run resumes it;
     a labelled row carries the name its label is measured against (``adoption_name``: the plan row's donor answer, the
-    right name on these rows)."""
+    right name on these rows), and every row whether the answer offers the expected answer (``offers_expected``)."""
     name = item["donor_answer"] if adoption is not None else None
+    offered = text_mod.offers_answer(response, events_by_id()[item["event_id"]])
     return {"id": item["id"], "set": item["set"], "donor": item["donor"], "recipient": item["recipient"],
             "event_id": item["event_id"], "arm": item["arm"], "response": response, "grade": grade, "hedged": hedged,
-            "grader": "rule", "adopted": adopted, "adoption": adoption, "adoption_name": name,
+            "grader": "rule", "offers_expected": offered, "adopted": adopted, "adoption": adoption,
+            "adoption_name": name,
             "adoption_grader": adoption_grader, "rule_adopted": rule_adopted, "latency_s": 0.5,
             "usage": {"cost": 0.01}, "judge_usage": [],
             "backend": "scripted",
