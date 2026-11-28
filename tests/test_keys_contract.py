@@ -586,7 +586,7 @@ def test_the_grading_scope_and_the_open_offers_have_their_figures(priced):
     assert f"In der Nachrechnung kostet das {n_extra} Judge-Aufrufe mehr" in text_de
     assert f"Von den {len(undecided)} gespeicherten Antworten, die die Regeln offen lassen, bietet keine die " \
         "richtige Antwort an." in text_de
-    assert "nach acht Prüfrunden" in text_de                                  # review of b86d67f: eight rounds
+    assert "nach neun Prüfrunden" in text_de                                  # check of 8739803: nine rounds
 
 
 ARMS_DARK = ("alone", "key", "full", "wrong_key", "blank")
@@ -688,7 +688,8 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     corrected two of the check's rows in place: the dash clause and the further references to the note in "the rules
     without judges", and the bound in "the cap's overshoot", whose figures are pinned here. The check of 8cc83c5 added
     the last three (the grading scope, open offers, the position of the cap's overshoot) and corrected two rows in
-    place: the correction's claim about 3a, and the overshoot's qualifiers."""
+    place: the correction's claim about 3a, and the overshoot's qualifiers. The review of b86d67f added two (an open
+    offer in any form, answers the judges left undecided), the check of 8739803 the last (another person's name)."""
     text = DESIGN.read_text("utf-8")
     table = text[text.index("### Refinements during the implementation review"):]
     titles = [line.split(" | ")[0].removeprefix("| ") for line in table.splitlines() if line.startswith("| ")][1:]
@@ -698,7 +699,8 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
               "a judges' decision on resume", "the rules-versus-judges table"]
     latest = ["the grading scope", "open offers", "the position of the cap's overshoot"]
     newest = ["an open offer in any form", "answers the judges left undecided"]          # review of b86d67f
-    assert titles[-13:] == check + review + latest + newest
+    person = ["another person's name"]                                                  # check of 8739803
+    assert titles[-14:] == check + review + latest + newest + person
     seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
     assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
     intro = " ".join(table[: table.index("| issue | before | now |")].split())
@@ -710,11 +712,14 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     assert "corrected two rows of the check in place: \"the rules without judges\"" in intro
     assert "A check of that review's changes added the three rows from \"the grading scope\" to \"the position of " \
         "the cap's overshoot\"" in intro
-    assert "A review of that check's changes added the last two rows, \"an open offer in any form\" and \"answers " \
+    assert "A review of that check's changes added the two rows \"an open offer in any form\" and \"answers " \
         "the judges left undecided\"" in intro
     assert "It corrected two rows of the check in place: \"the grading scope\" (a second run with the same " \
         "`--judges` sends nothing only once the judges have decided every row in their scope) and \"open offers\" " \
         "(what `offers_expected` holds)" in intro
+    assert "A check of that review's changes added the last row, \"another person's name\": a name the paper grader " \
+        "cannot place that writes the expected answer with a title or a group word, or in a near spelling the paper " \
+        "rules leave to the judges as a possible misspelling, is no other person's" in intro
     assert "It corrected two rows in place as well: \"a correction of another name, on every arm\"" in intro
     assert "and \"the cap's overshoot\" (its qualifiers)" in intro
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
@@ -924,8 +929,10 @@ def test_an_open_offer_is_an_ungraded_answer_that_names_the_expected_answer(pric
     assert "while an ungraded `key` row that does not name it, or names it only inside another person's name, counts " \
         "as not correct and so for `full`, as in the primary analysis" in seven
     text_de = readme()
-    assert "Kein Urteil stützt sich auf unbewertete Antworten, die die richtige Antwort nennen, ob die Regeln sie " \
-        "offen lassen oder die Stimme des Judge ausfiel." in text_de
+    assert "Kein Urteil stützt sich auf unbewertete Antworten, die die richtige Antwort nennen, auch mit Titel " \
+        "(„Professor Guo“) oder im vollen Namen leicht verschrieben („Daya Guoo“), ob die Regeln sie offen lassen " \
+        "oder die Stimme des Judge ausfiel; nur eine Nennung im Namen einer anderen Person zählt nicht („Yutong Mei“ " \
+        "bei Lingrui Mei)." in text_de                                        # check of 8739803: those forms too
     assert "obwohl sie die richtige Antwort anbieten. Der Pilot" not in text_de
     assert "unbewertete Antworten, die die richtige Antwort nennen (unten)" in text_de
     assert "Jetzt ist jede unbewertete Antwort, die die richtige Antwort in irgendeiner Form nennt, ein offenes " \
@@ -985,3 +992,98 @@ def test_the_readme_plans_with_the_pre_registered_date(priced):
         "data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl" in text_de
     assert f"das Datum des vorab festgelegten Plans, `--today {TODAY}` (ohne die Option nimmt `plan` das heutige " \
         f"Datum, und alle {len(plan)} Prompts wären andere)" in text_de
+
+
+# ---- check of 8739803 ----------------------------------------------------------------------------------------------
+
+
+def test_another_persons_name_has_its_figures(priced, failing_replay, mock_judged):
+    """The check of 8739803: a name the paper grader cannot place that writes the expected answer with a title or a
+    group word, or in a near spelling the paper rules leave to the judges, was another person's, so a lost vote (or,
+    without judges, a near spelling the rules leave open) counted as a miss with no check. The figures of its row in
+    section 10 and of the README follow from the plan, the paper rules and the stored data; the stored replay and the
+    mock run keep their open offers; section 6 lists the words the code drops and its similarity is the grader's."""
+    import difflib
+    import re
+
+    from cutoffmix.bench.grading import _NEAR_NAME_RATIO, grade_rule
+    from cutoffmix.bench.keys.run import _offers_expected, _rule_grade
+    from cutoffmix.bench.keys.text import _HONORIFICS, names_answer
+
+    plan, events = priced["plan"], priced["events"]
+    daya = sum(1 for p in plan
+               if p["set"] == "both_right" and p["arm"] == "key" and p["event_id"] == "paper:2401.14196")
+    both_key = sum(1 for p in plan if p["set"] == "both_right" and p["arm"] == "key")
+    dark_key = [p for p in plan if p["set"] == "dark" and p["arm"] == "key"]
+    titled = sum(1 for p in dark_key if _rule_grade(events[p["event_id"]], "The first author is Professor "
+                                                    f"{events[p['event_id']].expected_current.split()[-1]}.",
+                                                    judges=True) is None)    # to the grading judges: lost votes
+    assert (daya, both_key, len(dark_key), titled) == (2, 20, 116, 92)
+    kept, mock_open = failing_replay["totals"]["open_offers"], mock_judged["report"]["totals"]["open_offers"]
+    results = [r for r in load_results(RESULTS) if r.probe == "current_d"]
+    undecided = [r for r in results if grade_rule(events[r.event_id], "current_d", r.response or "") is None]
+    assert not any(_offers_expected(events[r.event_id], r.response or "") for r in undecided)
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    row = next(line for line in table.splitlines() if line.startswith("| another person's name |"))
+    assert f"{daya} lost votes on `both_right` key rows \"The first author is Professor Guo.\" made 4 not supported " \
+        "with 0 open offers" in row
+    assert f"with every grading vote lost {titled} `dark` key rows \"The first author is Professor <surname>.\" made " \
+        f"3a supported (b = {titled}, c = 0) with 0 open offers" in row
+    assert f"and without judges {len(dark_key)} `dark` key rows that double the surname's last letter made 3a " \
+        "supported with 0 open offers" in row
+    assert f"the three scenarios read not testable, with {daya}, {titled} and {len(dark_key)} open offers" in row
+    assert f"the stored replay keeps its {kept} open offers with every judge call failing and its verdicts, the mock " \
+        f"runs write the same rows ({mock_open} open offers with judges), and of the {len(undecided)} stored answers " \
+        "the rules leave undecided none is an open offer" in row and (kept, mock_open) == (20, 126)
+    assert f"a possible misspelling by the paper grader's similarity of at least {_NEAR_NAME_RATIO} or by the same " \
+        "given name with the same first four surname letters, or by its test of initials one slip away (\"Ziyo Ma\" " \
+        "for Ziyu Ma)" in row
+    assert "`_same_person` and the adoption rules are unchanged" in row
+    six, seven = section(6), section(7)
+    assert f"(`grading._near_name`) by its letters-only similarity of at least {_NEAR_NAME_RATIO} (\"Daya Guoo\", " \
+        "\"Day Guo\") or by the same given name with the same first four surname letters (\"Matthew Kowalewski\" " \
+        "for Matthew Kowal), or by its test of initials one slip away" in six
+    from cutoffmix.bench.grading import _compact, _near_name
+    for name, form, similar in (("Daya Guoo", "Daya Guo", True), ("Day Guo", "Daya Guo", True),
+                                ("Matthew Kowalewski", "Matthew Kowal", False), ("Ziyo Ma", "Ziyu Ma", False)):
+        ratio = difflib.SequenceMatcher(None, _compact(name), _compact(form)).ratio()
+        assert _near_name(name, form) and (ratio >= _NEAR_NAME_RATIO) is similar, name
+    assert "A name that is not a distractor must also pass these tests once its honorific, title and group words are " \
+        "dropped, and be no near spelling of the expected answer or of an accepted form of two words or more" in six
+    listed = six[six.index("The words: ") + len("The words: "): six.index(", compared on their letters")]
+    words = set()
+    for word in re.split(r",\s*(?:and the German\s+|and\s+)?|\s+and\s+", listed):
+        base, _, tail = word.strip().partition("(")
+        words |= {base, base + tail.rstrip(")")} if tail else {base}
+    assert words == set(_HONORIFICS)
+    assert "Without `--judges` that one difference is all, a known limit of that path: a rule grade `incorrect` of " \
+        "an answer that names the expected answer in a form `offers_answer` does not accept stays final" in six
+    event = events["paper:2401.14196"]
+    assert grade_rule(event, "current_d", "It is not Sanjay Ramaswamy, it is Dr. Guo.")[0] == "incorrect"
+    assert grade_rule(event, "current_d", "The first author is Professor Guo.")[0] == "incorrect"
+    assert grade_rule(event, "current_d", "The first author is Dr. Guoo.") is None and \
+        grade_rule(event, "current_d", "I am not sure, maybe Dr. Guoo.")[0] == "abstain"
+    assert not names_answer("The first author is Dr. Guoo.", event)
+    assert "the paper rules leave \"The first author is Dr. Guoo.\" to the judges and grade \"I am not sure, maybe " \
+        "Dr. Guoo.\" `abstain`, and an ungraded row with such an answer is no open offer" in six
+    assert "where a name the paper grader cannot place that writes the expected answer with a title or a group word, " \
+        "or in a near spelling the paper rules leave to the judges as a possible misspelling, is no other person's " \
+        "(section 6, `names_answer`)" in six
+    assert "A name the paper grader cannot place that writes the expected answer with a title or a group word " \
+        "(\"Professor Guo\", \"the Guo Group\"), or in a near spelling the paper rules leave to the judges as a " \
+        "possible misspelling (\"Daya Guoo\"), is no other person's (section 6, `names_answer`)." in seven
+    text_de = readme()
+    numbers = {2: "Zwei", 3: "Drei", 4: "Vier"}
+    assert f"{numbers[daya]} ausgefallene Stimmen bei „Der Erstautor ist Professor Guo.“ unter den {both_key} " \
+        "`key`-Antworten von `both_right` machten Vorhersage 4 zu „nicht gestützt“" in text_de
+    assert f"ohne Judge machten {len(dark_key)} `key`-Antworten bei `dark`, deren Nachname einen verdoppelten " \
+        "letzten Buchstaben hat, Vorhersage 3a zu „gestützt“, beide Male ohne ein einziges offenes Angebot" in text_de
+    assert "Ein anderer Vorname mit demselben Nachnamen bleibt eine andere Person („Zhaoyang Li“ bei Zhiyu Li)" in \
+        text_de
+    assert "Ein verschriebener Nachname allein („Dr. Guoo“) ist dagegen für die Bewertung kein Name und zählt weiter " \
+        "nicht als Nennung der richtigen Antwort." in text_de
+    assert "Ohne Judge bleibt eine bekannte Grenze: Ein „falsch“ der Regeln für eine Antwort, die die richtige " \
+        "Antwort in einer Form nennt, die die Regel von `offers` nicht annimmt („Es ist nicht Y, es ist Dr. " \
+        f"Zhang.“), bleibt endgültig; der Pilot läuft mit Judge. Bei den gespeicherten Antworten ändert sich nichts. " \
+        f"Die {len(plan)} geplanten Aufrufe sind dieselben geblieben." in text_de and len(plan) == 746

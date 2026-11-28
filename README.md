@@ -48,14 +48,15 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen noch
   nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob
-  es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach acht Prüfrunden entscheidet mit
+  es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach neun Prüfrunden entscheidet mit
   `--judges` der Judge bei der Übernahme jede Antwort, die den Namen nennt, und bei der Bewertung jede, die ihn nennt
   und die die Regeln sonst als falsch oder als Enthaltung werten würden; die festen Regeln entscheiden nur noch
   „richtig“, die Antworten ohne den Namen und den Lauf ohne Judge. Kein Urteil stützt sich auf unbewertete Antworten,
-  die die richtige Antwort nennen, ob die Regeln sie offen lassen oder die Stimme des Judge ausfiel. Der Pilot hat 746
-  Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,45 $ für den Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt
-  3,00 $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit
-  Freigabe und Schlüssel.
+  die die richtige Antwort nennen, auch mit Titel („Professor Guo“) oder im vollen Namen leicht verschrieben („Daya
+  Guoo“), ob die Regeln sie offen lassen oder die Stimme des Judge ausfiel; nur eine Nennung im Namen einer anderen
+  Person zählt nicht („Yutong Mei“ bei Lingrui Mei). Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa
+  0,45 $ für den Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt 3,00 $, eine Schätzung, keine Obergrenze: die
+  setzt `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -575,6 +576,27 @@ Befehl für den Plan unten nennt das Datum des vorab festgelegten Plans, `--toda
 `plan` das heutige Datum, und alle 746 Prompts wären andere). Bei den gespeicherten Antworten ändert sich nichts: Die
 offenen Angebote und alle Urteile der Nachrechnung bleiben dieselben. Die 746 geplanten Aufrufe sind dieselben
 geblieben.
+
+Eine Prüfung dieser Änderungen fand noch eine Lücke, ebenfalls vor dem ersten echten Aufruf: Als Name einer anderen
+Person galten auch zwei Schreibweisen der richtigen Antwort. Erstens ein Name mit einem Titel oder einem Gruppenwort,
+das die Bewertung im Namen lässt („Professor Guo“, „Doctor Guo“, „die Guo Group“; „Dr.“, „Prof.“, „Lab“ und „Team“
+lässt sie selbst weg), zweitens eine leicht verschriebene Form, die die Bewertung selbst als mögliche Verschreibung
+dem Judge überlässt („Daya Guoo“, „Matthew Kowall“). Mit `--judges` gehen solche Antworten an den Bewertungs-Judge.
+Fiel aber seine Stimme aus, oder ließen ohne Judge die Regeln eine Verschreibung offen, zählte die Antwort ohne Prüfung
+als falsch: Zwei ausgefallene Stimmen bei „Der Erstautor ist Professor Guo.“ unter den 20 `key`-Antworten von
+`both_right` machten Vorhersage 4 zu „nicht gestützt“, und ohne Judge machten 116 `key`-Antworten bei `dark`, deren
+Nachname einen verdoppelten letzten Buchstaben hat, Vorhersage 3a zu „gestützt“, beide Male ohne ein einziges offenes
+Angebot. Jetzt liest die Prüfung einen solchen Namen auch ohne seine Titel- und Gruppenwörter (auch die deutschen:
+Herr, Frau, Doktor, Professorin, Gruppe, Arbeitsgruppe), und eine Verschreibung, die die Bewertung als möglich ansieht,
+gilt als die richtige Antwort; beide Fälle sind jetzt nicht testbar. Ein verschriebener Nachname allein („Dr. Guoo“)
+ist dagegen für die Bewertung kein Name und zählt weiter nicht als Nennung der richtigen Antwort. Ein anderer Vorname
+mit demselben Nachnamen bleibt eine andere Person („Zhaoyang Li“ bei Zhiyu Li), auch wenn die Bewertung ihn wegen
+desselben Anfangsbuchstabens offen lässt, ebenso jede falsche Antwortmöglichkeit der Frage. Bei der Übernahme gelten
+zwei ähnliche Namen weiter als zwei Personen, denn dort kostet eine Verwechslung nur einen Judge-Aufruf; bei den
+offenen Angeboten dagegen ließe sie ein Urteil auf einer Antwort stehen, die richtig sein kann. Ohne Judge bleibt eine
+bekannte Grenze: Ein „falsch“ der Regeln für eine Antwort, die die richtige Antwort in einer Form nennt, die die Regel
+von `offers` nicht annimmt („Es ist nicht Y, es ist Dr. Zhang.“), bleibt endgültig; der Pilot läuft mit Judge. Bei den
+gespeicherten Antworten ändert sich nichts. Die 746 geplanten Aufrufe sind dieselben geblieben.
 
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl --today 2026-11-27 \

@@ -173,8 +173,9 @@ def test_the_stored_answers_the_rules_leave_undecided_name_the_expected_answer_o
                                                                                  real.events[r.event_id]))
     assert (len(undecided), len(named), mentioned) == (57, 0, ["paper:2507.03724", "paper:2607.14935"])
     six = " ".join(DESIGN.read_text("utf-8").split())
-    assert "the two that mention it do so only inside another person's name, \"Zhaoyang Li\" for Zhiyu Li and " \
-        "\"KunChang Li\" for Xinhao Li" in six
+    assert "the two that mention it do so only inside another person's name, \"Zhaoyang Li\" for Zhiyu Li, a " \
+        "different given name that the paper rules leave open by their test of initials, and \"KunChang Li\" for " \
+        "Xinhao Li" in six                                     # check of 8739803: the paper rules leave it open
 
 
 # ---- a lost grading vote on an answer that names the expected answer (review of b86d67f) --------------------------

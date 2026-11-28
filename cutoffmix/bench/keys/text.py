@@ -11,11 +11,13 @@ knowledge, and :func:`mentions` whether it names the person at all, in any form 
 labelled answer that does to the adoption judges), :func:`mentions_answer` whether it names the expected answer so
 (with judges, every rule grade ``incorrect`` or ``abstain`` of such an answer goes to the grading judges), and
 :func:`names_answer` whether it does so other than inside another person's name (with :func:`offers_answer`, the run
-stores it on every answered row for the report's open offers; section 6).
+stores it on every answered row for the report's open offers; section 6), where a name with a title or a group word
+("Professor Guo") or in a near spelling the paper grader leaves to the judges ("Daya Guoo") is the expected answer's.
 """
 
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 from collections.abc import Iterable, Iterator, Sequence
@@ -25,12 +27,15 @@ from cutoffmix.bench.grading import (
     _COMMA_CLAUSE_END,
     _COMMON_SURNAMES,
     _DISCLAIMS,
+    _NEAR_NAME_RATIO,
     _PAPER_ABSTAIN,
+    _POSSESSIVE,
     _PUNCT_MAP,
     _compact,
     _compile_forms,
     _hits,
     _mask_title,
+    _near_name,
     _plain,
     _segments,
     _surname_given,
@@ -845,24 +850,105 @@ def mentions_answer(response: str, event: Event) -> bool:
 
 # what stands in for the name of another person in the text :func:`names_answer` reads
 _ANOTHER = "[another]"
+# Honorific, title and group words around a name ("Professor Guo", "Doctor Guo", "the Guo Group", "Frau Guo"):
+# grading._unknown_names keeps those that are not among its stop words inside a run (a stop word such as "Dr.",
+# "Prof.", "Lab" or "Team" it drops at either end of a run, and one inside a run dismisses the run), so
+# :func:`_another_person` reads a name without them. Compared on the letters of each word ("Prof." is "prof",
+# "co-workers" is "coworkers").
+_HONORIFICS = frozenset({
+    "professor", "professors", "prof", "profs", "doctor", "doctors", "dr", "drs", "mr", "mrs", "ms", "miss", "mx",
+    "mister", "sir", "dame", "lady", "lord", "madam", "madame", "assistant", "associate", "emeritus", "sensei", "group",
+    "groups", "lab", "labs", "laboratory", "team", "teams", "et", "al", "colleague", "colleagues", "coauthor",
+    "coauthors", "coworker", "coworkers", "collaborator", "collaborators", "herr", "frau", "doktor", "doktorin",
+    "professorin", "gruppe", "arbeitsgruppe", "forschungsgruppe", "labor", "lehrstuhl",
+})
+
+
+def _one_slip(a: str, b: str) -> bool:
+    """Whether ``a`` and ``b`` differ by one slip at most: a letter added, dropped or replaced, or two neighbouring
+    letters swapped."""
+    if len(a) > len(b):
+        a, b = b, a
+    if len(b) - len(a) > 1:
+        return False
+    i = next((k for k, (x, y) in enumerate(zip(a, b)) if x != y), len(a))
+    if len(a) < len(b):
+        return a[i:] == b[i + 1:]
+    return a[i + 1:] == b[i + 1:] or (a[i + 2:] == b[i + 2:] and a[i:i + 2] == b[i:i + 2][::-1])
+
+
+def _near_spelling(name: str, form: str) -> bool:
+    """Whether ``name`` may be ``form`` misspelt, as the paper grader reads it: ``grading._near_name``, by which
+    ``grading.grade_paper`` leaves an answer that names such a name to the judges, on one of its tests of a
+    misspelling (a letters-only similarity of at least ``grading._NEAR_NAME_RATIO``: "Daya Guoo" and "Day Guo" for
+    Daya Guo; the same given name with the same first four surname letters: "Matthew Kowalewski" for Matthew Kowal),
+    or on its test of initials one slip away (:func:`_one_slip`: "Ziyo Ma" for Ziyu Ma, where one letter of a short
+    name falls under the similarity). That test, meant for an expected answer whose given name is initials only,
+    reads any given name as initials, so it accepts every name of the same surname whose given name starts with the
+    expected one's initial: more than a slip away, such a name is another person here ("Zhaoyang Li" for Zhiyu Li).
+    Initials that agree with the expected answer write it anyway (:func:`_same_person`: "Bingyi Yan" is "B. Y.
+    Yan")."""
+    if not _near_name(name, form):
+        return False
+    if _compact(_surname_given(name)[0]) != _compact(_surname_given(form)[0]):
+        return True                  # the test of initials needs the same surname: one of the tests of a misspelling
+    a, b = _compact(name), _compact(form)
+    return difflib.SequenceMatcher(None, a, b).ratio() >= _NEAR_NAME_RATIO or _one_slip(a, b)
+
+
+def _without_honorifics(name: str, keep: set[str]) -> str:
+    """``name``, normalised, without its honorific, title and group words (:data:`_HONORIFICS`; a word of ``keep``, a
+    name part of the expected answer, stays) and without a possessive "'s": "Professor Guo's Group" is "guo"."""
+    words = []
+    for word in normalize_text(name).split():
+        word = _POSSESSIVE.sub("", word)
+        letters = re.sub(r"[^a-z0-9]", "", word)
+        if letters and (letters in keep or letters not in _HONORIFICS):
+            words.append(word)
+    return " ".join(words)
+
+
+def _writes_answer(name: str, expected: str, forms: Sequence[str]) -> bool:
+    """Whether ``name`` writes the expected answer ``expected`` by the rules of :func:`_another_person` that read
+    every name alike: the same person as the full expected answer (:func:`_same_person`), its name parts all parts of
+    the expected answer or of one of its accepted forms ``forms``, or one of those written in full inside it."""
+    parts = set(_name_parts(name))
+    if _same_person(name, expected):
+        return True
+    return bool(parts) and any(parts <= set(_name_parts(form)) or any(
+        p.search(normalize_text(name)) for p in _compile_forms([form], loose=True)) for form in forms)
 
 
 def _another_person(name: str, event: Event) -> bool:
     """Whether ``name`` (a name the paper grader cannot place, or a distractor) writes a person other than
-    ``event``'s expected answer: it is not the same person as the expected answer (:func:`_same_person`, compared with
-    the full name: "Zhaoyang Li" agrees with the accepted form "Z. Li" of Zhiyu Li but is another person), its name
-    parts are not all parts of the expected answer or of one of its accepted forms ("Mohamed El" of "Mohamed El
-    Banani", "Zhang Wei" of "Wei Zhang": a part of the name, not another person), and none of those is written in full
-    inside it."""
+    ``event``'s expected answer, as the open offers read it (design section 6): it is not the same person as the
+    expected answer (:func:`_same_person`, compared with the full name: "Zhaoyang Li" agrees with the accepted form "Z.
+    Li" of Zhiyu Li but is another person), its name parts are not all parts of the expected answer or of one of its
+    accepted forms ("Mohamed El" of "Mohamed El Banani", "Zhang Wei" of "Wei Zhang": a part of the name, not another
+    person), and none of those is written in full inside it; and, unless it is one of the event's distractors, also
+    with a title (``reject_aliases``, which the paper grader grades ``incorrect``: a listed wrong answer stays another
+    person), the same holds once its honorific, title and group words are dropped (:func:`_without_honorifics`:
+    "Professor Guo", "Doctor Guo", "the Guo Group" write Daya Guo), and it is no near spelling (:func:`_near_spelling`)
+    of the expected answer or of an accepted form of two words or more ("Daya Guoo", "Day Guo", "Matthew Kowall").
+
+    The two exceptions read one person as two less readily than :func:`_same_person` does, on purpose. There a near
+    spelling is another person because wrongly taking one person for two only asks the judges. Here a name taken for
+    another person is blanked, so a row that names the expected answer only in it is no open offer, and a verdict may
+    rest on it although it may be correct (the paper grader itself leaves a near spelling to the judges as a possible
+    misspelling); wrongly taking another person for the expected answer can only make a verdict not testable."""
     expected = (event.expected_current or "").strip()
-    parts = set(_name_parts(name))
-    if not parts or not expected or _same_person(name, expected):
+    if not expected or not _name_parts(name):
         return False
-    for form in dict.fromkeys(f for f in [expected, *event.aliases] if f.strip()):
-        if parts <= set(_name_parts(form)) or any(p.search(normalize_text(name))
-                                                  for p in _compile_forms([form], loose=True)):
-            return False
-    return True
+    forms = list(dict.fromkeys(f for f in [expected, *event.aliases] if f.strip()))
+    if _writes_answer(name, expected, forms):
+        return False
+    core = _without_honorifics(name, {p for form in forms for p in _name_parts(form)})
+    if {_compact(name), _compact(core)} & {_compact(d) for d in event.reject_aliases}:
+        return True                                             # a distractor, also with a title
+    if not _name_parts(core) or _writes_answer(core, expected, forms):
+        return False                                            # nothing but honorifics, or the answer with them
+    return not any(_near_spelling(n, form) for n in dict.fromkeys([name, core])
+                   for form in forms if len(form.split()) >= 2)
 
 
 def names_answer(response: str, event: Event) -> bool:
@@ -871,11 +957,13 @@ def names_answer(response: str, event: Event) -> bool:
     grader cannot place, and every distractor of the event (``reject_aliases``), is blanked where it writes another
     person (:func:`_another_person`). So "Dr. Zhang", "Zhang et al.", a given name or a common surname alone, "I'm
     not sure. X?" and "It is not Y, it is Zhang." name Wei Zhang, also next to another person ("Dr. Zhang, with Bo Li
-    as senior author"), and so do a doubt or a rejection ("I doubt it is X.", "It is not X."), while "The first author
-    is Yutong Mei." and "Is it Yutong Mei?" do not name Lingrui Mei: the shared surname is another person's. False for
-    a control (no expected answer). The run stores it, with :func:`offers_answer`, as ``offers_expected``: an
-    ungraded answer that names the expected answer may well be correct, and the report checks its verdicts against
-    such rows. Not used by the plan."""
+    as senior author"), and so do a doubt or a rejection ("I doubt it is X.", "It is not X."), an honorific or a group
+    word the paper grader keeps in the name ("Professor Zhang", "the Zhang Group") and a near spelling the paper grader
+    leaves to the judges as a possible misspelling ("Wei Zhangg"), while "The first author is Yutong Mei." and "Is it
+    Yutong Mei?" do not name Lingrui Mei: the shared surname is another person's. False for a control (no expected
+    answer). The run stores it, with :func:`offers_answer`, as ``offers_expected``: an ungraded answer that names the
+    expected answer may well be correct, and the report checks its verdicts against such rows. Not used by the
+    plan."""
     expected = (event.expected_current or "").strip()
     if event.control or not expected:
         return False
