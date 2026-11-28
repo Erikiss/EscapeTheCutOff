@@ -412,19 +412,20 @@ note_event, today, error}`
   adoption judges, next point), and so does every grade of an answer that does not name the expected answer. A failed or
   tied vote, or a reply without a verdict, leaves the answer `ungraded`, never the rule grade, and a later run with
   `--judges` asks again; the run counts such answers, and since they name the expected answer they are open offers
-  (primary analysis, below), unless their only mention of it is inside another person's name (a name with a title or
-  a group word, "Professor Guo", "the Guo Group", or in a near spelling the paper rules leave to the judges, "Daya
-  Guoo", writes the expected answer: `names_answer`, below). The scope depends only on the event, the answer and the
-  rule grade, so identical answers to an item take the same grading path on every arm. A false mention (an answer that
-  names another person who shares a name part of three letters or more, or a capitalised one of two, with the expected
-  answer) costs one grading-judge call: in the replay of section 9, 3 `dark` items whose stored Sol answer names another
-  person of the same surname ("Yutong Mei" for Lingrui Mei), 15 calls. An item still asks each grading judge at most
-  once. The principle behind both scopes (the designer's decision): with `--judges` the judges decide every answer that
-  names the person in question wherever the rules would decide against that person, and the rules decide alone only
-  where the answer does not name the person or, for the grade, where they grade it correct (for adoption the judges'
-  scope is wider: every labelled answer that names the candidate); identical answers take the same grading path on every
-  arm; and no verdict rests on rows the rules, or the judges' votes, leave open although the answer offers or names the
-  expected answer (the open offers: primary analysis below, and section 7).
+  (primary analysis, below), unless their only mention of it is inside another person's name (a name with a word of
+  the lists of `names_answer`, below, "Professor Guo", "Visiting Professor Guo", "the Guo Group", "Either Guo", or in a
+  near spelling, "Daya Guoo", writes the expected answer; any other word the paper grader keeps in a name, or a slip
+  that is no near spelling, leaves it another person's). The scope depends only on the event, the answer and the rule
+  grade, so identical answers to an item take the same grading path on every arm. A false mention (an answer that names
+  another person who shares a name part of three letters or more, or a capitalised one of two, with the expected answer)
+  costs one grading-judge call: in the replay of section 9, 3 `dark` items whose stored Sol answer names another person
+  of the same surname ("Yutong Mei" for Lingrui Mei), 15 calls. An item still asks each grading judge at most once. The
+  principle behind both scopes (the designer's decision): with `--judges` the judges decide every answer that names the
+  person in question wherever the rules would decide against that person, and the rules decide alone only where the
+  answer does not name the person or, for the grade, where they grade it correct (for adoption the judges' scope is
+  wider: every labelled answer that names the candidate); identical answers take the same grading path on every arm; and
+  no verdict rests on rows the rules, or the judges' votes, leave open although the answer offers or names the expected
+  answer (the open offers: primary analysis below, and section 7).
 - **The judges' scope** (with `--judges`). The adoption judges decide every labelled answer that mentions the name it
   is measured against, whatever the rules would decide: every `correct` `full` row of `dark` and `both_right` (the
   grader found the right name in it), and every row of `donor_wrong` and `control`, `alone` and `full`, whose label
@@ -463,39 +464,62 @@ note_event, today, error}`
   person: one that is not the same person as the expected answer (compared with the full name, so "Zhaoyang Li" is
   not Zhiyu Li although it agrees with the accepted form "Z. Li"), whose name parts are not all parts of the expected
   answer or of one of its accepted forms ("Mohamed El" is a part of Mohamed El Banani, "Zhang Wei" of Wei Zhang), and
-  that does not hold one of those forms in full. A name that is not a distractor must also pass these tests once its
-  honorific, title and group words are dropped, and be no near spelling of the expected answer or of an accepted form
-  of two words or more; these are the two exceptions to `_same_person`, the reading of a person that `offers_another`
-  uses (above). The words: professor(s), prof(s), doctor(s), dr(s), mr, mrs, ms, miss, mx, mister, sir, dame, lady,
-  lord, madam(e), assistant, associate, emeritus, sensei, group(s), lab(s), laboratory, team(s), et, al, colleague(s),
-  coauthor(s), coworker(s), collaborator(s), and the German herr, frau, doktor(in), professorin, gruppe, arbeitsgruppe,
-  forschungsgruppe, labor and lehrstuhl, compared on their letters ("Prof.", "co-workers"); a possessive "'s" is cut
-  from every word, and a word that is part of the expected answer stays. The paper grader drops some of them itself
-  ("Dr.", "Prof.", "Lab", "Team" at either end of a name) but keeps the others inside it, so without the exception
-  "Professor Guo", "Doctor Guo" and "the Guo Group" were another person; now they name Daya Guo, and so does "Professor
-  Guo's Group". A near spelling is a name the paper grader leaves to the judges as a possible misspelling
-  (`grading._near_name`) by its letters-only similarity of at least 0.85 ("Daya Guoo", "Day Guo") or by the same given
-  name with the same first four surname letters ("Matthew Kowalewski" for Matthew Kowal), or by its test of initials one
-  slip away (a letter added, dropped or replaced, or two neighbours swapped: "Ziyo Ma" for Ziyu Ma, where one letter of
-  a short name falls under the similarity). That test is meant for an expected answer whose given name is initials
-  only, but it reads any given name as initials and so accepts every name of the same surname whose given name starts
-  with the expected one's initial; more than a slip away such a name stays another person ("Zhaoyang Li" for Zhiyu
-  Li, a different given name), and initials that agree with the expected answer are the same person anyway. A
-  distractor stays another person whatever its spelling: the paper grader grades it `incorrect`. `_same_person`, which
-  `offers_another` and so the adoption rules use, is unchanged: there a near spelling is another person, since wrongly
-  taking one person for two only asks the judges. For the open offers the same error is the unsafe one: a name wrongly
-  taken for another person is blanked, so an ungraded row that names the expected answer only in it is no open offer,
-  and a verdict may rest on a row that may be correct, while another person wrongly taken for the expected answer can
-  only make a verdict not testable. So "Dr. Zhang", "Professor Zhang", "the Zhang Group", "Zhang et al.", "Wei
-  Zhangg", a given name or a common surname alone, "I'm not sure. Wei Zhang?" and "It is not Y, it is Zhang." name Wei
-  Zhang, also next to another person ("The first author is Dr. Zhang, with Bo Li as senior author."), and so do a
-  doubt and a rejection ("I doubt it is X.", "It is not X."), while "The first author is Yutong Mei.", "Is it
-  Professor Yutong Mei?" and "Is it Yutong Mei?" do not name Lingrui Mei: the shared surname is another person's. A
-  misspelling that is no name the paper grader can place (a single capitalised word, "Dr. Guoo", or an initial before
-  or after a misspelt surname, "D. Guoo") names nobody here, as for the grading scope (`mentions_answer` reads no
-  misspelling): the paper rules leave "The first author is Dr. Guoo." to the judges and grade "I am not sure, maybe
-  Dr. Guoo." `abstain`, and an ungraded row with such an answer is no open offer. `offers_expected` is `offers_answer`
-  or `names_answer`.
+  that does not hold one of those forms in full. A name that is not a distractor must also pass these tests once the
+  words in it that are no name are dropped, and be no near spelling of the expected answer or of an accepted form of two
+  words or more; these are the two exceptions to `_same_person`, the reading of a person that `offers_another` uses
+  (above). The words that are no name: an honorific, title or group word, with every word before it that a name follows
+  (the words of a title: "Visiting Professor Guo", "Distinguished Professor Guo"), and at the start of a name a word
+  that opens a sentence (the masking's capitalised words of section 5, "Either", "Neither", "Namely", "Including" among
+  them, and surely, clearly, honestly, obviously, frankly, evidently, undoubtedly, admittedly, arguably, interestingly,
+  notably, essentially, basically, ultimately and hmm: "Either Guo or Wang", "Clearly Guo wrote it"). The honorific,
+  title and group words: professor(s), prof(s), doctor(s), dr(s), mr, mrs, ms, miss, mx, mister, sir, dame, lady, lord,
+  madam(e), assistant, associate, emeritus, sensei, lecturer(s), director, group(s), lab(s), laboratory, team(s), et,
+  al, colleague(s), coauthor(s), coworker(s), collaborator(s), the German herr(n), frau, doktor(in), professorin,
+  dozent(in), privatdozent(in), juniorprofessor(in), gruppe, arbeitsgruppe, forschungsgruppe, labor and lehrstuhl, the
+  French monsieur, mademoiselle, mme, mlle, professeur(e) and docteur, the Spanish profesor(a), doctora and senor(a),
+  and the Italian signor(a), dottore and dottoressa, compared on their letters ("Prof.", "co-workers", "Señor"); a
+  possessive "'s" is cut from every word, and a word that is part of the expected answer stays. The paper grader drops
+  some of them itself ("Dr.", "Prof.", "Lab", "Team" at either end of a name) but keeps the others inside it, so without
+  the exception "Professor Guo", "Doctor Guo" and "the Guo Group" were another person; now they name Daya Guo, and so do
+  "Professor Guo's Group", "Visiting Professor Guo", "Herrn Guo" and "Either Guo or Wang". Any other word the paper
+  grader keeps in a name still makes it another person's: a title or a role off the list ("Researcher Guo") or one that
+  is also a given name ("Dean Guo"). A near spelling is a name that `grading._near_name`, with which the paper grader
+  leaves an answer naming a name near the expected answer to the judges as a possible misspelling, accepts by its
+  letters-only similarity of at least 0.85 ("Daya Guoo", "Day Guo") or by the same given name with the same first four
+  surname letters ("Matthew Kowalewski" for Matthew Kowal), or by its test of initials one slip away (a letter added,
+  dropped or replaced, or two neighbours swapped: "Ziyo Ma" for Ziyu Ma, where one letter of a short name falls under
+  the similarity). The paper grader compares a name with the expected answer only, these tests here with every accepted
+  form of two words or more as well, so a near spelling of the name written surname first is read as the expected answer
+  although the paper rules grade it `incorrect` ("Mei Lingrul" for Lingrui Mei, of "Mei Lingrui"). A form that writes
+  the given name only as an initial ("D. Guo", "Guo D.") counts so only for a name that writes no given name or only
+  initials itself ("Professor Gur-Ariehh" for Yoav Gur-Arieh): against such a short form the similarity accepts a
+  different short given name with the expected initial ("Lu Mei" of "L. Mei" for Lingrui Mei, "Bo Wang" of "B. Wang" for
+  Bin Wang), which stays another person. The test of initials is meant for an expected answer whose given name is
+  initials only, but it reads an expected given name without a hyphen as a string of initials ("Zhiyu" as Z. H. I. Y.
+  U.) and so accepts a name of the same surname whose given-name initials begin it: every given name of one unhyphenated
+  word with the expected initial ("Zhaoyang Li" for Zhiyu Li), not "Zhao Yang Li" ("zy" does not begin "zhiyu"), and
+  none for a hyphenated given name ("Sheng Liu" for Shih-Yang Liu is graded `incorrect`). More than a slip away such a
+  name stays another person ("Zhaoyang Li", a different given name), and initials that agree with the expected answer
+  are the same person anyway. Another person these tests accept is read as the expected answer ("Ziyi Ma" for Ziyu Ma,
+  one slip away; "Zhiyuan Li" for Zhiyu Li, a similarity of 0.875; "Yang Yue" for Yuxue Yang, of "Yang Yuxue"), which
+  can only make a verdict not testable. A slip that is no near spelling of the expected answer or of an accepted form
+  stays another person: on a short name one letter of the surname falls under the similarity and outside the test of
+  initials ("Ziyu Mi" for Ziyu Ma, "Kuan La" for Kuan Li, both graded `incorrect`), and another romanisation is no near
+  spelling ("Zhiyu Lee", "Sen Hsu"). A distractor stays another person whatever its spelling: the paper grader grades it
+  `incorrect`. `_same_person`, which `offers_another` and so the adoption rules use, is unchanged: there a near spelling
+  is another person, since wrongly taking one person for two only asks the judges. For the open offers the same error is
+  the unsafe one: a name wrongly taken for another person is blanked, so an ungraded row that names the expected answer
+  only in it is no open offer, and a verdict may rest on a row that may be correct, while another person wrongly taken
+  for the expected answer can only make a verdict not testable. So "Dr. Zhang", "Professor Zhang", "the Zhang Group",
+  "Zhang et al.", "Wei Zhangg", a given name or a common surname alone, "I'm not sure. Wei Zhang?" and "It is not Y, it
+  is Zhang." name Wei Zhang, also next to another person ("The first author is Dr. Zhang, with Bo Li as senior
+  author."), and so do a doubt and a rejection ("I doubt it is X.", "It is not X."), while "The first author is Yutong
+  Mei.", "Is it Professor Yutong Mei?" and "Is it Yutong Mei?" do not name Lingrui Mei: the shared surname is another
+  person's. A misspelling that is no name the paper grader can place (a single capitalised word, "Dr. Guoo", or an
+  initial before or after a misspelt surname, "D. Guoo") names nobody here, as for the grading scope (`mentions_answer`
+  reads no misspelling): the paper rules leave "The first author is Dr. Guoo." to the judges and grade "I am not sure,
+  maybe Dr. Guoo." `abstain`, and an ungraded row with such an answer is no open offer. `offers_expected` is
+  `offers_answer` or `names_answer`.
 
 **report** (offline) joins plan and results (the last row per id). Rows whose `prompt_sha` differs from the plan's
 messages (`stale`), rows without provenance and rows of ids not in the plan (`foreign`, their cost reported separately)
@@ -543,8 +567,10 @@ rows would inflate every arm's rate and hide harm. It does not hold for an **ope
 it in any other form other than inside another person's name, `names_answer`, section 6: "Dr. Zhang", "Professor Zhang",
 "the Zhang Group", "Zhang et al.", a given name or a common surname alone, "X?", a near spelling such as "Wei Zhangg").
 It covers the grading scope of section 6 but for the answers whose only mention of the expected answer is another
-person's name, where a name the paper grader cannot place that writes the expected answer with a title or a group word,
-or in a near spelling the paper rules leave to the judges as a possible misspelling, is no other person's (section 6,
+person's name, where a name the paper grader cannot place that writes the expected answer with a word of the lists of
+`names_answer` (a title or a group word, "Professor Guo", "Visiting Professor Guo", "the Guo Group", or a word that
+opens a sentence, "Either Guo"), or in a near spelling of it or of an accepted form by the tests with which the paper
+rules leave a possible misspelling to the judges ("Daya Guoo", "Mei Lingrul"), is no other person's (section 6,
 `names_answer`); so whatever leaves such an answer open, the rules or a lost vote of the judges, it stays an open offer.
 The field reads widely, as `mentions` does: a doubt or a rejection names the expected answer too ("I doubt it is X.",
 "It is not X."), which can make a verdict not testable but never wrong. The rows the run leaves `ungraded` without
@@ -565,8 +591,13 @@ read as not naming the expected answer (a later `run` stores the field without a
 name the expected answer (it names nobody, or only another person) is almost surely a miss, so the primary analysis
 counts it as not correct, which is close to exact rather than conservative: in 1, 1b and 2 an ungraded `key` row counts
 against the key and one of the other arm for it, in 3a an ungraded `key` row counts for `full`, and in 4 an ungraded
-`key` row counts as harm and an ungraded `alone` row against it. The sensitivity line, with ungraded rows left out,
-shows the difference. Refusals are left out and counted.
+`key` row counts as harm and an ungraded `alone` row against it. Such a row may still be correct where `names_answer`
+takes the expected answer for another person (section 6): a name with a word the paper grader keeps in it that is on
+none of its lists ("Researcher Guo", "Dean Guo"), or a slip that is no near spelling of it or of an accepted form ("Ziyu
+Mi" for Ziyu Ma). With judges such an answer goes to the grading judges, and a lost vote leaves it a miss without a
+check of the open offers (the run and the report count it among the undecided answers); without judges the rules grade
+most of them `incorrect`, and the few they leave open ("Dean Guo" for Daya Guo, by their test of initials) count as
+misses. The sensitivity line, with ungraded rows left out, shows the difference. Refusals are left out and counted.
 
 ## 7. Pre-registered predictions (version 2, written before any real call)
 
@@ -606,24 +637,27 @@ How the report decides (written before any real call; "interim" and "not testabl
   the observed number of discordant pairs.
 - **Open offers** (predictions 1, 1b, 2, 3a and 4). An open offer is an answered `ungraded` row whose answer names
   the expected answer (`offers_expected`, section 6, primary analysis: it offers it, or names it in any other form
-  other than inside another person's name): it may well be correct, and the primary analysis counts it as a miss. A
-  name the paper grader cannot place that writes the expected answer with a title or a group word ("Professor Guo",
-  "the Guo Group"), or in a near spelling the paper rules leave to the judges as a possible misspelling ("Daya Guoo"),
-  is no other person's (section 6, `names_answer`). No verdict stands that the open offers, resolved against it, would
-  overturn; where they cannot change it, the verdict is the one the rules here give. Deciding an open offer can only
-  make its row correct, so each verdict is checked with the open offers of one side counted correct: a support only if
-  it still holds with the open offers of the arm it beats counted correct (b can only fall and c rise), a refutation or
-  "not supported" only if it still holds with the open offers of the tested arm counted correct (b can only rise and c
-  fall); otherwise the verdict is "not testable (undecided answers; grade with --judges)". An inconclusive verdict stays
-  inconclusive; the floor, and in 3a the 20 % limit, come first. Without judges open offers arise where the rules doubt
-  their `incorrect` ("It is not Y, it is X."), where they cannot grade an answer that names the expected answer ("It
-  might be X.", "Zhang et al.", "X?", a near spelling), and on `full` rows of `dark` and `both_right` whose right name
-  they leave to the judges; with `--judges` only where the judges' votes failed, tied or gave no verdict on an answer
-  that names the expected answer (the grading judges' on an answer the rules could not grade or graded against the
-  expected answer, the grading scope, unless its only mention of the expected answer is inside another person's name;
-  the adoption judges' on the right name of a `full` row; a rerun with `--judges` asks again). Each prediction's
-  evidence prints the open offers per arm. 3b reads adoption, not the grade; its undecided rows have their own check
-  (prediction 3).
+  other than inside another person's name): it may well be correct, and the primary analysis counts it as a miss. A name
+  the paper grader cannot place that writes the expected answer with a word of the lists of section 6 (a title or a
+  group word, "Professor Guo", "Visiting Professor Guo", "the Guo Group", or a word that opens a sentence, "Either
+  Guo"), or in a near spelling of it or of an accepted form by the tests with which the paper rules leave a possible
+  misspelling to the judges ("Daya Guoo", "Mei Lingrul"), is no other person's (section 6, `names_answer`); with any
+  other word the paper grader keeps in it ("Researcher Guo"), or in a slip that is no such near spelling ("Ziyu Mi" for
+  Ziyu Ma), it stays another person's, and a lost vote on such an answer counts as a miss. No verdict stands that the
+  open offers, resolved against it, would overturn; where they cannot change it, the verdict is the one the rules here
+  give. Deciding an open offer can only make its row correct, so each verdict is checked with the open offers of one
+  side counted correct: a support only if it still holds with the open offers of the arm it beats counted correct (b can
+  only fall and c rise), a refutation or "not supported" only if it still holds with the open offers of the tested arm
+  counted correct (b can only rise and c fall); otherwise the verdict is "not testable (undecided answers; grade with
+  --judges)". An inconclusive verdict stays inconclusive; the floor, and in 3a the 20 % limit, come first. Without
+  judges open offers arise where the rules doubt their `incorrect` ("It is not Y, it is X."), where they cannot grade an
+  answer that names the expected answer ("It might be X.", "Zhang et al.", "X?", a near spelling), and on `full` rows of
+  `dark` and `both_right` whose right name they leave to the judges; with `--judges` only where the judges' votes
+  failed, tied or gave no verdict on an answer that names the expected answer (the grading judges' on an answer the
+  rules could not grade or graded against the expected answer, the grading scope, unless its only mention of the
+  expected answer is inside another person's name; the adoption judges' on the right name of a `full` row; a rerun with
+  `--judges` asks again). Each prediction's evidence prints the open offers per arm. 3b reads adoption, not the grade;
+  its undecided rows have their own check (prediction 3).
 
 1. Supported if `key` vs `alone` and `key` vs `wrong_key` are both supported (margin 0.10); not supported if either is
    refuted; not testable if either is; else inconclusive. Each comparison is checked against the open offers first
@@ -866,11 +900,15 @@ rows "an open offer in any form" and "answers the judges left undecided": an ope
 names the expected answer other than inside another person's name, also one whose grading vote the judges lost, and
 the run and the report count the answers the judges' votes left undecided. It corrected two rows of the check in place:
 "the grading scope" (a second run with the same `--judges` sends nothing only once the judges have decided every row in
-their scope) and "open offers" (what `offers_expected` holds). A check of that review's changes added the last row,
+their scope) and "open offers" (what `offers_expected` holds). A check of that review's changes added the row
 "another person's name": a name the paper grader cannot place that writes the expected answer with a title or a group
-word, or in a near spelling the paper rules leave to the judges as a possible misspelling, is no other person's, so an
-ungraded answer that names the expected answer only so is an open offer; `_same_person` and the adoption rules are
-unchanged. In every review the 746 planned calls stayed the same, ids and messages byte for byte.
+word, or in a near spelling of it or of an accepted form by the paper grader's tests of a possible misspelling, is no
+other person's, so an ungraded answer that names the expected answer only so is an open offer; `_same_person` and the
+adoption rules are unchanged. A review of that check's changes added the last two rows, "words that are no name" and
+"an accepted form with an initial": a title drops the words before it, the list holds more titles, a word that opens
+a sentence is no name, and a form that writes the given name only as an initial counts only for a name that writes
+none itself; it corrected the row "another person's name" in place (what the paper grader's test of initials
+accepts). In every review the 746 planned calls stayed the same, ids and messages byte for byte.
 
 | issue | before | now |
 |---|---|---|
@@ -932,4 +970,6 @@ unchanged. In every review the 746 planned calls stayed the same, ids and messag
 | the position of the cap's overshoot | section 9, its row "the cap's overshoot", the README and the `--max-cost` help qualified the bound of 1.64 USD by the position of the call that reaches the cap ("0.65 while the cap is reached before the last 7 calls of the first Sol block, 0.81 before the last 7 calls of the Neon 231 block", "from the 664th of the 746 calls on a Fable call can be in flight", "0.81 if the cap is reached before the 664th call"): no bounds, since the cap is checked only before an item starts, spending counts when a row is written, and a slow call keeps its slot while later calls start and finish in the other seven (a Sol call, the 101st, reaching the cap with 7 Neon calls in flight: 0.78 USD above it; a Neon call, the 601st, with 7 Fable calls in flight: 1.53) | the qualifiers name what has started, since calls start in the plan's order: at the default of 8 the run ends at most about 0.65 USD above the cap when the cap is reached before the first Neon call has started (the 440th), 0.81 before the first Fable call has started (the 671st), and 1.64 otherwise; the per-item bounds stand, since an item still asks each judge at most once for the grade and once for adoption |
 | an open offer in any form | an open offer was an ungraded row whose answer `offers_answer` reads as offering the expected answer (its full form, a distinctive surname alone or an accepted form of two words or more, asserted), so an answer that names it in another form was none: "Dr. Zhang", "Zhang et al.", a given name or a common surname alone, "I'm not sure. X?" (without judges the paper rules leave "Zhang et al." open on 81 of the 107 events with an expected answer and the question on all 107), although with `--judges` the grading judges decide exactly those answers (the grading scope); a lost vote (a failed call, a tie, or a reply without a verdict) left such a row ungraded and counted as a miss with no check and no flag: 2 lost votes of 20 on `both_right` key rows "It is not Y, it is Daya." made 4 not supported, 1 on a decisive-pair key row made 1 and 1b not supported (b 3 to 2 of 71), 7 on keyed-pair key rows "It is not Y, it is Dr. Zhang." made 3a supported; without judges, decisive-pair key rows "Zhang et al." made 1 and 1b not supported, `both_right` alone rows "I'm not sure. X?" made 4 supported, and 92 `dark` key rows "I think it's Zhang, but I'm not sure." made 3a supported; section 6 called an ungraded `key` row that offers no expected answer a conservative miss, although in 3a it counts for `full` and in 4 as harm | `offers_expected` is `offers_answer` or `names_answer`: `mentions_answer` (the grading scope's reading) of the answer once every name in it that the paper grader cannot place, and every distractor, is blanked where it writes another person, so every form the grading scope reads counts but a mention inside another person's name ("Yutong Mei" for Lingrui Mei, the replay's false mentions; "Zhaoyang Li" for Zhiyu Li); a doubt or a rejection counts too ("I doubt it is X."), which can make a verdict not testable but never wrong; every scenario above reads not testable; the stored replay keeps its open offers (20 with every judge call failing) and its verdicts, and the mock runs their rows; a resumed run refreshes the field without a call; section 6 says how an ungraded row that does not name the expected answer counts in each prediction |
 | answers the judges left undecided | a reply without a verdict (an HTTP 200 from which no vote can be read) is no failed judge call: the run printed only the tally and exited 0, and the report raised no flag below 10 % ungraded rows per arm, so lost votes could decide a verdict unnoticed | the run counts the current answers whose grade or label the judges' votes left undecided (a failed call, a tie or a reply without a verdict) and prints them, to be graded again with `--judges` before reporting; the report counts them in its totals and flags them; the exit statuses are unchanged |
-| another person's name | `names_answer` blanked every name the paper grader cannot place that writes a person other than the expected answer by the rule `offers_another` uses (`_same_person`: a near spelling is another person), and so two kinds of names that write the expected answer: a title or a group word that the paper grader keeps inside the name, since it is none of its stop words ("Professor Guo", "Doctor Guo", "the Guo Group" for Daya Guo; "Dr.", "Prof.", "Lab" and "Team" it drops itself), and a near spelling that the paper rules themselves leave to the judges as a possible misspelling ("Daya Guoo", "Day Guo", "Matthew Kowall"); with `--judges` such answers go to the grading judges, but a lost vote, or without judges a near spelling the rules leave open, left the row `ungraded` with `offers_expected` false, a miss with no check of the open offers (only the flag of the undecided votes): 2 lost votes on `both_right` key rows "The first author is Professor Guo." made 4 not supported with 0 open offers, with every grading vote lost 92 `dark` key rows "The first author is Professor <surname>." made 3a supported (b = 92, c = 0) with 0 open offers, and without judges 116 `dark` key rows that double the surname's last letter made 3a supported with 0 open offers; section 6 and the README claimed that only a mention inside another person's name was no open offer | a name that is not a distractor writes the expected answer also where it does once its title and group words are dropped (professor, doctor, miss, mx, sir, dame, lady, lord, madam, group, coworkers and the German herr, frau, doktor, professorin, gruppe, arbeitsgruppe among them; a possessive "'s" cut), and where it is a near spelling of the expected answer or of an accepted form of two words or more: a possible misspelling by the paper grader's similarity of at least 0.85 or by the same given name with the same first four surname letters, or by its test of initials one slip away ("Ziyo Ma" for Ziyu Ma); a name only that test accepts stays another person more than a slip away ("Zhaoyang Li" for Zhiyu Li: the test reads any given name as initials), and so do "Yutong Mei", "Zeyu Hu", "Zichen Liu", "KunChang Li" and every distractor; `_same_person` and the adoption rules are unchanged (there taking one person for two only asks the judges, while for the open offers it is the unsafe error); the three scenarios read not testable, with 2, 92 and 116 open offers; the stored replay keeps its 20 open offers with every judge call failing and its verdicts, the mock runs write the same rows (126 open offers with judges), and of the 57 stored answers the rules leave undecided none is an open offer; a resumed run refreshes `offers_expected` without a call; section 6 states the limit of the path without judges (a rule `incorrect` of an answer that names the expected answer in a form `offers_answer` does not accept stays final: "It is not Y, it is Dr. Zhang.", "The first author is Professor Guo.") and that a misspelling which is no name the paper grader can place ("Dr. Guoo") names nobody |
+| another person's name | `names_answer` blanked every name the paper grader cannot place that writes a person other than the expected answer by the rule `offers_another` uses (`_same_person`: a near spelling is another person), and so two kinds of names that write the expected answer: a title or a group word that the paper grader keeps inside the name, since it is none of its stop words ("Professor Guo", "Doctor Guo", "the Guo Group" for Daya Guo; "Dr.", "Prof.", "Lab" and "Team" it drops itself), and a near spelling that the paper rules themselves leave to the judges as a possible misspelling ("Daya Guoo", "Day Guo", "Matthew Kowall"); with `--judges` such answers go to the grading judges, but a lost vote, or without judges a near spelling the rules leave open, left the row `ungraded` with `offers_expected` false, a miss with no check of the open offers (only the flag of the undecided votes): 2 lost votes on `both_right` key rows "The first author is Professor Guo." made 4 not supported with 0 open offers, with every grading vote lost 92 `dark` key rows "The first author is Professor <surname>." made 3a supported (b = 92, c = 0) with 0 open offers, and without judges 116 `dark` key rows that double the surname's last letter made 3a supported with 0 open offers; section 6 and the README claimed that only a mention inside another person's name was no open offer | a name that is not a distractor writes the expected answer also where it does once its title and group words are dropped (professor, doctor, miss, mx, sir, dame, lady, lord, madam, group, coworkers and the German herr, frau, doktor, professorin, gruppe, arbeitsgruppe among them; a possessive "'s" cut), and where it is a near spelling of the expected answer or of an accepted form of two words or more: a possible misspelling by the paper grader's similarity of at least 0.85 or by the same given name with the same first four surname letters, or by its test of initials one slip away ("Ziyo Ma" for Ziyu Ma); a name only that test accepts stays another person more than a slip away ("Zhaoyang Li" for Zhiyu Li: the test reads an expected given name without a hyphen as a string of initials), and so do "Yutong Mei", "Zeyu Hu", "Zichen Liu", "KunChang Li" and every distractor; `_same_person` and the adoption rules are unchanged (there taking one person for two only asks the judges, while for the open offers it is the unsafe error); the three scenarios read not testable, with 2, 92 and 116 open offers; the stored replay keeps its 20 open offers with every judge call failing and its verdicts, the mock runs write the same rows (126 open offers with judges), and of the 57 stored answers the rules leave undecided none is an open offer; a resumed run refreshes `offers_expected` without a call; section 6 states the limit of the path without judges (a rule `incorrect` of an answer that names the expected answer in a form `offers_answer` does not accept stays final: "It is not Y, it is Dr. Zhang.", "The first author is Professor Guo.") and that a misspelling which is no name the paper grader can place ("Dr. Guoo") names nobody |
+| words that are no name | `_another_person` dropped only the listed honorific, title and group words, so any other capitalised word the paper grader keeps in a name with the surname made it another person's name: a word before a listed title ("Visiting Professor Guo", "Distinguished", "Adjunct" or "Full Professor Guo"), a title off the list ("Lecturer Guo", "Herrn Guo", "Monsieur Guo", "Professeur Guo", and "Director Guo", which the paper rules leave open even without judges, by their test of initials) and a word that opens the sentence ("Either Guo or Wang", "Clearly Guo wrote it", "Hmm Guo, maybe?"); each such answer could end ungraded with `offers_expected` false on 81 of the 107 events with an expected answer, a miss with no check of the open offers once a vote was lost: 2 lost votes on `both_right` key rows "The first author is Visiting Professor Guo." made 4 not supported with 0 open offers, with every grading vote lost 92 `dark` key rows "The first author is Visiting Professor <surname>." made 3a supported (b = 92, c = 0) with 0 open offers; the README's status line and section 7 claimed this for any title | a title or group word drops every word before it that a name follows (the words of a title), the list holds more titles (lecturer(s), director, the German herrn, dozent(in), privatdozent(in) and juniorprofessor(in), and French, Spanish and Italian ones), and a word that opens a sentence (the masking's capitalised words of section 5 and fourteen adverbs and "hmm") is dropped at the start of a name; each such form names the expected answer on all 107 events, the two scenarios read not testable, with 2 and 92 open offers; any other word the paper grader keeps in a name ("Researcher Guo", or a given name: "Dean Guo") and a slip that is no near spelling ("Ziyu Mi" for Ziyu Ma, graded `incorrect`) still make it another person's: with every grading vote lost on such slips, 11 `dark` key rows of 7 events with a short name make 3a supported with 0 open offers; section 6, section 7 and the README say so, and the README's status line names the lists and these limits |
+| an accepted form with an initial | `_another_person` read a near spelling of every accepted form of two words or more as the expected answer, also of a form that writes the given name only as an initial ("D. Guo", "Guo D."), and against such a short form the paper grader's similarity of 0.85 accepts a different short given name with the expected initial: on all 107 events a two-letter given name with the expected initial read as the expected answer ("Yu Zhang" for Yujia Zhang, "Bo Wang" for Bin Wang, "Di Guo" for Daya Guo, "Lu Mei" for Lingrui Mei), also one the paper rules grade `incorrect` ("Gao Huang" for Ailin Huang, of "A. Huang"), and so were authors of `papers_meta.jsonl` ("Yi Zhang", "Yu Zhang" and "Yue Zhang" for Yujia Zhang, "Jie Zhang" and "Jun Zhang" for Jintao Zhang, "Ke Li" for Kuan Li); section 6, the row "another person's name" and the README said that such a name stays another person and that every near spelling is one the paper rules leave to the judges, and they described the test of initials too broadly ("it reads any given name as initials") | a form that writes the given name only as an initial counts only for a name that writes no given name or only initials itself ("Professor Gur-Ariehh" for Yoav Gur-Arieh), so the names above are another person again, and so is, on each of the 104 events whose expected given name has more than two letters, a two-letter given name with the expected initial that is no near spelling of the expected answer or of a form written out, while a near spelling of the expected answer itself still counts ("Yi Zhao" for Yu Zhao, one slip away; "Kun Li" for Kuan Li, a similarity of 0.909) and so does one of a form written out ("Yang Yue" for Yuxue Yang, of "Yang Yuxue"); section 6 says that a near spelling of an accepted form written out counts although the paper grader compares a name with the expected answer only ("Mei Lingrul" for Lingrui Mei is graded `incorrect`), that another person these tests accept is read as the expected answer ("Ziyi Ma" for Ziyu Ma, "Zhiyuan Li" for Zhiyu Li), which can only make a verdict not testable, and what the test of initials accepts (it reads an expected given name without a hyphen as a string of initials: every given name of one unhyphenated word with the expected initial, "Zhaoyang Li" for Zhiyu Li, not "Zhao Yang Li", and none for a hyphenated given name, "Shih-Yang Liu"); the README says which different given names stay another person |

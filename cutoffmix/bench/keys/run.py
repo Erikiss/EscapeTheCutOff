@@ -28,13 +28,13 @@
   reply without a verdict, leaves the answer ``ungraded`` (``RunOutcome.judges_undecided`` counts the answers the
   judges' votes left undecided). Every answered row of an event with an expected answer stores whether the answer
   names it (``offers_expected``: ``text.offers_answer``, or ``text.names_answer``, any form ``text.mentions_answer``
-  reads other than inside another person's name, where a name with a title or a group word, "Professor Zhang", or a
-  near spelling the paper rules leave to the judges is the expected answer's; None for refusals, errors and
-  controls): the report's open offers are the ungraded ones that do. A stored answer is graded again from its stored
-  response, without a new recipient call, when the rules grade it otherwise now (a stored grade of the grading judges
-  stands), when its ``offers_expected`` is missing or out of date, and, with judges, when it is ungraded, when its
-  rule grade is in the grading judges' scope now, when its label is still undecided, and when the rules decided a
-  label that is now the judges' (below).
+  reads other than inside another person's name, where a name with a word of the lists of ``text._another_person``
+  ("Professor Zhang", "Visiting Professor Zhang", "Either Zhang") or in a near spelling ("Wei Zhangg") is the expected
+  answer's; None for refusals, errors and controls): the report's open offers are the ungraded ones that do. A stored
+  answer is graded again from its stored response, without a new recipient call, when the rules grade it otherwise now
+  (a stored grade of the grading judges stands), when its ``offers_expected`` is missing or out of date, and, with
+  judges, when it is ungraded, when its rule grade is in the grading judges' scope now, when its label is still
+  undecided, and when the rules decided a label that is now the judges' (below).
 - The judges' scope: with judges, the adoption judges decide every labelled answer that mentions the name it is
   measured against, whatever the rules would decide: every ``correct`` ``full`` row of ``dark`` and ``both_right``,
   and every row of ``donor_wrong`` and ``control`` whose label is endorsed or reported or whose answer names the
@@ -858,9 +858,10 @@ def _offers_expected(event: Event, response: str) -> bool | None:
     al.", a given name or a common surname alone, "X?", also a doubt or a rejection; not "Yutong Mei" for Lingrui
     Mei); None for a control (no expected answer). It covers the grading scope (:func:`_judges_grade`) but for the
     answers whose only mention of the expected answer is another person's name, so a grading vote the judges lose
-    leaves an open offer. A name with a title or a group word the paper grader keeps in it ("Professor Zhang", "the
-    Zhang Group"), or a near spelling the paper rules leave to the judges as a possible misspelling ("Wei Zhangg"), is
-    no other person's: the open offers take one person for two less readily than the adoption rules do
+    leaves an open offer. A name with a title, a group word or an opening word of the lists of ``text._another_person``
+    ("Professor Zhang", "Visiting Professor Zhang", "the Zhang Group", "Either Zhang"), or a near spelling of the
+    expected answer or of an accepted form by the paper rules' tests of a possible misspelling ("Wei Zhangg"), is no
+    other person's: the open offers take one person for two less readily than the adoption rules do
     (``text._another_person``), since a row wrongly read as naming only another person is counted as a miss without a
     check. The report reads an ``ungraded`` row with True as an open offer."""
     if event.control or not (event.expected_current or "").strip():

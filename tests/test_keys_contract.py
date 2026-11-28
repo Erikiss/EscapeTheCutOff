@@ -586,7 +586,7 @@ def test_the_grading_scope_and_the_open_offers_have_their_figures(priced):
     assert f"In der Nachrechnung kostet das {n_extra} Judge-Aufrufe mehr" in text_de
     assert f"Von den {len(undecided)} gespeicherten Antworten, die die Regeln offen lassen, bietet keine die " \
         "richtige Antwort an." in text_de
-    assert "nach neun Prüfrunden" in text_de                                  # check of 8739803: nine rounds
+    assert "nach zehn Prüfrunden" in text_de                                  # review of 4fd7637: ten rounds
 
 
 ARMS_DARK = ("alone", "key", "full", "wrong_key", "blank")
@@ -689,7 +689,9 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     without judges", and the bound in "the cap's overshoot", whose figures are pinned here. The check of 8cc83c5 added
     the last three (the grading scope, open offers, the position of the cap's overshoot) and corrected two rows in
     place: the correction's claim about 3a, and the overshoot's qualifiers. The review of b86d67f added two (an open
-    offer in any form, answers the judges left undecided), the check of 8739803 the last (another person's name)."""
+    offer in any form, answers the judges left undecided), the check of 8739803 one (another person's name), and the
+    review of 4fd7637 the last two (words that are no name, an accepted form with an initial), correcting the row of
+    the check in place (what the paper grader's test of initials accepts)."""
     text = DESIGN.read_text("utf-8")
     table = text[text.index("### Refinements during the implementation review"):]
     titles = [line.split(" | ")[0].removeprefix("| ") for line in table.splitlines() if line.startswith("| ")][1:]
@@ -700,7 +702,8 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     latest = ["the grading scope", "open offers", "the position of the cap's overshoot"]
     newest = ["an open offer in any form", "answers the judges left undecided"]          # review of b86d67f
     person = ["another person's name"]                                                  # check of 8739803
-    assert titles[-14:] == check + review + latest + newest + person
+    words = ["words that are no name", "an accepted form with an initial"]                # review of 4fd7637
+    assert titles[-16:] == check + review + latest + newest + person + words
     seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
     assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
     intro = " ".join(table[: table.index("| issue | before | now |")].split())
@@ -717,9 +720,14 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     assert "It corrected two rows of the check in place: \"the grading scope\" (a second run with the same " \
         "`--judges` sends nothing only once the judges have decided every row in their scope) and \"open offers\" " \
         "(what `offers_expected` holds)" in intro
-    assert "A check of that review's changes added the last row, \"another person's name\": a name the paper grader " \
-        "cannot place that writes the expected answer with a title or a group word, or in a near spelling the paper " \
-        "rules leave to the judges as a possible misspelling, is no other person's" in intro
+    assert "A check of that review's changes added the row \"another person's name\": a name the paper grader " \
+        "cannot place that writes the expected answer with a title or a group word, or in a near spelling of it or " \
+        "of an accepted form by the paper grader's tests of a possible misspelling, is no other person's" in intro
+    assert "A review of that check's changes added the last two rows, \"words that are no name\" and \"an accepted " \
+        "form with an initial\": a title drops the words before it, the list holds more titles, a word that opens a " \
+        "sentence is no name, and a form that writes the given name only as an initial counts only for a name that " \
+        "writes none itself; it corrected the row \"another person's name\" in place (what the paper grader's test " \
+        "of initials accepts)" in intro
     assert "It corrected two rows in place as well: \"a correction of another name, on every arm\"" in intro
     assert "and \"the cap's overshoot\" (its qualifiers)" in intro
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
@@ -929,10 +937,14 @@ def test_an_open_offer_is_an_ungraded_answer_that_names_the_expected_answer(pric
     assert "while an ungraded `key` row that does not name it, or names it only inside another person's name, counts " \
         "as not correct and so for `full`, as in the primary analysis" in seven
     text_de = readme()
-    assert "Kein Urteil stützt sich auf unbewertete Antworten, die die richtige Antwort nennen, auch mit Titel " \
-        "(„Professor Guo“) oder im vollen Namen leicht verschrieben („Daya Guoo“), ob die Regeln sie offen lassen " \
-        "oder die Stimme des Judge ausfiel; nur eine Nennung im Namen einer anderen Person zählt nicht („Yutong Mei“ " \
-        "bei Lingrui Mei)." in text_de                                        # check of 8739803: those forms too
+    assert "Kein Urteil stützt sich auf unbewertete Antworten, die die richtige Antwort nennen, ob die Regeln sie " \
+        "offen lassen oder die Stimme des Judge ausfiel, auch mit einem Titel wie „Professor“ („Professor Guo“) oder " \
+        "leicht verschrieben nach dem Maß, mit dem die Bewertung eine mögliche Verschreibung dem Judge überlässt " \
+        "(„Daya Guoo“; auch bei einer angenommenen Form wie „Mei Lingrui“); nur eine Nennung im Namen einer anderen " \
+        "Person zählt nicht („Yutong Mei“ bei Lingrui Mei), und als Name einer anderen Person gilt auch ein Name mit " \
+        "einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), sowie eine Verschreibung jenseits " \
+        "dieses Maßes („Ziyu Mi“ bei Ziyu Ma)." in text_de                  # review of 4fd7637: the lists, the limits
+    assert "auch mit Titel („Professor Guo“) oder im vollen Namen leicht verschrieben" not in text_de
     assert "obwohl sie die richtige Antwort anbieten. Der Pilot" not in text_de
     assert "unbewertete Antworten, die die richtige Antwort nennen (unten)" in text_de
     assert "Jetzt ist jede unbewertete Antwort, die die richtige Antwort in irgendeiner Form nennt, ein offenes " \
@@ -1041,19 +1053,22 @@ def test_another_persons_name_has_its_figures(priced, failing_replay, mock_judge
         "for Ziyu Ma)" in row
     assert "`_same_person` and the adoption rules are unchanged" in row
     six, seven = section(6), section(7)
-    assert f"(`grading._near_name`) by its letters-only similarity of at least {_NEAR_NAME_RATIO} (\"Daya Guoo\", " \
-        "\"Day Guo\") or by the same given name with the same first four surname letters (\"Matthew Kowalewski\" " \
-        "for Matthew Kowal), or by its test of initials one slip away" in six
+    assert "A near spelling is a name that `grading._near_name`, with which the paper grader leaves an answer naming " \
+        "a name near the expected answer to the judges as a possible misspelling, accepts by its letters-only " \
+        f"similarity of at least {_NEAR_NAME_RATIO} (\"Daya Guoo\", \"Day Guo\") or by the same given name with the " \
+        "same first four surname letters (\"Matthew Kowalewski\" for Matthew Kowal), or by its test of initials one " \
+        "slip away" in six
     from cutoffmix.bench.grading import _compact, _near_name
     for name, form, similar in (("Daya Guoo", "Daya Guo", True), ("Day Guo", "Daya Guo", True),
                                 ("Matthew Kowalewski", "Matthew Kowal", False), ("Ziyo Ma", "Ziyu Ma", False)):
         ratio = difflib.SequenceMatcher(None, _compact(name), _compact(form)).ratio()
         assert _near_name(name, form) and (ratio >= _NEAR_NAME_RATIO) is similar, name
-    assert "A name that is not a distractor must also pass these tests once its honorific, title and group words are " \
+    assert "A name that is not a distractor must also pass these tests once the words in it that are no name are " \
         "dropped, and be no near spelling of the expected answer or of an accepted form of two words or more" in six
-    listed = six[six.index("The words: ") + len("The words: "): six.index(", compared on their letters")]
+    head = "The honorific, title and group words: "
+    listed = six[six.index(head) + len(head): six.index(", compared on their letters")]
     words = set()
-    for word in re.split(r",\s*(?:and the German\s+|and\s+)?|\s+and\s+", listed):
+    for word in re.split(r",\s*(?:(?:and )?the (?:German|French|Spanish|Italian)\s+|and\s+)?|\s+and\s+", listed):
         base, _, tail = word.strip().partition("(")
         words |= {base, base + tail.rstrip(")")} if tail else {base}
     assert words == set(_HONORIFICS)
@@ -1067,23 +1082,187 @@ def test_another_persons_name_has_its_figures(priced, failing_replay, mock_judge
     assert not names_answer("The first author is Dr. Guoo.", event)
     assert "the paper rules leave \"The first author is Dr. Guoo.\" to the judges and grade \"I am not sure, maybe " \
         "Dr. Guoo.\" `abstain`, and an ungraded row with such an answer is no open offer" in six
-    assert "where a name the paper grader cannot place that writes the expected answer with a title or a group word, " \
-        "or in a near spelling the paper rules leave to the judges as a possible misspelling, is no other person's " \
-        "(section 6, `names_answer`)" in six
-    assert "A name the paper grader cannot place that writes the expected answer with a title or a group word " \
-        "(\"Professor Guo\", \"the Guo Group\"), or in a near spelling the paper rules leave to the judges as a " \
-        "possible misspelling (\"Daya Guoo\"), is no other person's (section 6, `names_answer`)." in seven
+    assert "where a name the paper grader cannot place that writes the expected answer with a word of the lists of " \
+        "`names_answer` (a title or a group word, \"Professor Guo\", \"Visiting Professor Guo\", \"the Guo Group\", " \
+        "or a word that opens a sentence, \"Either Guo\"), or in a near spelling of it or of an accepted form by " \
+        "the tests with which the paper rules leave a possible misspelling to the judges (\"Daya Guoo\", " \
+        "\"Mei Lingrul\"), is no other person's (section 6, `names_answer`)" in six
+    assert "A name the paper grader cannot place that writes the expected answer with a word of the lists of " \
+        "section 6 (a title or a group word, \"Professor Guo\", \"Visiting Professor Guo\", \"the Guo Group\", or a " \
+        "word that opens a sentence, \"Either Guo\"), or in a near spelling of it or of an accepted form by the " \
+        "tests with which the paper rules leave a possible misspelling to the judges (\"Daya Guoo\", " \
+        "\"Mei Lingrul\"), is no other person's (section 6, `names_answer`); with any other word the paper grader " \
+        "keeps in it (\"Researcher Guo\"), or in a slip that is no such near spelling (\"Ziyu Mi\" for Ziyu Ma), it " \
+        "stays another person's, and a lost vote on such an answer counts as a miss." in seven
     text_de = readme()
     numbers = {2: "Zwei", 3: "Drei", 4: "Vier"}
     assert f"{numbers[daya]} ausgefallene Stimmen bei „Der Erstautor ist Professor Guo.“ unter den {both_key} " \
         "`key`-Antworten von `both_right` machten Vorhersage 4 zu „nicht gestützt“" in text_de
     assert f"ohne Judge machten {len(dark_key)} `key`-Antworten bei `dark`, deren Nachname einen verdoppelten " \
         "letzten Buchstaben hat, Vorhersage 3a zu „gestützt“, beide Male ohne ein einziges offenes Angebot" in text_de
-    assert "Ein anderer Vorname mit demselben Nachnamen bleibt eine andere Person („Zhaoyang Li“ bei Zhiyu Li)" in \
-        text_de
+    assert "Ein anderer Vorname mit demselben Nachnamen bleibt eine andere Person, wenn die Bewertung ihn nur wegen " \
+        "desselben Anfangsbuchstabens offen lässt und er mehr als einen Buchstaben abweicht („Zhaoyang Li“ bei Zhiyu " \
+        "Li), ebenso jede falsche Antwortmöglichkeit der Frage; ein ähnlicher Vorname („Ziyi Ma“ bei Ziyu Ma, " \
+        "„Zhiyuan Li“ bei Zhiyu Li) gilt als die richtige Antwort, was ein Urteil höchstens nicht testbar macht." in \
+        text_de                                                               # review of 4fd7637: which ones
     assert "Ein verschriebener Nachname allein („Dr. Guoo“) ist dagegen für die Bewertung kein Name und zählt weiter " \
         "nicht als Nennung der richtigen Antwort." in text_de
     assert "Ohne Judge bleibt eine bekannte Grenze: Ein „falsch“ der Regeln für eine Antwort, die die richtige " \
         "Antwort in einer Form nennt, die die Regel von `offers` nicht annimmt („Es ist nicht Y, es ist Dr. " \
         f"Zhang.“), bleibt endgültig; der Pilot läuft mit Judge. Bei den gespeicherten Antworten ändert sich nichts. " \
         f"Die {len(plan)} geplanten Aufrufe sind dieselben geblieben." in text_de and len(plan) == 746
+
+
+# ---- review of 4fd7637 ---------------------------------------------------------------------------------------------
+
+
+def test_the_words_that_are_no_name_and_the_forms_with_an_initial_have_their_figures(priced):
+    """The review of 4fd7637: any word the paper grader keeps in a name but the listed ones made the name another
+    person's (a word before a title, a title off the list, a word that opens the sentence), and a near spelling of a
+    form with an initial took a different short given name for the expected answer. The figures of the two rows in
+    section 10, of section 6 and of the README follow from the plan and the code; the count words the check added are
+    pinned (two exceptions, two neighbours swapped, one letter of a short name, two words, two kinds, one gap, two
+    forms, both cases)."""
+    import difflib
+    import re
+
+    from cutoffmix.bench.grading import (
+        _NAME_STOP,
+        _NEAR_NAME_RATIO,
+        _compact,
+        _near_name,
+        _unknown_names,
+    )
+    from cutoffmix.bench.keys.run import _offers_expected, _rule_grade
+    from cutoffmix.bench.keys.text import (
+        _HONORIFICS,
+        _OPENING_WORDS,
+        _SENTENCE_OPENERS,
+        _another_person,
+        _near_spelling,
+        _one_slip,
+        _same_person,
+        _writes_given_name,
+        offers_answer,
+    )
+
+    plan, events = priced["plan"], priced["events"]
+    named = sorted((events[e] for e in {p["event_id"] for p in plan}
+                    if not events[e].control and (events[e].expected_current or "").strip()), key=lambda e: e.id)
+    daya = events["paper:2401.14196"]
+    lost = sum(1 for p in plan if p["set"] == "both_right" and p["arm"] == "key" and p["event_id"] == daya.id)
+    dark_key = [p for p in plan if p["set"] == "dark" and p["arm"] == "key"]
+
+    def visiting(event):
+        return f"The first author is Visiting Professor {event.expected_current.split()[-1]}."
+    titled = sum(1 for p in dark_key if _rule_grade(events[p["event_id"]], visiting(events[p["event_id"]]),
+                                                    judges=True) is None)
+    open_81 = sum(1 for e in named if not offers_answer(visiting(e), e) and _rule_grade(e, visiting(e), judges=True)
+                  is None)
+    assert (len(named), lost, titled, open_81) == (107, 2, 92, 81)
+    assert all(_offers_expected(e, visiting(e)) for e in named)
+    adverbs = _OPENING_WORDS - {re.sub(r"[^a-z0-9]", "", w) for w in _SENTENCE_OPENERS}
+    assert len(adverbs) == 15 and "hmm" in adverbs
+
+    # the slips that are no near spelling: the short names of the listed limit
+    def slip(event):
+        x = event.expected_current
+        g, s = " ".join(x.split()[:-1]), x.split()[-1]
+        for i in range(len(s) - 1, 0, -1):
+            for c in "aeiou":
+                cand = f"{g} {s[:i]}{c}{s[i + 1:]}"
+                text = f"The first author is {cand}."
+                if c != s[i] and _unknown_names(text, event) and not _near_name(cand, x) and \
+                        not _offers_expected(event, text):
+                    return cand
+        return None
+    dark_events = {p["event_id"] for p in dark_key}
+    slipped = {e: slip(events[e]) for e in dark_events if slip(events[e])}
+    slip_rows = sum(1 for p in dark_key if p["event_id"] in slipped)
+    assert (len(slipped), slip_rows) == (7, 11)
+
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
+    words = rows["words that are no name"]
+    assert f"each such answer could end ungraded with `offers_expected` false on {open_81} of the {len(named)} " \
+        "events with an expected answer" in words
+    assert f"{lost} lost votes on `both_right` key rows \"The first author is Visiting Professor Guo.\" made 4 not " \
+        f"supported with 0 open offers, with every grading vote lost {titled} `dark` key rows \"The first author is " \
+        f"Visiting Professor <surname>.\" made 3a supported (b = {titled}, c = 0) with 0 open offers" in words
+    assert f"each such form names the expected answer on all {len(named)} events, the two scenarios read not " \
+        f"testable, with {lost} and {titled} open offers" in words
+    assert "(the masking's capitalised words of section 5 and fourteen adverbs and \"hmm\")" in words
+    assert f"with every grading vote lost on such slips, {slip_rows} `dark` key rows of {len(slipped)} events with a " \
+        "short name make 3a supported with 0 open offers" in words
+    initial = rows["an accepted form with an initial"]
+    short = [e for e in named if len(" ".join(e.expected_current.split()[:-1])) == 2]
+    assert f"on all {len(named)} events a two-letter given name with the expected initial read as the expected " \
+        "answer" in initial
+    assert f"and so is, on each of the {len(named) - len(short)} events whose expected given name has more than two " \
+        "letters, a two-letter given name with the expected initial" in initial and len(short) == 3
+    for event in named:                                                 # each event has such a name 4fd7637 took
+        x = event.expected_current
+        g, s = " ".join(x.split()[:-1]), x.split()[-1]
+        forms = [f for f in dict.fromkeys([x, *event.aliases]) if len(f.split()) >= 2 and not _writes_given_name(f)]
+        assert any(_unknown_names(f"It is {g[0]}{v} {s}.", event) and any(_near_spelling(f"{g[0]}{v} {s}", f)
+                                                                         for f in forms) for v in "aeiouy"), x
+    by_name = {e.expected_current: e for e in named}
+    for x, other, another in (("Yujia Zhang", "Yi Zhang", True), ("Yujia Zhang", "Yu Zhang", True),
+                              ("Yujia Zhang", "Yue Zhang", True), ("Jintao Zhang", "Jie Zhang", True),
+                              ("Jintao Zhang", "Jun Zhang", True), ("Kuan Li", "Ke Li", True),
+                              ("Ailin Huang", "Gao Huang", True), ("Yu Zhao", "Yi Zhao", False),
+                              ("Kuan Li", "Kun Li", False), ("Yuxue Yang", "Yang Yue", False)):
+        assert _another_person(other, by_name[x]) is another, other
+        assert f"\"{other}\"" in initial and f" for {x}" in initial, other
+    assert "(\"Yi Zhang\", \"Yu Zhang\" and \"Yue Zhang\" for Yujia Zhang, \"Jie Zhang\" and \"Jun Zhang\" for " \
+        "Jintao Zhang, \"Ke Li\" for Kuan Li)" in initial
+    assert f"\"Kun Li\" for Kuan Li, a similarity of {difflib.SequenceMatcher(None, 'kunli', 'kuanli').ratio():.3f}" \
+        in initial
+
+    # the count words of the check's row, section 6 and the README
+    person = rows["another person's name"]
+    assert "and so two kinds of names that write the expected answer: a title or a group word that the paper grader " \
+        "keeps inside the name" in person and "and a near spelling that the paper rules themselves leave to the " \
+        "judges as a possible misspelling" in person
+    assert "and where it is a near spelling of the expected answer or of an accepted form of two words or more: a " \
+        "possible misspelling" in person
+    two = "Guo Daya"                                                    # a form of two words: its near spelling
+    assert len(two.split()) == 2 and two in daya.aliases and not _another_person("Guo Dayaa", daya)
+    assert "(\"Zhaoyang Li\" for Zhiyu Li: the test reads an expected given name without a hyphen as a string of " \
+        "initials)" in person
+    six = section(6)
+    assert "and be no near spelling of the expected answer or of an accepted form of two words or more; these are " \
+        "the two exceptions to `_same_person`" in six
+    for name in ("Professor Guo", "Daya Guoo"):                         # one exception each: _same_person says no
+        assert not _same_person(name, daya.expected_current) and not _another_person(name, daya), name
+    assert "(a letter added, dropped or replaced, or two neighbours swapped: \"Ziyo Ma\" for Ziyu Ma, where one " \
+        "letter of a short name falls under the similarity)" in six
+    assert _one_slip("ziyuma", "ziyuam") and not _one_slip("ziyuma", "ziyamu") and _one_slip("ziyoma", "ziyuma")
+    ratio = difflib.SequenceMatcher(None, _compact("Ziyo Ma"), _compact("Ziyu Ma")).ratio()
+    assert ratio < _NEAR_NAME_RATIO <= difflib.SequenceMatcher(None, "ziyoxma", "ziyuxma").ratio()
+    listed = six[six.index("and surely, clearly,") + len("and "): six.index(": \"Either Guo or Wang\"")]
+    assert set(re.split(r",\s*|\s+and\s+", listed.rstrip(")"))) == adverbs
+    assert all(w in _SENTENCE_OPENERS for w in ("either", "neither", "namely", "including"))
+    kept = sorted(w for w in _HONORIFICS if w not in _NAME_STOP)
+    assert {"lecturer", "director", "herrn", "monsieur", "professeur"} <= set(kept) and "dean" not in _HONORIFICS
+    assert "(\"Ziyi Ma\" for Ziyu Ma, one slip away; \"Zhiyuan Li\" for Zhiyu Li, a similarity of " \
+        f"{difflib.SequenceMatcher(None, 'zhiyuanli', 'zhiyuli').ratio():.3f}; \"Yang Yue\" for Yuxue Yang, of " \
+        "\"Yang Yuxue\")" in six
+    raw = README.read_text("utf-8")
+    paragraphs = [" ".join(p.split()) for p in raw.split("\n\n")]
+    nine = next(p for p in paragraphs if p.startswith("Eine Prüfung dieser Änderungen fand noch eine Lücke"))
+    assert "Als Name einer anderen Person galten auch zwei Schreibweisen der richtigen Antwort. Erstens" in nine
+    assert ", zweitens " in nine and "rittens" not in nine
+    assert "beide Fälle sind jetzt nicht testbar" in nine and re.findall(r"Vorhersage (\w+) zu", nine) == ["4", "3a"]
+    ten = next(p for p in paragraphs if p.startswith("Eine Prüfung dieser Änderungen fand noch zwei Lücken, ebenfalls "
+                                                     "vor dem ersten echten Aufruf. Erstens ließ die Prüfung"))
+    assert " Zweitens " in ten and "rittens" not in ten
+    numbers = {2: "Zwei", 3: "Drei"}
+    assert f"{numbers[lost]} ausgefallene Stimmen bei „Der Erstautor ist Visiting Professor Guo.“ unter den 20 " \
+        "`key`-Antworten von `both_right` machten Vorhersage 4 wieder zu „nicht gestützt“" in ten
+    assert f"machten {titled} `key`-Antworten bei `dark` mit „Visiting Professor“ vor dem Nachnamen Vorhersage 3a zu " \
+        "„gestützt“, beide Male ohne ein offenes Angebot" in ten
+    assert "beide Fälle sind jetzt nicht testbar" in ten and re.findall(r"Vorhersage (\w+) (?:wieder )?zu", ten) == \
+        ["4", "3a"]
+    assert "nach zehn Prüfrunden" in raw

@@ -48,15 +48,18 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
 - **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen noch
   nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob
-  es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach neun Prüfrunden entscheidet mit
+  es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach zehn Prüfrunden entscheidet mit
   `--judges` der Judge bei der Übernahme jede Antwort, die den Namen nennt, und bei der Bewertung jede, die ihn nennt
   und die die Regeln sonst als falsch oder als Enthaltung werten würden; die festen Regeln entscheiden nur noch
   „richtig“, die Antworten ohne den Namen und den Lauf ohne Judge. Kein Urteil stützt sich auf unbewertete Antworten,
-  die die richtige Antwort nennen, auch mit Titel („Professor Guo“) oder im vollen Namen leicht verschrieben („Daya
-  Guoo“), ob die Regeln sie offen lassen oder die Stimme des Judge ausfiel; nur eine Nennung im Namen einer anderen
-  Person zählt nicht („Yutong Mei“ bei Lingrui Mei). Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa
-  0,45 $ für den Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt 3,00 $, eine Schätzung, keine Obergrenze: die
-  setzt `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
+  die die richtige Antwort nennen, ob die Regeln sie offen lassen oder die Stimme des Judge ausfiel, auch mit einem
+  Titel wie „Professor“ („Professor Guo“) oder leicht verschrieben nach dem Maß, mit dem die Bewertung eine mögliche
+  Verschreibung dem Judge überlässt („Daya Guoo“; auch bei einer angenommenen Form wie „Mei Lingrui“); nur eine Nennung
+  im Namen einer anderen Person zählt nicht („Yutong Mei“ bei Lingrui Mei), und als Name einer anderen Person gilt auch
+  ein Name mit einem Wort, das auf keiner Liste der Prüfung steht („Researcher Guo“), sowie eine Verschreibung jenseits
+  dieses Maßes („Ziyu Mi“ bei Ziyu Ma). Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,45 $ für den
+  Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt 3,00 $, eine Schätzung, keine Obergrenze: die setzt
+  `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -590,13 +593,40 @@ Angebot. Jetzt liest die Prüfung einen solchen Namen auch ohne seine Titel- und
 Herr, Frau, Doktor, Professorin, Gruppe, Arbeitsgruppe), und eine Verschreibung, die die Bewertung als möglich ansieht,
 gilt als die richtige Antwort; beide Fälle sind jetzt nicht testbar. Ein verschriebener Nachname allein („Dr. Guoo“)
 ist dagegen für die Bewertung kein Name und zählt weiter nicht als Nennung der richtigen Antwort. Ein anderer Vorname
-mit demselben Nachnamen bleibt eine andere Person („Zhaoyang Li“ bei Zhiyu Li), auch wenn die Bewertung ihn wegen
-desselben Anfangsbuchstabens offen lässt, ebenso jede falsche Antwortmöglichkeit der Frage. Bei der Übernahme gelten
-zwei ähnliche Namen weiter als zwei Personen, denn dort kostet eine Verwechslung nur einen Judge-Aufruf; bei den
-offenen Angeboten dagegen ließe sie ein Urteil auf einer Antwort stehen, die richtig sein kann. Ohne Judge bleibt eine
-bekannte Grenze: Ein „falsch“ der Regeln für eine Antwort, die die richtige Antwort in einer Form nennt, die die Regel
-von `offers` nicht annimmt („Es ist nicht Y, es ist Dr. Zhang.“), bleibt endgültig; der Pilot läuft mit Judge. Bei den
-gespeicherten Antworten ändert sich nichts. Die 746 geplanten Aufrufe sind dieselben geblieben.
+mit demselben Nachnamen bleibt eine andere Person, wenn die Bewertung ihn nur wegen desselben Anfangsbuchstabens offen
+lässt und er mehr als einen Buchstaben abweicht („Zhaoyang Li“ bei Zhiyu Li), ebenso jede falsche Antwortmöglichkeit der
+Frage; ein ähnlicher Vorname („Ziyi Ma“ bei Ziyu Ma, „Zhiyuan Li“ bei Zhiyu Li) gilt als die richtige Antwort, was ein
+Urteil höchstens nicht testbar macht. Bei der Übernahme gelten zwei ähnliche Namen weiter als zwei Personen, denn dort
+kostet eine Verwechslung nur einen Judge-Aufruf; bei den offenen Angeboten dagegen ließe sie ein Urteil auf einer
+Antwort stehen, die richtig sein kann. Ohne Judge bleibt eine bekannte Grenze: Ein „falsch“ der Regeln für eine Antwort,
+die die richtige Antwort in einer Form nennt, die die Regel von `offers` nicht annimmt („Es ist nicht Y, es ist Dr.
+Zhang.“), bleibt endgültig; der Pilot läuft mit Judge. Bei den gespeicherten Antworten ändert sich nichts. Die 746
+geplanten Aufrufe sind dieselben geblieben.
+
+Eine Prüfung dieser Änderungen fand noch zwei Lücken, ebenfalls vor dem ersten echten Aufruf. Erstens ließ die Prüfung
+nur die Titel- und Gruppenwörter ihrer Liste weg, und jedes andere großgeschriebene Wort, das die Bewertung im Namen
+lässt, machte ihn weiter zum Namen einer anderen Person: ein Wort vor einem Titel („Visiting Professor Guo“,
+„Distinguished Professor Guo“), ein Titel, der nicht auf der Liste stand („Lecturer Guo“, „Herrn Guo“, „Monsieur Guo“,
+„Director Guo“), und ein Wort, das den Satz eröffnet („Either Guo or Wang“, „Clearly Guo wrote it“). Zwei ausgefallene
+Stimmen bei „Der Erstautor ist Visiting Professor Guo.“ unter den 20 `key`-Antworten von `both_right` machten Vorhersage
+4 wieder zu „nicht gestützt“, und als alle Stimmen ausfielen, machten 92 `key`-Antworten bei `dark` mit „Visiting
+Professor“ vor dem Nachnamen Vorhersage 3a zu „gestützt“, beide Male ohne ein offenes Angebot. Jetzt fallen mit einem
+Titel auch die Wörter davor weg, die Liste hat mehr Titel (Lecturer, Director, Herrn, Dozent, Privatdozent,
+Juniorprofessor und französische, spanische und italienische), und ein Wort, das einen Satz eröffnet, fällt am Anfang
+eines Namens weg; beide Fälle sind jetzt nicht testbar. Ein anderes Wort, das die Bewertung im Namen lässt („Researcher
+Guo“, auch ein Vorname wie in „Dean Guo“), und eine Verschreibung, die nach dem Maß der Bewertung weder der richtigen
+Antwort noch einer angenommenen Form nahekommt („Ziyu Mi“ bei Ziyu Ma), machen ihn weiter zum Namen einer anderen
+Person: Fällt bei einer solchen Antwort die Stimme des Judge aus, zählt sie ohne Prüfung als falsch, und nur der Hinweis
+auf die offenen Stimmen meldet sie. Zweitens verglich die Prüfung eine Verschreibung auch mit den Formen mit Initiale
+(„L. Mei“, „Guo D.“), und an einer so kurzen Form hält die Bewertung auch einen anderen kurzen Vornamen mit demselben
+Anfangsbuchstaben für eine mögliche Verschreibung: „Lu Mei“ bei Lingrui Mei, „Bo Wang“ bei Bin Wang und sogar „Gao
+Huang“ bei Ailin Huang, den die Bewertung selbst als falsch wertet, galten als die richtige Antwort. Das machte ein
+Urteil höchstens nicht testbar, widersprach aber der Beschreibung. Jetzt zählt eine Form mit Initiale nur für einen
+Namen ohne ausgeschriebenen Vornamen („Professor Gur-Ariehh“ bei Yoav Gur-Arieh). Berichtigt sind außerdem die
+Beschreibung der Prüfung auf Initialen in `docs/DESIGN_keys.md` (sie liest einen Vornamen ohne Bindestrich als Folge von
+Initialen) und die Aussage, jede Verschreibung sei eine, die die Bewertung dem Judge überlässt: Eine verschriebene Form
+mit dem Nachnamen zuerst („Mei Lingrul“) gilt als die richtige Antwort, obwohl die Bewertung sie als falsch wertet. Bei
+den gespeicherten Antworten ändert sich nichts. Die 746 geplanten Aufrufe sind dieselben geblieben.
 
 ```bash
 cutoffmix bench keys plan --events data/events/papers_events.jsonl --today 2026-11-27 \
