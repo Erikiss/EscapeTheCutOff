@@ -24,13 +24,16 @@
   answer offers the expected answer (``text.offers_answer``: "It is not Y, it is X."), on every arm. With judges the
   grading judges decide what the rules leave unsure and every rule grade ``incorrect`` or ``abstain`` of an answer
   that mentions the expected answer in any form (``text.mentions_answer``: "It is not Y, it is Zhang.", "Zhang et
-  al., not Y", a given name alone), on every arm and set; a rule ``correct`` stays, and a failed or tied vote leaves
-  the answer ``ungraded``. Every answered row of an event with an expected answer stores whether the answer offers it
-  (``offers_expected``; None for refusals, errors and controls): the report's open offers are the ungraded ones that
-  do. A stored answer is graded again from its stored response, without a new recipient call, when the rules grade
-  it otherwise now (a stored grade of the grading judges stands), when its ``offers_expected`` is missing or out of
-  date, and, with judges, when it is ungraded, when its rule grade is in the grading judges' scope now, when its label
-  is still undecided, and when the rules decided a label that is now the judges' (below).
+  al., not Y", a given name alone), on every arm and set; a rule ``correct`` stays, and a failed or tied vote, or a
+  reply without a verdict, leaves the answer ``ungraded`` (``RunOutcome.judges_undecided`` counts the answers the
+  judges' votes left undecided). Every answered row of an event with an expected answer stores whether the answer
+  names it (``offers_expected``: ``text.offers_answer``, or ``text.names_answer``, any form ``text.mentions_answer``
+  reads other than inside another person's name; None for refusals, errors and controls): the report's open offers
+  are the ungraded ones that do. A stored answer is graded again from its stored response, without a new recipient
+  call, when the rules grade it otherwise now (a stored grade of the grading judges stands), when its
+  ``offers_expected`` is missing or out of date, and, with judges, when it is ungraded, when its rule grade is in the
+  grading judges' scope now, when its label is still undecided, and when the rules decided a label that is now the
+  judges' (below).
 - The judges' scope: with judges, the adoption judges decide every labelled answer that mentions the name it is
   measured against, whatever the rules would decide: every ``correct`` ``full`` row of ``dark`` and ``both_right``,
   and every row of ``donor_wrong`` and ``control`` whose label is endorsed or reported or whose answer names the
@@ -74,7 +77,7 @@ from cutoffmix.backends.base import BackendError
 from cutoffmix.bench.grading import _json_objects, grade_response, grade_rule, grade_with_judges
 from cutoffmix.bench.io import append_jsonl
 from cutoffmix.bench.keys import text as _text  # looked up at call time: adoption_label can be swapped in tests
-from cutoffmix.bench.keys.common import PROBE, judge_cost, prompt_sha, row_cost
+from cutoffmix.bench.keys.common import PROBE, judge_cost, judges_left_open, prompt_sha, row_cost
 from cutoffmix.bench.runner import _drop_partial_line
 from cutoffmix.types import Backend, ChatRequest, ChatResult, ContinuationRequest, Event, ModelSpec, StreamEvent
 
@@ -183,6 +186,10 @@ class RunOutcome:
     error: str | None = None  # with ``stopped_by`` "error": the error no retry can fix that stopped the run
     judge_failed: int = 0  # judge calls of this run that failed (each recorded in ``judge_usage`` with its error)
     judge_error: str | None = None  # the first of them
+    # of ``rows``: answers whose grade or label the judges' votes left undecided (``common.judges_left_open``: a
+    # failed call, a tie, or a reply without a verdict, which ``judge_failed`` does not count); a later run with
+    # judges asks again
+    judges_undecided: int = 0
 
     @property
     def planned(self) -> int:
@@ -802,9 +809,9 @@ def _judges_grade(event: Event, response: str, grade: str) -> bool:
     """Whether, in a run with judges, the grading judges decide a rule grade (design section 6, the grading scope):
     an ``incorrect`` that :func:`_unsure_incorrect` doubts, and every ``incorrect`` or ``abstain`` of an answer that
     mentions the event's expected answer in any form (:func:`~cutoffmix.bench.keys.text.mentions_answer`: "It is not
-    Y, it is Zhang.", "The first author is Zhang et al., not Y.", a given name alone, "I think it's X, but I'm not
-    sure."), on every arm alike. The rules decide by themselves only a ``correct`` grade and the answers that do not
-    name the expected answer; a control has none. Without judges only :func:`_unsure_incorrect` applies."""
+    Y, it is Zhang.", "The first author is Zhang et al., not Y.", a given name alone, "I think it's <given name>, but
+    I'm not sure."), on every arm alike. The rules decide by themselves only a ``correct`` grade and the answers that
+    do not name the expected answer; a control has none. Without judges only :func:`_unsure_incorrect` applies."""
     return _unsure_incorrect(event, response, grade) or (grade in ("incorrect", "abstain")
                                                          and _text.mentions_answer(response, event))
 
@@ -845,11 +852,15 @@ async def _grade(event: Event, response: str, backend: Backend,
 
 def _offers_expected(event: Event, response: str) -> bool | None:
     """The ``offers_expected`` field of an answered row (design section 6, open offers): whether the answer offers the
-    event's expected answer (:func:`~cutoffmix.bench.keys.text.offers_answer`); None for a control (no expected
-    answer). The report reads an ``ungraded`` row with True as an open offer."""
+    event's expected answer (:func:`~cutoffmix.bench.keys.text.offers_answer`) or names it in any other form, other
+    than inside the name of another person (:func:`~cutoffmix.bench.keys.text.names_answer`: "Dr. Zhang", "Zhang et
+    al.", a given name or a common surname alone, "X?", also a doubt or a rejection; not "Yutong Mei" for Lingrui
+    Mei); None for a control (no expected answer). It covers the grading scope (:func:`_judges_grade`) but for the
+    answers whose only mention of the expected answer is another person's name, so a grading vote the judges lose
+    leaves an open offer. The report reads an ``ungraded`` row with True as an open offer."""
     if event.control or not (event.expected_current or "").strip():
         return None
-    return bool(_text.offers_answer(response, event))
+    return bool(_text.offers_answer(response, event) or _text.names_answer(response, event))
 
 
 async def _decide(item: Mapping[str, Any], event: Event, response: str, graded: tuple[str, bool, str],
@@ -963,7 +974,7 @@ async def run_plan(
       offers the expected answer ("It is not Y, it is X."), and with ``judges`` the grading judges decide every rule
       grade ``incorrect`` or ``abstain`` of an answer that mentions the expected answer (:func:`_judges_grade`; a rule
       ``correct`` stays, a failed or tied vote leaves it ``ungraded``). ``offers_expected`` records whether the answer
-      offers the expected answer (:func:`_offers_expected`; None for refusals, errors and controls). A policy refusal
+      names the expected answer (:func:`_offers_expected`; None for refusals, errors and controls). A policy refusal
       (``content_filter``) is ``ungraded`` with grader ``refusal``; an exception becomes an ``ungraded`` row with
       ``error``. When the call raises, the row has no answer (``usage`` None) and the next run sends it again. An
       answer without visible text whose ``finish_reason`` is neither ``length`` (cut at ``max_tokens``, which is
@@ -973,7 +984,9 @@ async def run_plan(
       with :data:`GRADING_FAILED`: the paid call is counted once and never sent again; the next run grades the stored
       answer again (with or without judges). A judge call that fails is a missing vote; its entry in ``judge_usage``
       carries the ``error`` (:class:`_JudgeMeter`), and ``RunOutcome.judge_failed`` counts this run's (a failure the
-      grading retried without JSON mode is marked ``retried`` and not counted: its retry is).
+      grading retried without JSON mode is marked ``retried`` and not counted: its retry is). A reply without a
+      verdict records no failure, so ``RunOutcome.judges_undecided`` counts the current rows whose grade or label the
+      judges' votes left undecided, whatever the cause (``common.judges_left_open``).
     - Rows: ``{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, offers_expected, adopted,
       adoption, adoption_name, adoption_grader, rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha,
       request_sha, note_event, today, error}`` (design section 6). ``backend`` is ``backend_name`` (default:
@@ -1358,4 +1371,5 @@ async def _run_locked(
         not_regraded=len(regrade) - regrade_started, stopped_by=stopped_by, cost_usd=spent,
         recipients_usd=recipients_before + run_recipients, judges_usd=judges_before + run_judges,
         run_cost_usd=run_recipients + run_judges, not_graded=sum(1 for i in current if ungradable(i)),
-        error=fatal if stopped_by == "error" else None, judge_failed=judge_failed, judge_error=judge_error)
+        error=fatal if stopped_by == "error" else None, judge_failed=judge_failed, judge_error=judge_error,
+        judges_undecided=sum(1 for row in rows if judges_left_open(row)))

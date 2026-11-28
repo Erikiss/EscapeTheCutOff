@@ -7,9 +7,11 @@ comparisons and the verdicts on the pre-registered predictions (docs/DESIGN_keys
   not hold is foreign. All three are left out and counted; the cost of the foreign rows is reported on its own.
 - Primary analysis: an answered row (no ``error``, grader not ``refusal``) counts, and ``ungraded`` counts as not
   correct. Refusals are left out and counted. The sensitivity line leaves the ungraded rows out as well. An open offer
-  is an ungraded answered row whose answer offers the expected answer (``offers_expected``, stored by ``run``): no
-  verdict of predictions 1, 1b, 2, 3a or 4 stands that the open offers, resolved against it, would overturn (section
-  7); a row without the field (written before it was stored) is counted apart and read as not offering.
+  is an ungraded answered row whose answer names the expected answer (``offers_expected``, stored by ``run``: it offers
+  it, or names it in any other form, other than inside another person's name): no verdict of predictions 1, 1b, 2, 3a
+  or 4 stands that the open offers, resolved against it, would overturn (section 7); a row without the field (written
+  before it was stored) is counted apart and read as not naming it. The rows the judges' votes left undecided are
+  counted and flagged (a later ``run --judges`` asks again).
 - Costs: over every row of the results file (each line, not only the last per id), the recipients (``usage``) and the
   judges (``judge_usage``) apart. The joined answers' cost counts, per joined id, every row of the request its last
   row answered (the call, a failed grading, the re-grades of ``run --judges``, whose ``usage`` is None).
@@ -28,7 +30,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
 
-from cutoffmix.bench.keys.common import ARMS_BY_SET, SETS, judge_cost, prompt_sha, row_cost
+from cutoffmix.bench.keys.common import ARMS_BY_SET, SETS, judge_cost, judges_left_open, prompt_sha, row_cost
 from cutoffmix.bench.keys.stats import (
     items_needed,
     mcnemar_exact,
@@ -107,15 +109,22 @@ class _Row:
 
     @property
     def open_offer(self) -> bool:
-        """An open offer (design section 7): an answered ``ungraded`` row whose answer offers the expected answer
-        (``offers_expected`` true): the rules, or judges whose votes failed or tied, left open an answer that gives
-        the expected answer, so it may well be correct."""
+        """An open offer (design section 7): an answered ``ungraded`` row whose answer names the expected answer
+        (``offers_expected`` true: it offers it, or names it in any other form, also to doubt it, other than inside
+        another person's name): the rules, or judges whose votes failed, tied or gave no verdict, left open an answer
+        that may well be correct."""
         return self.ungraded and self.get("offers_expected") is True
 
     @property
     def offer_unknown(self) -> bool:
-        """An answered row written before ``offers_expected`` was stored: read as not offering, and counted apart."""
+        """An answered row written before ``offers_expected`` was stored: read as not naming the expected answer, and
+        counted apart."""
         return self.answered and self.result is not None and "offers_expected" not in self.result
+
+    @property
+    def judges_open(self) -> bool:
+        """An answered row whose grade or label the judges' votes left undecided (:func:`judges_left_open`)."""
+        return self.answered and judges_left_open(self.result)
 
     @property
     def adopted(self) -> bool:
@@ -587,7 +596,7 @@ _ARM_NAMES = {"wrong_key": "wrong key"}
 
 def _offer_counts(items: Sequence[_Item], arms: Sequence[str]) -> dict[str, dict[str, int]]:
     """Per arm, the open offers (:attr:`_Row.open_offer`) and the answered rows written before ``offers_expected`` was
-    stored (:attr:`_Row.offer_unknown`, read as not offering) among the items' rows of that arm."""
+    stored (:attr:`_Row.offer_unknown`, read as not naming the expected answer) among the items' rows of that arm."""
     out: dict[str, dict[str, int]] = {}
     for arm in arms:
         rows = [it.rows[arm] for it in items if arm in it.rows]
@@ -598,10 +607,10 @@ def _offer_counts(items: Sequence[_Item], arms: Sequence[str]) -> dict[str, dict
 
 def _fmt_offers(counts: Mapping[str, Mapping[str, int]]) -> str:
     """The open offers per arm, and the rows without ``offers_expected`` per arm when there are any."""
-    text = "open offers (ungraded answers that offer the expected answer): " + ", ".join(
+    text = "open offers (ungraded answers that name the expected answer): " + ", ".join(
         f"{_ARM_NAMES.get(arm, arm)} {c['open_offers']}" for arm, c in counts.items())
     unknown = [f"{_ARM_NAMES.get(arm, arm)} {c['offer_unknown']}" for arm, c in counts.items() if c["offer_unknown"]]
-    return text + (f" (rows without offers_expected, read as not offering: {', '.join(unknown)})" if unknown else "")
+    return text + (f" (rows without offers_expected, read as not naming it: {', '.join(unknown)})" if unknown else "")
 
 
 def _fmt_checks(checks: Sequence[tuple[str, str, str, Mapping[str, Any]]],
@@ -958,6 +967,7 @@ def build_report(plan: Sequence[Mapping[str, Any]], results: Sequence[Mapping[st
         "answered": statuses[_ANSWERED], "ungraded": sum(1 for r in rows.values() if r.ungraded),
         "open_offers": sum(1 for r in rows.values() if r.open_offer),
         "offer_unknown": sum(1 for r in rows.values() if r.offer_unknown),
+        "judges_undecided": sum(1 for r in rows.values() if r.judges_open),
         "foreign_ids": len({str(r.get("id")) for r in foreign_rows}), "foreign_rows": len(foreign_rows),
         "backends": backends,
         "by_recipient": dict(Counter(str(r.plan.get("recipient")) for r in joined)),
@@ -1096,11 +1106,15 @@ def _flags(report: Mapping[str, Any], rows: Mapping[str, _Row], repeated: int) -
     if t["refusals"]:
         flags.append(f"{t['refusals']} refusals are left out")
     if t["open_offers"]:
-        flags.append(f"{t['open_offers']} open offers (ungraded answers that offer the expected answer): a verdict "
+        flags.append(f"{t['open_offers']} open offers (ungraded answers that name the expected answer): a verdict "
                      "they could overturn, resolved against it, is not testable (grade with --judges)")
+    if t["judges_undecided"]:
+        flags.append(f"{t['judges_undecided']} answered rows are undecided after the judges' votes (a failed call, a "
+                     "tie or a reply without a verdict): rerun 'bench keys run' with --judges before reporting; it "
+                     "asks the judges again, without a new recipient call")
     if t["offer_unknown"]:
         flags.append(f"{t['offer_unknown']} answered rows carry no offers_expected (written before it was stored): "
-                     "read as not offering the expected answer, so no verdict is checked against them; a later "
+                     "read as not naming the expected answer, so no verdict is checked against them; a later "
                      "'bench keys run' stores it without a call")
     open_rows = sum(1 for r in rows.values() if not r.complete)
     if open_rows:
@@ -1302,7 +1316,7 @@ def render_report(report: Mapping[str, Any]) -> str:
 
     lines += ["", "## Pre-registered predictions (docs/DESIGN_keys.md section 7)", "",
               ("Interim and not testable give no verdict; verdicts count only on the complete plan. A verdict stands "
-               "only if the open offers (ungraded answers that offer the expected answer) and the undecided rows, "
+               "only if the open offers (ungraded answers that name the expected answer) and the undecided rows, "
                "resolved against it, leave it as it is."), ""]
     for p in report["predictions"]:
         lines.append(f"- **{p['id']}** {p['text']} **{p['verdict']}**: {p['evidence']}")

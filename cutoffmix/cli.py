@@ -43,7 +43,8 @@ and never a file that is not a plan);
 ``run`` sends them (``--max-cost`` is required for the real models and counts the judges; it stops new calls, and the
 calls in flight finish, so a run can end above it; with ``--judges`` the judges decide every rule grade incorrect or
 abstain of an answer that names the expected answer and every labelled answer that names the candidate, the rules only
-the answers that do not name them). Its exit status is that of the stop that first kept planned calls
+a grade correct and the answers that do not name them, and the answers the judges' votes leave undecided are counted,
+to be asked again by a rerun with ``--judges``). Its exit status is that of the stop that first kept planned calls
 from starting: 3 for the cap, 4 for an error no retry can fix (HTTP 401 or 402, on a recipient's call or a judge's),
 130 for Ctrl-C (the first lets the calls in flight finish); stops met at one check rank Ctrl-C, then the error, then
 the cap, and a later Ctrl-C or error keeps the first stop's status. Without such a stop it is 4 when planned calls
@@ -51,7 +52,7 @@ failed (also at ``--limit``) or an error no retry can fix came after the last ca
 input before any call, or a results file that cannot take a row during the run. A results file holds one backend's
 rows, so a mock run writes to its own file. ``report`` joins plan and results offline into rates, paired tests and
 adoption rates (it never writes its ``--json`` or ``--md`` over its inputs); no verdict stands that the open offers
-(ungraded answers that offer the expected answer) could overturn.
+(ungraded answers that name the expected answer) could overturn.
 """
 
 from __future__ import annotations
@@ -1178,6 +1179,10 @@ def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
     if outcome.judge_failed:
         print(f"{outcome.judge_failed} judge calls failed (first error: {outcome.judge_error}); an answer they leave "
               "undecided stays undecided, and the next run with --judges asks again", file=sys.stderr)
+    if outcome.judges_undecided:  # also a tie or a reply without a verdict, which no failed call records
+        print(f"{outcome.judges_undecided} answers are undecided after the judges' votes (a failed call, a tie or a "
+              "reply without a verdict): rerun with --judges before reporting; it asks the judges again, without a "
+              "new recipient call", file=sys.stderr)
     # the planned calls without a current answer: those whose last row is a send error were sent and failed
     never = outcome.not_sent - len(errors)
     left = f"{never} of {outcome.planned} planned calls not sent"
@@ -1538,12 +1543,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "decide: the right name of a correct full answer (dark, both_right) and the donor's name on "
                            "donor_wrong and control (alone and full, whatever the grade); the rules decide alone only "
                            "a grade correct and the answers that do not name the expected answer, and for adoption "
-                           "the answers that do not name the donor's name. A failed or tied vote leaves the answer "
-                           "undecided, never to the rules, and a later run with --judges asks again; stored rows that "
-                           "are undecided, or that the rules graded or decided and the judges decide now, are graded "
-                           "again first, without a new call (default: none: the rules decide, what they leave open "
-                           "stays undecided, and the report gives no verdict that the open offers, ungraded answers "
-                           "that offer the expected answer, could overturn)")
+                           "the answers that do not name the donor's name. A failed or tied vote, or a reply without "
+                           "a verdict, leaves the answer undecided, never to the rules (the run prints how many are), "
+                           "and a later run with --judges asks again; stored rows that are undecided, or that the "
+                           "rules graded or decided and the judges decide now, are graded again first, without a new "
+                           "call (default: none: the rules decide, what they leave open stays undecided, and the "
+                           "report gives no verdict that the open offers, ungraded answers that name the expected "
+                           "answer, could overturn)")
     krun.add_argument("--resend-stale", action="store_true",
                       help="send again the calls whose stored rows answered another request (the plan or the model "
                            "settings changed); the newest row counts (default: stop)")

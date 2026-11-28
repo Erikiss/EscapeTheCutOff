@@ -418,9 +418,13 @@ def test_run_says_how_many_judge_calls_failed(tmp_path, capsys, gateway, fable_n
     assert _run(plan, tmp_path / "keys_results.jsonl", "--judges", "gpt-6.2-sol") == 0
     failed = sum(1 for _, req in gateway.backend.calls if req.metadata.get("purpose"))
     assert failed > 0
+    # then the answers the failed votes left undecided (review of b86d67f: a reply without a verdict is no failed call)
     assert capsys.readouterr().err.endswith(f"\n{failed} judge calls failed (first error: RuntimeError: judge down); "
                                             "an answer they leave undecided stays undecided, and the next run with "
-                                            "--judges asks again\n")
+                                            "--judges asks again\n10 answers are undecided after the judges' votes (a "
+                                            "failed call, a tie or a reply without a verdict): rerun with --judges "
+                                            "before reporting; it asks the judges again, without a new recipient "
+                                            "call\n")
 
 
 def _completion(text: str) -> httpx.Response:

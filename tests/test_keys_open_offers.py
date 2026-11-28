@@ -2,12 +2,12 @@
 
 - The grading scope (A): with --judges the grading judges decide every rule grade ``incorrect`` or ``abstain`` of an
   answer that mentions the expected answer, on every arm and set ("It is not Y, it is Zhang.", "Dr. Zhang", "Zhang et
-  al.", a given name alone, "I think it's X, but I'm not sure."); they were final grades by rule with no judge asked. A
-  rule ``correct``, an answer that does not name the expected answer and a control keep the rule grade; a failed or
-  tied vote leaves the row ungraded; without judges nothing changes. A resumed run grades stored rule grades again
-  without a recipient call, idempotently; the cap, --limit and a 401 from a grading judge work as before.
+  al.", a given name alone, "I think it's <given name>, but I'm not sure."); they were final grades by rule with no
+  judge asked. A rule ``correct``, an answer that does not name the expected answer and a control keep the rule grade;
+  a failed or tied vote leaves the row ungraded; without judges nothing changes. A resumed run grades stored rule
+  grades again without a recipient call, idempotently; the cap, --limit and a 401 from a grading judge work as before.
 - Open offers (B): every answered row stores ``offers_expected``; a verdict of predictions 1, 1b, 2, 3a or 4 that the
-  open offers (ungraded answers that offer the expected answer), resolved against it, would overturn is not testable,
+  open offers (ungraded answers that name the expected answer), resolved against it, would overturn is not testable,
   and one they cannot change is the verdict of 8cc83c5; a results file without the field reads as before.
 """
 
@@ -421,7 +421,7 @@ def test_a_support_of_1_that_rests_on_alones_open_offers_is_not_testable():
     assert one["comparisons"]["key_vs_wrong_key"]["checked"] == "supported"
     assert "key vs alone n=40, b=20, c=0, p=1.907e-06 [supported; Wilson upper bound of b/n 0.648] -> not testable " \
         "(undecided answers; grade with --judges)" in one["evidence"]
-    assert "open offers (ungraded answers that offer the expected answer): key 0, alone 20, wrong key 0, blank 0" \
+    assert "open offers (ungraded answers that name the expected answer): key 0, alone 20, wrong key 0, blank 0" \
         in one["evidence"]
     assert "key vs alone with alone's counted correct b=0, c=0, with key's b=20, c=0" in one["evidence"]
     # two open offers where the key is wrong cannot overturn it: the verdict of 8cc83c5
@@ -498,7 +498,7 @@ def test_a_support_of_2_stands_only_without_an_open_offer_in_its_units():
     assert verdicts(without_offers(study))[2] == "supported"
     two = study.report()["predictions"][2]
     assert two["units_with_open_offers"] == 1 and two["open_offers"]["alone"]["open_offers"] == 1
-    assert "in the units the test reads, open offers (ungraded answers that offer the expected answer): key 0, " \
+    assert "in the units the test reads, open offers (ungraded answers that name the expected answer): key 0, " \
         "alone 1, wrong key 0 (1 units hold one)" in two["evidence"]
 
 
@@ -513,7 +513,7 @@ def test_a_support_of_3a_that_rests_on_the_keys_open_offers_is_not_testable():
     assert (half["against"]["support"]["b"], half["against"]["support"]["c"]) == (0, 0)
     assert half["verdict"] == UNDECIDED
     assert without_offers(study).report()["predictions"][3]["halves"]["3a"]["verdict"] == "supported"
-    assert "3a, open offers (ungraded answers that offer the expected answer): full 0, key 40; key's counted correct " \
+    assert "3a, open offers (ungraded answers that name the expected answer): full 0, key 40; key's counted correct " \
         "b=0, c=0" in study.report()["predictions"][3]["evidence"]
     # two of them cannot overturn it
     kept = flagged(dark(40, lambda i, arm: {"full": True, "key": OPEN if i < 2 else False}.get(arm, False)))
@@ -542,12 +542,12 @@ def test_a_verdict_of_4_stands_only_against_the_open_offers():
     # where they cannot change it: 9 misses of the key, 4 of them open (5/30 is still 10 % or more)
     kept = harm(lambda i, arm: {"key": OPEN if i < 4 else not i < 9}.get(arm, True))
     assert verdicts(kept)[4] == verdicts(without_offers(kept))[4] == "not supported"
-    assert "open offers (ungraded answers that offer the expected answer): key 4, alone 0" in \
+    assert "open offers (ungraded answers that name the expected answer): key 4, alone 0" in \
         kept.report()["predictions"][4]["evidence"]
 
 
 def test_a_results_file_without_offers_expected_reads_as_before():
-    # rows written before the field: counted apart and read as not offering, so the verdicts are those of 8cc83c5
+    # rows written before the field: counted apart and read as not naming it, so the verdicts are those of 8cc83c5
     study = dark(40, lambda i, arm: {"key": i < 20, "alone": {"grade": "ungraded"} if i < 20 else False}.get(
         arm, arm == "full"))
     study.adoption(30, full=lambda i: "endorsed" if i < 15 else "absent")
@@ -559,10 +559,10 @@ def test_a_results_file_without_offers_expected_reads_as_before():
     assert {p["id"]: p["verdict"] for p in report["predictions"]} == verdicts(without_offers(study))
     assert verdicts(study)[1] == "supported"
     one = report["predictions"][0]
-    assert "(rows without offers_expected, read as not offering: key 40, alone 40, wrong key 40, blank 40)" in \
+    assert "(rows without offers_expected, read as not naming it: key 40, alone 40, wrong key 40, blank 40)" in \
         one["evidence"]
     md = render_report(report)
-    assert "A verdict stands only if the open offers (ungraded answers that offer the expected answer) and the " \
+    assert "A verdict stands only if the open offers (ungraded answers that name the expected answer) and the " \
         "undecided rows, resolved against it, leave it as it is." in md
 
 
@@ -573,7 +573,7 @@ def test_open_offers_are_counted_in_the_totals_the_arms_and_a_flag():
     assert report["totals"]["open_offers"] == 20 and report["totals"]["offer_unknown"] == 0
     arms = report["pairs"]["fable->sol"]["dark"]["arms"]
     assert arms["alone"]["open_offers"] == 20 and arms["key"]["open_offers"] == 0
-    assert any(f.startswith("20 open offers (ungraded answers that offer the expected answer)")
+    assert any(f.startswith("20 open offers (ungraded answers that name the expected answer)")
                for f in report["flags"])
     json.dumps(report)                                                        # still JSON-serialisable
 

@@ -5,12 +5,13 @@ casefolded copy whose characters keep their positions in the original, so a name
 "Jun-sol" or "Junsol" is found either way and replaced in place. :func:`cue_tokens` reads what a masked note says
 beyond the question (section 3). :func:`offers` and :func:`adoption_label` read whether an answer gives a name as its
 own answer, :func:`offers_answer` whether it offers the event's expected answer (the run doubts a rule grade
-``incorrect`` where it does, and stores it on every answered row for the report's open offers), :func:`offers_another`
-whether it offers someone else as well, :func:`contradicted` whether it names the person only to give them another
-role or to reject them, :func:`disclaims` whether it disclaims knowledge, and :func:`mentions` whether it names the
-person at all, in any form (with judges, the run hands every labelled answer that does to the adoption judges), and
-:func:`mentions_answer` whether it names the expected answer so (with judges, every rule grade ``incorrect`` or
-``abstain`` of such an answer goes to the grading judges; section 6).
+``incorrect`` where it does), :func:`offers_another` whether it offers someone else as well, :func:`contradicted`
+whether it names the person only to give them another role or to reject them, :func:`disclaims` whether it disclaims
+knowledge, and :func:`mentions` whether it names the person at all, in any form (with judges, the run hands every
+labelled answer that does to the adoption judges), :func:`mentions_answer` whether it names the expected answer so
+(with judges, every rule grade ``incorrect`` or ``abstain`` of such an answer goes to the grading judges), and
+:func:`names_answer` whether it does so other than inside another person's name (with :func:`offers_answer`, the run
+stores it on every answered row for the report's open offers; section 6).
 """
 
 from __future__ import annotations
@@ -840,6 +841,53 @@ def mentions_answer(response: str, event: Event) -> bool:
     if event.control or not expected:
         return False
     return any(mentions(response, form, event) for form in dict.fromkeys([expected, *event.aliases]) if form.strip())
+
+
+# what stands in for the name of another person in the text :func:`names_answer` reads
+_ANOTHER = "[another]"
+
+
+def _another_person(name: str, event: Event) -> bool:
+    """Whether ``name`` (a name the paper grader cannot place, or a distractor) writes a person other than
+    ``event``'s expected answer: it is not the same person as the expected answer (:func:`_same_person`, compared with
+    the full name: "Zhaoyang Li" agrees with the accepted form "Z. Li" of Zhiyu Li but is another person), its name
+    parts are not all parts of the expected answer or of one of its accepted forms ("Mohamed El" of "Mohamed El
+    Banani", "Zhang Wei" of "Wei Zhang": a part of the name, not another person), and none of those is written in full
+    inside it."""
+    expected = (event.expected_current or "").strip()
+    parts = set(_name_parts(name))
+    if not parts or not expected or _same_person(name, expected):
+        return False
+    for form in dict.fromkeys(f for f in [expected, *event.aliases] if f.strip()):
+        if parts <= set(_name_parts(form)) or any(p.search(normalize_text(name))
+                                                  for p in _compile_forms([form], loose=True)):
+            return False
+    return True
+
+
+def names_answer(response: str, event: Event) -> bool:
+    """Whether ``response`` names ``event``'s expected answer in any form other than inside the name of another person
+    (design section 6, open offers): :func:`mentions_answer` of the answer once every name it writes that the paper
+    grader cannot place, and every distractor of the event (``reject_aliases``), is blanked where it writes another
+    person (:func:`_another_person`). So "Dr. Zhang", "Zhang et al.", a given name or a common surname alone, "I'm
+    not sure. X?" and "It is not Y, it is Zhang." name Wei Zhang, also next to another person ("Dr. Zhang, with Bo Li
+    as senior author"), and so do a doubt or a rejection ("I doubt it is X.", "It is not X."), while "The first author
+    is Yutong Mei." and "Is it Yutong Mei?" do not name Lingrui Mei: the shared surname is another person's. False for
+    a control (no expected answer). The run stores it, with :func:`offers_answer`, as ``offers_expected``: an
+    ungraded answer that names the expected answer may well be correct, and the report checks its verdicts against
+    such rows. Not used by the plan."""
+    expected = (event.expected_current or "").strip()
+    if event.control or not expected:
+        return False
+    others = [o for o in dict.fromkeys([*_unknown_names(response or "", event), *event.reject_aliases])
+              if _compact(o) and _another_person(o, event)]
+    text = response or ""
+    if others:
+        folded, index = _fold(text)
+        spans = [(*_span(text, index, m.start(), m.end()), _ANOTHER) for other in others
+                 for m in _form_matches(_loose(_tokens(other)), text, folded, index)]
+        text = _replace(text, spans)
+    return mentions_answer(text, event)
 
 
 def _name_parts(name: str) -> list[str]:

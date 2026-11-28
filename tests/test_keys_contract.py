@@ -12,7 +12,10 @@ the README's block order, section 10's overshoot row and both judges' budget are
 replay grades with the grading scope (with judges every rule grade incorrect or abstain of an answer that names the
 expected answer goes to the grading judges), the overshoot's qualifiers name what has started (the 440th and the 671st
 call) instead of where the cap is reached, the counts of the two-letter donor names are derived from the plan, and
-section 10's rows of the grading scope, the open offers and the overshoot's position are pinned."""
+section 10's rows of the grading scope, the open offers and the overshoot's position are pinned. Review of b86d67f: an
+open offer names the expected answer in any form, the run and the report count the answers the judges' votes left
+undecided, and the figures of sections 8 to 10 (from a mock run of the real plan with --judges, the replay with every
+judge call failing, the plan and the stored data) and the README's plan command (--today) are pinned."""
 
 from __future__ import annotations
 
@@ -583,7 +586,7 @@ def test_the_grading_scope_and_the_open_offers_have_their_figures(priced):
     assert f"In der Nachrechnung kostet das {n_extra} Judge-Aufrufe mehr" in text_de
     assert f"Von den {len(undecided)} gespeicherten Antworten, die die Regeln offen lassen, bietet keine die " \
         "richtige Antwort an." in text_de
-    assert "nach sieben Prüfrunden" in text_de
+    assert "nach acht Prüfrunden" in text_de                                  # review of b86d67f: eight rounds
 
 
 ARMS_DARK = ("alone", "key", "full", "wrong_key", "blank")
@@ -655,9 +658,11 @@ def test_the_judges_scope_is_stated_for_each_name():
         "arm and set)" in help_text
     assert "the rules decide alone only a grade correct and the answers that do not name the expected answer, and " \
         "for adoption the answers that do not name the donor's name" in help_text
-    assert "the report gives no verdict that the open offers, ungraded answers that offer the expected answer, could " \
+    assert "the report gives no verdict that the open offers, ungraded answers that name the expected answer, could " \
         "overturn" in help_text
-    assert "A failed or tied vote leaves the answer undecided, never to the rules" in help_text
+    # review of b86d67f: a reply without a verdict leaves the answer undecided too, and the run counts such answers
+    assert "A failed or tied vote, or a reply without a verdict, leaves the answer undecided, never to the rules " \
+        "(the run prints how many are)" in help_text
     assert "for the right name also another spelling or a doubt" not in help_text
     six = section(6)
     assert "**The judges' scope** (with `--judges`). The adoption judges decide every labelled answer that mentions " \
@@ -666,7 +671,8 @@ def test_the_judges_scope_is_stated_for_each_name():
     seven = section(7)
     assert "The gates, the 20 % limit and the checks against the undecided rows and the open offers are the same " \
         "whoever decides the rows." in seven
-    assert "an answered row is undecided, and an open offer, only when the judges' votes failed or tied" in seven
+    assert "an answered row is undecided, and an open offer, only when the judges' votes failed, tied or gave no " \
+        "verdict" in seven
     # the grading scope (check of 8cc83c5): the same principle for the grade
     assert "**The grading scope** (with `--judges`). The principle of the judges' scope (next point) holds for the " \
         "grade as well: the grading judges decide every answer that names the expected answer wherever the rules " \
@@ -691,7 +697,8 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     review = ["a two-letter surname alone", "a correction of another name, on every arm",
               "a judges' decision on resume", "the rules-versus-judges table"]
     latest = ["the grading scope", "open offers", "the position of the cap's overshoot"]
-    assert titles[-11:] == check + review + latest
+    newest = ["an open offer in any form", "answers the judges left undecided"]          # review of b86d67f
+    assert titles[-13:] == check + review + latest + newest
     seven = titles[titles.index("another role or a rejection in other words"):titles.index("the judges' scope")]
     assert len(seven) == 7 and seven[-1] == "the pilot's total and the cap"
     intro = " ".join(table[: table.index("| issue | before | now |")].split())
@@ -701,7 +708,13 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
     assert "A review of that change added the four rows from \"a two-letter surname alone\" to \"the " \
         "rules-versus-judges table\"" in intro
     assert "corrected two rows of the check in place: \"the rules without judges\"" in intro
-    assert "A check of that review's changes added the last three rows, from \"the grading scope\" on" in intro
+    assert "A check of that review's changes added the three rows from \"the grading scope\" to \"the position of " \
+        "the cap's overshoot\"" in intro
+    assert "A review of that check's changes added the last two rows, \"an open offer in any form\" and \"answers " \
+        "the judges left undecided\"" in intro
+    assert "It corrected two rows of the check in place: \"the grading scope\" (a second run with the same " \
+        "`--judges` sends nothing only once the judges have decided every row in their scope) and \"open offers\" " \
+        "(what `offers_expected` holds)" in intro
     assert "It corrected two rows in place as well: \"a correction of another name, on every arm\"" in intro
     assert "and \"the cap's overshoot\" (its qualifiers)" in intro
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
@@ -748,3 +761,227 @@ def test_section_10_records_the_judges_scope_and_its_refinements(priced):
         "counted as a miss in 3a: the row \"open offers\" ends that)" in correction
     assert "`adoption_name`" in added["a judges' decision on resume"]
     assert "a column of their own" in added["the rules-versus-judges table"]
+
+
+# ---- review of b86d67f ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def mock_judged(tmp_path_factory, priced):
+    """A --mock run of the real plan with --judges through the CLI, then the same command again (section 8): the mock's
+    judges give no verdict, so every row they are asked about stays undecided and the second run asks again."""
+    from cutoffmix.bench.io import read_jsonl, write_jsonl
+    from cutoffmix.bench.keys import build_report
+
+    tmp = tmp_path_factory.mktemp("mock_judged")
+    plan_file, out = tmp / "plan.jsonl", tmp / "results.jsonl"
+    write_jsonl(plan_file, priced["plan"])
+    argv = ["bench", "keys", "run", "--plan", str(plan_file), "--events", str(EVENTS), "--out", str(out), "--mock",
+            "--judges", JUDGE]
+    assert cutoffmix.cli.main(argv) == 0
+    first = read_jsonl(out)
+    assert cutoffmix.cli.main(argv) == 0
+    rows = read_jsonl(out)
+    last = {r["id"]: r for r in rows}
+    return {"first": first, "again": len(rows) - len(first), "last": last,
+            "report": build_report(priced["plan"], list(last.values()))}
+
+
+def test_the_mock_run_with_judges_has_the_figures_of_section_8(priced, mock_judged):
+    """Section 8's figures (review of b86d67f: none of them was pinned): the one row whose rule grade is in the grading
+    scope, the open offers of the full arms, and the answers the judges' votes left undecided, which the same command
+    asks about again (a second run with --judges sends nothing only once the judges decided every row)."""
+    from cutoffmix.bench.keys.common import judges_left_open
+    from cutoffmix.bench.keys.run import _rule_grade
+
+    events, first = priced["events"], mock_judged["first"]
+    scoped = [r for r in first if _rule_grade(events[r["event_id"]], r["response"], judges=True) is None
+              and _rule_grade(events[r["event_id"]], r["response"]) is not None]
+    assert [(r["set"], r["arm"], r["response"]) for r in scoped] == [("donor_wrong", "full", "Kunchang Li.")]
+    assert scoped[0]["offers_expected"] is False and events[scoped[0]["event_id"]].expected_current == "Xinhao Li"
+    totals = mock_judged["report"]["totals"]
+    full = sum(1 for r in first
+               if r["arm"] == "full" and r["set"] in ("dark", "both_right") and r["grade"] == "ungraded")
+    undecided = sum(1 for r in first if judges_left_open(r))
+    assert totals["open_offers"] == full and totals["judges_undecided"] == undecided == mock_judged["again"]
+    eight = section(8)
+    assert "(one row in the mock run of the real plan: the donor's \"Kunchang Li.\" beside the right answer Xinhao " \
+        "Li, which names Xinhao Li only inside another person's name and so is no open offer)" in eight
+    assert f"the undecided right names are open offers of the `full` arms ({full} in that run)" in eight
+    assert f"the answers the judges' votes left undecided ({undecided} in that run; the same command run again asks " \
+        "about them again)" in eight
+    six = section(6)
+    assert "Once the judges have decided every row in their scope, a second run with the same `--judges` sends " \
+        "nothing; a failed or tied vote, or a reply without a verdict, is asked again by every later run with " \
+        "`--judges` (and paid again)." in six
+    assert "and a second run with the same `--judges` sends nothing. A stored" not in six
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    scope = next(line for line in table.splitlines() if line.startswith("| the grading scope |"))
+    assert "once the judges have decided every row in their scope a second run with the same `--judges` sends " \
+        "nothing (a failed or tied vote, or a reply without a verdict, is asked again)" in scope
+    assert "a grade of the grading judges stands, and a second run with the same `--judges` sends nothing;" \
+        not in scope
+
+
+def test_the_figures_of_sections_9_and_10_that_follow_from_the_plan_and_the_stored_data(priced):
+    """Figures that no test pinned (review of b86d67f): the items in flight with a slow Sol call (one slot fewer than
+    --concurrency), the dark key rows of the open-offer row, its quote of the stored undecided answers, the README's
+    count of items the grading scope adds; and that the grading scope adds no second call to an item."""
+    from cutoffmix.bench.grading import grade_rule
+
+    nine = section(9)
+    assert f"(a slow Sol call, the 101st, can reach the cap while the first {CONCURRENCY - 1} Neon calls are in " \
+        "flight)" in nine
+    extra = priced["figures"]["extra"][0]
+    assert "so the grading scope adds no second call to an item (the per-item bound stands); it asks the grading " \
+        f"judges about items they were not asked about before ({extra} in the replay, below)" in nine
+    assert "so the grading scope adds no call to an item." not in nine
+    plan, events = priced["plan"], priced["events"]
+    dark_key = sum(1 for p in plan if p["set"] == "dark" and p["arm"] == "key")
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    offers = next(line for line in table.splitlines() if line.startswith("| open offers |"))
+    assert dark_key == 116 and f"3a read supported on {dark_key} such `dark` key rows" in offers
+    results = [r for r in load_results(RESULTS) if r.probe == "current_d"]
+    undecided = [r for r in results if grade_rule(events[r.event_id], "current_d", r.response or "") is None]
+    correct = sum(1 for r in undecided if r.grade == "correct")
+    assert f"(stored results: {correct} correct answer among {len(undecided)} undecided ones)" in offers
+    # the README's three items: the distinct events among the grading scope's extra calls of the replay
+    from cutoffmix.bench.keys.run import _rule_grade
+    added = {p["event_id"] for p in plan if _rule_grade(events[p["event_id"]], stored_answer(priced, p), judges=True)
+             is None and _rule_grade(events[p["event_id"]], stored_answer(priced, p)) is not None}
+    words = {2: "zwei", 3: "drei", 4: "vier", 5: "fünf"}
+    assert f"In der Nachrechnung kostet das {extra} Judge-Aufrufe mehr ({words[len(added)]} Fragen, bei denen Sol " \
+        "eine andere Person desselben Nachnamens nennt)" in readme()
+
+
+@pytest.fixture(scope="module")
+def failing_replay(tmp_path_factory, priced):
+    """The offline replay of section 9 through the real run_plan with --judges, every judge call failing."""
+    from cutoffmix.backends.base import BackendError
+    from cutoffmix.bench.keys import build_report
+
+    class Stored:
+        async def chat(self, model, req):
+            if req.metadata.get("purpose"):
+                raise BackendError("judge down", status=500)
+            p = {"event_id": req.metadata["event_id"], "recipient": model.key}
+            return ChatResult(text=stored_answer(priced, p), usage={"cost": 0.0}, finish_reason="stop")
+
+        def stream_continuation(self, model, req):  # pragma: no cover - unused
+            raise NotImplementedError
+    models = [ModelSpec(key=k, provider_id=f"x/{k}") for k in SHORT]
+    out = tmp_path_factory.mktemp("failing_replay") / "keys.jsonl"
+    got = asyncio.run(run_plan(Stored(), models, priced["plan"], out, events=priced["events"],
+                               judges=[ModelSpec(key=JUDGE, provider_id="judge/x")], concurrency=16,
+                               backend_name="scripted"))
+    return build_report(priced["plan"], got.rows)
+
+
+def test_an_open_offer_is_an_ungraded_answer_that_names_the_expected_answer(priced, failing_replay):
+    """Review of b86d67f: an open offer was an answer offers_answer reads as offering the expected answer, so a lost
+    grading vote on "Dr. Zhang", "Zhang et al.", a given name or a common surname alone, or "X?" counted as a miss with
+    no check, and without judges so did such an answer the paper rules cannot grade. The docs state the wider rule,
+    the figures of its row, and how a row that does not name the expected answer counts in each prediction; the
+    stored replay keeps its open offers."""
+    from cutoffmix.bench.grading import grade_rule
+
+    events = [priced["events"][e] for e in sorted({p["event_id"] for p in priced["plan"]})]
+    real = [e for e in events if not e.control]
+    open_et_al = sum(1 for e in real if grade_rule(e, "current_d", f"The first author is "
+                                                                   f"{e.expected_current.split()[-1]} et al.") is None)
+    open_question = sum(1 for e in real if grade_rule(e, "current_d", f"I'm not sure. {e.expected_current}?") is None)
+    text = DESIGN.read_text("utf-8")
+    table = text[text.index("### Refinements during the implementation review"):]
+    row = next(line for line in table.splitlines() if line.startswith("| an open offer in any form |"))
+    assert (len(real), open_et_al, open_question) == (107, 81, 107)
+    assert f"(without judges the paper rules leave \"Zhang et al.\" open on {open_et_al} of the {len(real)} events " \
+        f"with an expected answer and the question on all {open_question})" in row
+    kept = failing_replay["totals"]["open_offers"]
+    assert f"the stored replay keeps its open offers ({kept} with every judge call failing)" in row and kept == 20
+    assert "`offers_expected` is `offers_answer` or `names_answer`" in row
+    undecided = next(line for line in table.splitlines() if line.startswith("| answers the judges left undecided |"))
+    assert "the exit statuses are unchanged" in undecided
+    six, seven = section(6), section(7)
+    assert "`names_answer(text, event)` (the open offers, primary analysis below): `mentions_answer` of the answer " \
+        "once every name in it that the paper grader cannot place, and every distractor of the event, is blanked " \
+        "where it writes another person" in six
+    assert "It does not hold for an **open offer**: an answered row that is `ungraded` and whose answer names the " \
+        "expected answer (`offers_expected` true:" in six
+    # an ungraded row that does not name the expected answer: close to exact, and counted the way each prediction
+    # reads it (the review of b86d67f: section 6 called it conservative)
+    assert "close to exact rather than conservative: in 1, 1b and 2 an ungraded `key` row counts against the key and " \
+        "one of the other arm for it, in 3a an ungraded `key` row counts for `full`, and in 4 an ungraded `key` row " \
+        "counts as harm and an ungraded `alone` row against it" in six
+    assert "(conservative), those of the other arm" not in six
+    assert "Without `--judges` the rules decide as above, and the labels they leave open are undecided: the gates " \
+        "and checks of 3a and 3b (section 7) keep any verdict from resting on them." in six
+    assert "the report's gates and its check of the open offers (below, and section 7) keep any verdict" not in six
+    assert "An open offer is an answered `ungraded` row whose answer names the expected answer (`offers_expected`, " \
+        "section 6, primary analysis: it offers it, or names it in any other form other than inside another " \
+        "person's name)" in seven
+    assert "while an ungraded `key` row that does not name it, or names it only inside another person's name, counts " \
+        "as not correct and so for `full`, as in the primary analysis" in seven
+    text_de = readme()
+    assert "Kein Urteil stützt sich auf unbewertete Antworten, die die richtige Antwort nennen, ob die Regeln sie " \
+        "offen lassen oder die Stimme des Judge ausfiel." in text_de
+    assert "obwohl sie die richtige Antwort anbieten. Der Pilot" not in text_de
+    assert "unbewertete Antworten, die die richtige Antwort nennen (unten)" in text_de
+    assert "Jetzt ist jede unbewertete Antwort, die die richtige Antwort in irgendeiner Form nennt, ein offenes " \
+        "Angebot, außer sie nennt sie nur im Namen einer anderen Person („Yutong Mei“ bei Lingrui Mei)" in text_de
+    doc = " ".join((cutoffmix.cli.__doc__ or "").split())
+    assert "no verdict stands that the open offers (ungraded answers that name the expected answer) could overturn" \
+        in doc
+
+
+def test_with_judges_a_rule_grade_correct_stays_the_rules(priced):
+    """Review of b86d67f: the README's status line and the CLI's module docs said that with --judges the judge
+    decides every answer that names the name, the grade as well; a rule grade correct stays the rules' decision, as
+    section 6 says, and so does the grade of an answer that does not name the expected answer."""
+    from cutoffmix.bench.keys.run import _rule_grade
+
+    event = priced["events"]["paper:2507.13334"]
+    assert _rule_grade(event, "The first author is Lingrui Mei.", judges=True) == ("correct", False)
+    assert "A rule grade `correct` stays a rule decision" in section(6)
+    text_de = readme()
+    assert "entscheidet mit `--judges` der Judge bei der Übernahme jede Antwort, die den Namen nennt, und bei der " \
+        "Bewertung jede, die ihn nennt und die die Regeln sonst als falsch oder als Enthaltung werten würden; die " \
+        "festen Regeln entscheiden nur noch „richtig“, die Antworten ohne den Namen und den Lauf ohne Judge." in text_de
+    assert "bei der Bewertung wie bei der Übernahme" not in text_de
+    doc = " ".join((cutoffmix.cli.__doc__ or "").split())
+    assert "the rules only a grade correct and the answers that do not name them" in doc
+    assert "the rules only the answers that do not name them" not in doc
+
+
+def test_the_hedge_of_the_grading_scope_has_a_given_name(priced):
+    """Review of b86d67f: section 6 gave "I think it's X, but I'm not sure." (X the full name) as an abstention the
+    rules decided; with the full name the paper rules grade it correct, with the given name alone abstain."""
+    from cutoffmix.bench.grading import grade_rule
+    from cutoffmix.bench.keys.run import _judges_grade, _rule_grade
+
+    event = priced["events"]["paper:2507.13334"]
+    full, given = "I think it's Lingrui Mei, but I'm not sure.", "I think it's Lingrui, but I'm not sure."
+    assert grade_rule(event, "current_d", full)[0] == "correct" and _rule_grade(event, full, judges=True)[0] == \
+        "correct"
+    assert grade_rule(event, "current_d", given)[0] == "abstain" and _rule_grade(event, given, judges=True) is None
+    assert "\"I think it's Lingrui, but I'm not sure.\" with the given name only (`abstain` by the paper rules, " \
+        "which grade the same answer with the full name `correct`)" in section(6)
+    assert "\"I think it's X, but I'm not sure.\" (`abstain`" not in " ".join(DESIGN.read_text("utf-8").split())
+    assert "\"I think it's <given name>, but I'm not sure.\"" in " ".join((_judges_grade.__doc__ or "").split())
+
+
+def test_the_readme_plans_with_the_pre_registered_date(priced):
+    """Review of b86d67f (pre-existing): the README's plan command had no --today, so a plan made on the pilot day
+    differs from the pre-registered one in every system prompt (the ids and the estimate stay)."""
+    events = load_events(EVENTS)
+    later, _ = build_plan(events, load_results(RESULTS), today="2026-11-28")
+    plan = priced["plan"]
+    assert [p["id"] for p in later] == [p["id"] for p in plan]
+    assert sum(a["messages"] != b["messages"] for a, b in zip(later, plan, strict=True)) == len(plan) == 746
+    assert TODAY == "2026-11-27" and f"The version 2 plan (seed 0, `--today {TODAY}`) has **746 calls**" in section(9)
+    text_de = readme()
+    assert f"cutoffmix bench keys plan --events data/events/papers_events.jsonl --today {TODAY} \\ --results " \
+        "data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl" in text_de
+    assert f"das Datum des vorab festgelegten Plans, `--today {TODAY}` (ohne die Option nimmt `plan` das heutige " \
+        f"Datum, und alle {len(plan)} Prompts wären andere)" in text_de

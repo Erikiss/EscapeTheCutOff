@@ -46,14 +46,16 @@ ergänzt, was es Neueres weiß (siehe unten, „Rally-Preset“).
   Kennzahlen, CLI, Server und UI laufen gegen die simulierten Modelle; mit den echten drei Modellen wurde das Preset
   **noch nicht** gelaufen (kein Schlüssel in der Entwicklungsumgebung). Offen sind vor allem, ob Fables Eingangsfilter
   die Rally-Vorgabe durchlässt (beim Explore-Preset sperrte er) und ob die Modelle `Nothing newer:` ehrlich schreiben.
-- **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen
-  noch nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert
-  oder ob es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach sieben Prüfrunden
-  entscheidet mit `--judges` der Judge jede Antwort, die den Namen nennt, bei der Bewertung wie bei der Übernahme, die
-  festen Regeln nur noch den Rest und den Lauf ohne Judge, und kein Urteil stützt sich auf Antworten, die die Regeln
-  offen lassen, obwohl sie die richtige Antwort anbieten. Der Pilot hat 746 Aufrufe, kostet geschätzt 2,17 $ plus bis
-  etwa 0,45 $ für den Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt 3,00 $, eine Schätzung, keine
-  Obergrenze: die setzt `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit Freigabe und Schlüssel.
+- **Plato's-Key-Experiment („Schlüssel statt Antwort“): Version 2 gebaut, offline geprüft, mit den echten Modellen noch
+  nicht gelaufen.** Es misst, ob die maskierte Notiz eines anderen Modells ein Modell an eigenes Wissen erinnert oder ob
+  es nur abschreibt. Die Vorhersagen stehen vorab fest (`docs/DESIGN_keys.md`); nach acht Prüfrunden entscheidet mit
+  `--judges` der Judge bei der Übernahme jede Antwort, die den Namen nennt, und bei der Bewertung jede, die ihn nennt
+  und die die Regeln sonst als falsch oder als Enthaltung werten würden; die festen Regeln entscheiden nur noch
+  „richtig“, die Antworten ohne den Namen und den Lauf ohne Judge. Kein Urteil stützt sich auf unbewertete Antworten,
+  die die richtige Antwort nennen, ob die Regeln sie offen lassen oder die Stimme des Judge ausfiel. Der Pilot hat 746
+  Aufrufe, kostet geschätzt 2,17 $ plus bis etwa 0,45 $ für den Judge (im ungünstigsten Fall 0,83 $; zusammen geschätzt
+  3,00 $, eine Schätzung, keine Obergrenze: die setzt `--max-cost`, freigegeben werden sollen 3,5 $) und läuft erst mit
+  Freigabe und Schlüssel.
 - **Latenz (live gemessen):**
 
   | Modell | Zeit bis zum ersten Token | Dauer pro Abschnitt | Kosten pro Abschnitt |
@@ -422,7 +424,7 @@ nur gestützt oder unentschieden, nie widerlegt. Vorhersage 4 ist gestützt oder
 gemessene Mehrschaden unter der festen Schwelle von 10 Prozentpunkten liegt (ein Punktwert, kein statistischer
 Ausschluss), oder nicht testbar (unter 10 Fragen). Ein unvollständiger Lauf ergibt „vorläufig“ statt eines Urteils;
 Zeilen aus mehreren Backends ergeben gar keines. Nicht testbar ist eine Vorhersage auch, wenn offene Angebote ihr
-Urteil kippen könnten: unbewertete Antworten, die die richtige Antwort anbieten (unten).
+Urteil kippen könnten: unbewertete Antworten, die die richtige Antwort nennen (unten).
 
 **Version 2 nach einem Review.** Drei unabhängige Prüfer haben die erste Fassung angegriffen. Jeder Fund wurde
 gegengeprüft und auf dem echten Plan nachgerechnet; 16 Funde haben sich bestätigt. Die Regeln wurden geändert, bevor
@@ -554,8 +556,28 @@ Aufrufen eines Blocks“, „ab dem 664. Aufruf“) keine Grenzen: Ein langsamer
 starten und fertig werden. Jetzt hängen sie davon ab, was schon gestartet ist (unten). Die 746 geplanten Aufrufe sind
 dieselben geblieben.
 
+Eine Prüfung dieser Änderungen fand noch zwei Lücken, ebenfalls vor dem ersten echten Aufruf. Erstens galt eine
+unbewertete Antwort nur dann als offenes Angebot, wenn die festen Regeln die richtige Antwort darin als angeboten lesen
+(der volle Name oder ein seltener Nachname allein). Eine Antwort, die sie anders nennt („Dr. Zhang“, „Zhang et al.“, nur
+der Vorname, ein häufiger Nachname allein, „Ich bin nicht sicher. X?“), zählte ohne Prüfung als falsch, obwohl mit
+`--judges` gerade solche Antworten an den Bewertungs-Judge gehen. Fiel seine Stimme aus (ein fehlgeschlagener Aufruf,
+keine Mehrheit oder eine Antwort ohne Urteil), konnte das ein Urteil still entscheiden: Zwei ausgefallene Stimmen bei
+den 20 `key`-Antworten von `both_right` machten Vorhersage 4 zu „nicht gestützt“. Ohne Judge galt dasselbe für solche
+Antworten, die die Regeln gar nicht bewerten können. Jetzt ist jede unbewertete Antwort, die die richtige Antwort in
+irgendeiner Form nennt, ein offenes Angebot, außer sie nennt sie nur im Namen einer anderen Person („Yutong Mei“ bei
+Lingrui Mei); auch ein Zweifel oder eine Zurückweisung zählt, was ein Urteil höchstens nicht testbar macht, nie falsch.
+Eine unbewertete Antwort, die die richtige Antwort gar nicht nennt, ist dagegen fast sicher falsch und zählt weiter so.
+Zweitens galt eine Antwort ohne Urteil nicht als fehlgeschlagener Judge-Aufruf, der Lauf meldete sie nicht. Jetzt nennen
+Lauf und Bericht die Antworten, die nach den Stimmen des Judge offen sind, mit dem Hinweis, vor dem Bericht noch einmal
+mit `--judges` zu laufen. Außerdem sind einige Texte berichtigt: „richtig“ bleibt auch mit `--judges` eine Entscheidung
+der Regeln; ein zweiter Lauf mit `--judges` schickt nur dann nichts, wenn der Judge alles entschieden hat; und der
+Befehl für den Plan unten nennt das Datum des vorab festgelegten Plans, `--today 2026-11-27` (ohne die Option nimmt
+`plan` das heutige Datum, und alle 746 Prompts wären andere). Bei den gespeicherten Antworten ändert sich nichts: Die
+offenen Angebote und alle Urteile der Nachrechnung bleiben dieselben. Die 746 geplanten Aufrufe sind dieselben
+geblieben.
+
 ```bash
-cutoffmix bench keys plan --events data/events/papers_events.jsonl \
+cutoffmix bench keys plan --events data/events/papers_events.jsonl --today 2026-11-27 \
     --results data/results/papers_probes_2026-11-25.jsonl --out runs/keys_plan.jsonl   # offline, druckt die Kosten
 cutoffmix bench keys run --plan runs/keys_plan.jsonl --events data/events/papers_events.jsonl \
     --out runs/keys_results.jsonl --judges gpt-6.2-sol --max-cost 3.5   # echte Modelle; --max-cost ist Pflicht

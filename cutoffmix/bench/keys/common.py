@@ -89,6 +89,20 @@ def judge_cost(row: Mapping[str, Any] | None) -> float:
     return sum(row_cost(e) if "usage" in e else row_cost({"usage": e}) for e in entries if isinstance(e, Mapping))
 
 
+def judges_left_open(row: Mapping[str, Any] | None) -> bool:
+    """Whether the judges' votes left a result row undecided (design section 6): an answered row (no error, not a
+    refusal) whose grade the grading judges left ``ungraded`` (grader ``judge:<keys>``), or whose label the adoption
+    judges left undecided (``adopted`` None, ``adoption_grader`` ``judge:<keys>``): a failed call, a tie, or a reply
+    without a verdict (an HTTP 200 that no vote can be read from, which no failed call records). A later run with
+    judges asks again, without a new recipient call. ``run`` and ``report`` both count with this function."""
+    row = row or {}
+    if row.get("error") or row.get("grader") == "refusal":
+        return False
+    graded = row.get("grade") == "ungraded" and str(row.get("grader") or "").startswith("judge")
+    labelled = row.get("adoption") is not None and row.get("adopted") is None
+    return graded or (labelled and str(row.get("adoption_grader") or "").startswith("judge"))
+
+
 def prompt_sha(messages: Sequence[Mapping[str, Any]]) -> str:
     """sha1 (hex) of the canonical JSON of a call's messages: a result row records it, so a row answered under other
     messages than the plan's (another seed, date, template or mask) is recognised as stale (design section 6)."""
