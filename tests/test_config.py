@@ -69,8 +69,8 @@ def _preset_yaml(name: str) -> dict:
 
 
 def test_list_presets_and_unknown_preset():
-    assert list_presets() == ["explore"]
-    with pytest.raises(ConfigError, match=r"unknown preset 'nope'; available: explore"):
+    assert list_presets() == ["explore", "rally"]
+    with pytest.raises(ConfigError, match=r"unknown preset 'nope'; available: explore, rally"):
         load_config(preset="nope")
     with pytest.raises(ConfigError, match="unknown preset"):
         load_config(preset="../default")  # never a path

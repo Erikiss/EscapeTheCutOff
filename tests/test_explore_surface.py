@@ -92,7 +92,8 @@ async def test_server_mock_relay_with_the_preset_override(explore_server):
         assert models <= {"claude-fable-5.2", "gpt-6.2-sol", "gemini-4-neon"} and len(models) == 3
         cfg = (await c.get("/api/config")).json()
         assert cfg["mock"] is True and cfg["defaults"]["preset"] is None
-        assert cfg["presets"] == [{"name": "explore", "segment_tokens": 192, "max_segments": 16}]
+        assert cfg["presets"] == [{"name": "explore", "segment_tokens": 192, "max_segments": 16},
+                              {"name": "rally", "segment_tokens": 160, "max_segments": 12}]
     explore = _explore(done)
     assert explore["config"]["enabled"] is True and explore["lens"]["offered"] >= 1
     kinds = [e["data"].get("explore", {}).get("kind") for e in events if e["type"] == "segment_start"]

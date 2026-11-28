@@ -1,0 +1,31 @@
+# cutoffmix `rally` preset (DESIGN_rally.md): two or three models hand one record to each other in a fixed ring. Each
+# note confirms, corrects or extends the previous one with what the writer knows that is newer or different, and ends
+# with the newest month the writer really knows about. The exchange ends when a full revolution adds nothing, or at
+# rally.max_turns; one answer call then writes the answer, marking statements that only one model made.
+#
+# Loaded with `cutoffmix run --preset rally` / `cutoffmix serve --preset rally` / load_config(preset="rally"):
+# deep-merged over data/default.yaml BEFORE a user --config file and overrides. Not combinable with the explore
+# preset. Hand-over order is the ring, not the router; the router still picks the answer model among the ring.
+# Add the third model with `--ring claude-fable-5.2,gemini-4-neon,gpt-6.2-sol`.
+
+relay:
+  segment_tokens: 160
+  hard_cut_chars: 1500            # a note is a few labelled lines; 160 tokens of German run to ~900-1100 characters,
+                                  # and the closing 'Newest I know:' line is the last thing a cut removes (the record
+                                  # is read from the uncut note, but the next writer only sees the trimmed one)
+  max_segments: 12                # relay ceiling; rally.max_turns ends the exchange earlier
+  answer_mode: routed
+  disable_after_refusals: 3       # refusals count over the whole run; a refused hand-over costs one fallback note
+
+rally:
+  enabled: true
+  ring: [claude-fable-5.2, gemini-4-neon]
+  max_turns: 8                    # think notes (min_turns and quiet_turns default to 2x and 1x the ring size)
+  answer_basis: true              # the answer ends with 'Basis:' and 'Not resolved:'
+  answer_from_ring: true
+  partner_failures: 2             # consecutive failed hand-overs (errors, not refusals) that take a ring model out
+  # Models listed here get the light notes (the default system prompt, a prose tail, no label list). Anthropic's input
+  # filter blocked schema-heavy prompts for Fable in the explore preset (DESIGN.md 7.8), so Fable was listed until the
+  # live probe of 2026-11-28 (DESIGN_rally.md 4.1): the full rally prompt passed for Fable both as the opening note
+  # and as the hand-over of a labelled note. Put claude-fable-5.2 back here if its rally notes are refused.
+  light_schema_models: []

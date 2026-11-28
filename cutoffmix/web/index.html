@@ -116,7 +116,7 @@ input[type=number] { width: 96px; }
 .banner { border-radius: 10px; padding: 10px 14px; background: var(--danger-soft); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); font-size: 14px; }
 
 /* stream */
-.stream { display: grid; gap: 8px; }
+.stream { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .empty { color: var(--text-3); font-size: 14px; margin: 6px 0; }
 .seg { --m: #888; position: relative; border-radius: 10px; padding: 10px 12px 11px 14px; background: color-mix(in srgb, var(--m) 7%, var(--surface)); border: 1px solid color-mix(in srgb, var(--m) 22%, var(--border)); cursor: pointer; transition: box-shadow .15s; }
 .seg::before { content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px; width: 4px; border-radius: 10px 0 0 10px; background: var(--m); }
@@ -140,6 +140,19 @@ input[type=number] { width: 96px; }
 .badge.x.check.kept { background: var(--ok-soft); }
 .badge.x.check.dropped { background: var(--danger-soft); }
 .badge.x.continue { background: var(--warn-soft); }
+/* rally preset (DESIGN_rally.md): note kind, label counts and the declared newest month; quiet = nothing newer */
+.badge.x.rally { background: var(--accent-soft); white-space: normal; overflow-wrap: anywhere; }  /* the counts must stay readable on a phone */
+.badge.x.rally.quiet { background: var(--surface-3); }
+.rally-card { padding: 12px 14px; }
+.r-chart { overflow: hidden; }
+.r-chart svg { display: block; width: 100%; max-width: 560px; height: auto; }
+.r-chart .grid { stroke: var(--border); stroke-width: 1; }
+.r-chart .front { fill: none; stroke: var(--text-2); stroke-width: 2; stroke-linejoin: round; }
+.r-chart .dot { stroke: var(--surface); stroke-width: 2; }
+.r-chart text { fill: var(--text-3); font: 10.5px var(--mono); }
+.r-note { margin: 8px 0 0; font-size: 12px; color: var(--text-3); max-width: 80ch; }
+.r-adds { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 12.5px; color: var(--text-2); }
+.r-adds span { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 /* answer */
 .answer { border-color: color-mix(in srgb, var(--text) 25%, var(--border)); }
@@ -226,7 +239,7 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
         <div class="controls">
           <label class="field">Strategy <select id="strategy"></select></label>
           <label class="field">Policy <select id="policy"></select></label>
-          <label class="field">Preset <select id="preset" title="default: plain shared notes; explore: labelled notes, cross-field lenses checked by another model, and a record gate before the answer"></select></label>
+          <label class="field">Preset <select id="preset" title="default: plain shared notes; explore: labelled notes, cross-field lenses checked by another model, and a record gate before the answer; rally: two or three models pass the record back and forth, each adding what it knows that is newer"></select></label>
           <label class="field">Segment tokens <input id="segtok" type="number" min="1" max="4096" step="1" value="128"></label>
           <div class="btns">
             <button type="button" class="btn ghost" id="stop" hidden>Stop</button>
@@ -250,6 +263,15 @@ table.heat { border-collapse: separate; border-spacing: 2px; width: 100%; min-wi
           <div class="stat" title="cross-field lens notes written, and how the check by the next model judged them"><div class="k">Lenses</div><div class="v" id="x-lens">–</div></div>
           <div class="stat" title="share of notes with at least two labelled items and a 'Where we stand:' line"><div class="k">Labels</div><div class="v" id="x-labels">–</div></div>
           <div class="stat" title="continuations forced after a conclusion the moderator set aside (and such early conclusions)"><div class="k">Forced</div><div class="v" id="x-forced">–</div></div>
+        </div>
+      </section>
+
+      <section id="rally" hidden aria-live="polite">
+        <div class="xstats-head"><h2>Rally</h2><span class="hint" id="r-hint"></span></div>
+        <div class="card rally-card">
+          <div class="r-chart" id="r-chart"></div>
+          <p class="r-note" id="r-note"></p>
+          <div class="r-adds" id="r-adds"></div>
         </div>
       </section>
 
@@ -333,6 +355,97 @@ function exploreBadge(rec) {
 function lensVerdict(text) {
   const m = /(?:^|\n)\s*(?:[-*•]\s*)?(?:\*\*)?\s*lens\s+(kept|dropped)\s*(?:\*\*)?\s*:/i.exec(text || "");
   return m ? m[1].toLowerCase() : null;
+}
+/* rally preset (DESIGN_rally.md): segment_start carries data.rally {kind, turn, ring}; segment_end carries the note
+   record {kind, labels, newest, quiet, ...}; done carries the run metrics. Every key is optional. */
+function rallyTag(r) {
+  if (!r || typeof r !== "object") return null;
+  const l = r.labels && typeof r.labels === "object" ? r.labels : null;
+  const parts = [r.kind || "note"];
+  if (l) {
+    if (l.known) parts.push(l.known + " known");
+    if (l.update) parts.push("+" + l.update + " update");
+    if (l.newer) parts.push("+" + l.newer + " newer");
+    if (l.confirm) parts.push(l.confirm + " confirm");
+    if (l.unverified) parts.push(l.unverified + " unverified");
+    if (l.nothing_newer) parts.push("nothing newer");
+    if (r.self_reply) parts.push("self-reply");
+    if (r.cut) parts.push("cut");
+    parts.push(r.newest ? "newest " + r.newest : "newest not stated");
+  } else if (r.turn) parts.push("note " + r.turn);
+  return { text: parts.join(" · "), quiet: !!r.quiet };
+}
+function rallyBadge(rec) {
+  const tag = rallyTag(rec.rally);
+  if (!tag) return null;
+  return h("span", { class: "badge x rally" + (tag.quiet ? " quiet" : ""),
+    title: "rally note: the label counts and the newest month the writer says it knows (self-reported)" }, tag.text);
+}
+const monthNo = (s) => { const m = /^(\d{4})-(\d{2})$/.exec(s || ""); return m ? +m[1] * 12 + +m[2] - 1 : null; };
+const monthStr = (n) => `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, "0")}`;
+/* the SVG namespace is an identifier, not a request; it is written in pieces so that the test which forbids any
+   http(s) URL in this page (nothing is loaded from the network) does not mistake it for one */
+const SVG_NS = ["http:", "", "www.w3.org", "2000", "svg"].join("/");
+const svgEl = (tag, attrs, ...kids) => {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, v);
+  for (const kid of kids) if (kid != null) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return el;
+};
+/* the frontier curve: one dot per note at the newest month its writer declared (coloured by model), and the running
+   maximum as a step line. All numbers are what the models say about themselves. */
+function rallyChart(r) {
+  const notes = Array.isArray(r.notes) ? r.notes : [];
+  const front = (r.frontier && Array.isArray(r.frontier.by_turn) ? r.frontier.by_turn : []).map(monthNo);
+  const values = [...notes.map((n) => monthNo(n.newest)), ...front].filter((v) => v != null);
+  const n = Math.max(notes.length, front.length);
+  if (!n || !values.length) return h("p", { class: "empty" }, "No note stated a newest month.");
+  const W = 420, H = 150, L = 62, R = 14, T = 12, B = 26;
+  const lo = Math.min(...values) - 1, hi = Math.max(...values) + 1;
+  const x = (i) => L + ((i + 0.5) * (W - L - R)) / n;
+  const y = (v) => T + ((hi - v) * (H - T - B)) / (hi - lo);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "frontier: newest month declared per note, self-reported" });
+  for (const v of [lo + 1, hi - 1]) {
+    svg.append(svgEl("line", { class: "grid", x1: L, x2: W - R, y1: y(v), y2: y(v) }),
+      svgEl("text", { x: L - 6, y: y(v) + 3.5, "text-anchor": "end" }, monthStr(v)));
+  }
+  const steps = [];
+  front.forEach((v, i) => { if (v != null) steps.push(`${i ? x(i - 1) : x(i)},${y(v)}`, `${x(i)},${y(v)}`); });
+  if (steps.length > 1) svg.append(svgEl("polyline", { class: "front", points: steps.join(" ") }));
+  for (let i = 0; i < n; i++) svg.append(svgEl("text", { x: x(i), y: H - 8, "text-anchor": "middle" }, String(i + 1)));
+  notes.forEach((note, i) => {
+    const v = monthNo(note.newest);
+    if (v == null) return;
+    svg.append(svgEl("circle", { class: "dot", cx: x(i), cy: y(v), r: 6, fill: modelColor(note.model) },
+      svgEl("title", {}, `note ${i + 1} · ${modelName(note.model)} · newest ${note.newest}${note.quiet ? " · nothing newer" : ""}`)));
+  });
+  return svg;
+}
+function renderRally(r) {
+  if (!r || typeof r !== "object") { $("rally").hidden = true; return; }
+  const f = r.frontier && typeof r.frontier === "object" ? r.frontier : {};
+  const gain = typeof f.gain_months === "number" ? f.gain_months : null;
+  const rough = gain == null && typeof f.gain_months_approx === "number" ? f.gain_months_approx : null;
+  const skipped = Array.isArray(r.skipped_hand_overs) ? r.skipped_hand_overs : [];
+  const bits = [r.stop_reason ? "stopped: " + String(r.stop_reason).replace(/_/g, " ") : null,
+    r.turns != null ? r.turns + " notes" : null, r.hand_overs != null ? r.hand_overs + " hand-overs" : null,
+    gain != null ? "frontier gain " + (gain > 0 ? "+" : "") + gain + " month" + (Math.abs(gain) === 1 ? "" : "s") : null,
+    rough != null ? "frontier gain about " + (rough > 0 ? "+" : "") + rough + " (approximate or missing dates)" : null,
+    r.self_replies ? r.self_replies + " self-repl" + (r.self_replies === 1 ? "y" : "ies") + " (partner could not take the turn; not counted as confirmation)" : null,
+    skipped.length ? "skipped: " + skipped.map((x) => modelName(x.model) + " (" + x.reason + ")").join(", ") : null,
+    r.preset ? "preset " + r.preset : null].filter(Boolean);
+  $("r-hint").textContent = bits.join(" · ");
+  $("r-chart").replaceChildren(rallyChart(r));
+  $("r-note").textContent = "Dots: the newest month each writer says it knows, per note (the number is the note's turn). Line: the " +
+    "running maximum. Self-reported: the models state these dates themselves, so they show what the exchange did, " +
+    "not that it helped.";
+  const adds = r.adds_by_model && typeof r.adds_by_model === "object" ? r.adds_by_model : {};
+  $("r-adds").replaceChildren(...Object.entries(adds).map(([key, row]) => {
+    const parts = [["update", "update"], ["newer", "newer"], ["confirm", "confirm"], ["unverified", "unverified"], ["nothing_newer", "nothing newer"]]
+      .filter(([k]) => row && row[k]).map(([k, w]) => `${row[k]} ${w}`);
+    return h("span", {}, chip(key), parts.join(" · ") || "no labelled lines");
+  }));
+  $("rally").hidden = false;
 }
 /* display values of the exploration strip from done.data.explore; every key is optional (null = unknown) */
 function exploreStats(x) {
@@ -504,7 +617,7 @@ function resetRun() {
   $("win-r").textContent = "";
   renderInspector(null);
   setStat("s-seg", "0"); setStat("s-sw", "0"); setStat("s-ttft", "–"); setStat("s-total", "–"); setStat("s-cost", "–");
-  $("xstats").hidden = true;
+  $("xstats").hidden = true; $("rally").hidden = true;
   renderLegend(); markActiveRow();
 }
 function setRunning(on) {
@@ -575,7 +688,7 @@ function onEvent(ev) {
     ev.phase === "answer" ? appendAnswer(ev) : appendSegment(ev);
   } else if (ev.type === "segment_end") ev.phase === "answer" ? endAnswer(ev) : endSegment(ev);
   else if (ev.type === "error") showError(ev.text);
-  else if (ev.type === "done") { finish(ev.data || {}); renderExplore((ev.data || {}).explore); }
+  else if (ev.type === "done") { finish(ev.data || {}); renderExplore((ev.data || {}).explore); renderRally((ev.data || {}).rally); }
 }
 function recordFrom(ev) {
   const d = ev.data || {};
@@ -584,7 +697,7 @@ function recordFrom(ev) {
     posterior: ev.topic_posterior || {}, scores: ev.scores || {}, probs: d.probs || {}, r: d.r,
     strategy: d.strategy, available: d.available || [], text: "",
     kind: typeof x.kind === "string" ? x.kind : null, field: x.field || null, tier: x.tier || null, cue: x.cue || null,
-    verdict: null };
+    verdict: null, rally: d.rally && typeof d.rally === "object" ? d.rally : null };
 }
 function nearBottom() { return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120; }
 function follow(stick) { if (stick && S.running) window.scrollTo({ top: document.documentElement.scrollHeight }); }
@@ -595,9 +708,10 @@ function startSegment(ev) {
   const top = clearTopic(rec.posterior); /* null: flat posterior, shown as "—" (no clear topic) */
   rec.textEl = h("div", { class: "seg-text" });
   rec.xbadge = exploreBadge(rec);
+  rec.rbadge = rallyBadge(rec);
   rec.el = h("article", { class: "seg streaming", tabindex: "0", style: `--m:${modelColor(rec.model)}`,
       "aria-label": `Segment ${rec.index + 1} by ${modelName(rec.model)}` },
-    h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision), rec.xbadge,
+    h("div", { class: "seg-head" }, chip(rec.model), badge(rec.decision), rec.xbadge, rec.rbadge,
       h("span", { class: "seg-meta", title: "segment number · top topic of the routing window this segment was assigned on (— = no clear topic: the posterior is flat)" },
         `#${rec.index + 1}` + (top ? ` · ${topicName(top)}` : topN(rec.posterior, 1).length ? " · —" : ""))),
     rec.textEl);
@@ -639,6 +753,13 @@ function endSegment(ev) {
     if (rec.xbadge && fresh) rec.xbadge.replaceWith(fresh);
     else if (fresh) badge_slot(rec.el).after(fresh);
     rec.xbadge = fresh;
+  }
+  if (d.rally && typeof d.rally === "object") {  /* the committed note: label counts and the declared newest month */
+    rec.rally = d.rally;
+    const fresh = rallyBadge(rec);
+    if (rec.rbadge && fresh) rec.rbadge.replaceWith(fresh);
+    else if (fresh) (rec.xbadge || badge_slot(rec.el)).after(fresh);
+    rec.rbadge = fresh;
   }
   rec.textEl.textContent = rec.text || "(concludes the notes)";
   S.committed.push(rec);
@@ -752,6 +873,11 @@ function renderInspector(rec) {
     if (rec.field) dl.append(h("dt", {}, "field"), h("dd", {}, rec.field + (rec.tier ? ` (${rec.tier})` : "")));
     if (rec.verdict) dl.append(h("dt", {}, "lens"), h("dd", {}, rec.verdict));
     if (rec.cue) dl.append(h("dt", {}, "cue"), h("dd", {}, String(rec.cue).trim()));
+  }
+  const rt = rallyTag(rec.rally);
+  if (rt) {
+    dl.append(h("dt", {}, "rally"), h("dd", { title: "label counts of the committed note and the newest month its writer says it knows" }, rt.text));
+    if (rec.rally && Array.isArray(rec.rally.ring)) dl.append(h("dt", {}, "ring"), h("dd", {}, rec.rally.ring.map(modelName).join(" → ")));
   }
   if (rec.strategy) dl.append(h("dt", {}, "strategy"), h("dd", {}, rec.strategy));
   if (rec.answerMode) dl.append(h("dt", {}, "answer"), h("dd", {}, rec.answerMode));

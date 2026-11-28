@@ -1,0 +1,442 @@
+{
+  "question": "Welche ist die neueste stabile Python-Version, und wann ist sie erschienen?",
+  "segments": [
+    {
+      "index": 0,
+      "model": "gemini-4-neon",
+      "phase": "think",
+      "text": "Known: Oktober 2024 – Python 3.13.0 erschien als stabile Hauptversion.\nKnown: Oktober 2025 – Python 3.14.0 wurde am 7. Oktober 2025 als stabile Hauptversion veröffentlicht.\nKnown: Dezember 2025 – Python 3.14.1 erschien als Bugfix-Release der 3.14-Reihe.\nKnown: Februar 2026 – Python 3.14.3 war das neueste mir bekannte stabile Wartungs-Release (am unsichersten bin ich bei der genauen Patch-Nummer und dem exakten Erscheinungsmonat).\nKnown: Oktober 2026 – Python 3.15.0 war gemäß dem offiziellen Release-Plan für diesen Monat vorgesehen, eine tatsächliche Veröffentlichung liegt jedoch außerhalb meines Wissensstands.\nNewest I know: Februar 2026",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0397,
+        "international_relations": 0.0397,
+        "government": 0.0397,
+        "elections": 0.0397,
+        "law_crime": 0.0397,
+        "accidents": 0.0397,
+        "natural_disasters_climate": 0.0397,
+        "health_medicine": 0.0397,
+        "business_economy": 0.0397,
+        "ai_ml": 0.0397,
+        "computing_software": 0.444,
+        "space_astronomy": 0.0397,
+        "science_research": 0.0397,
+        "sports": 0.0397,
+        "arts_entertainment": 0.0397
+      },
+      "scores": {
+        "gemini-4-neon": 25.677,
+        "claude-fable-5.2": 25.547
+      },
+      "started_at": 1795861994.2837095,
+      "ended_at": 1795862002.2910986,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795861994-8ZGvErD7DDXbhO2RkEq6",
+        "prompt_tokens": 406,
+        "completion_tokens": 939,
+        "total_tokens": 1345,
+        "cost": 0.015303,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.015303,
+          "upstream_inference_prompt_cost": 0.001218,
+          "upstream_inference_completions_cost": 0.014085
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 732,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": null,
+      "rally": {
+        "index": 0,
+        "model": "gemini-4-neon",
+        "kind": "open",
+        "labels": {
+          "known": 5,
+          "confirm": 0,
+          "update": 0,
+          "newer": 0,
+          "unverified": 0,
+          "nothing_newer": 0
+        },
+        "newest": "2026-02",
+        "newest_raw": "Februar 2026",
+        "approx": false,
+        "future": false,
+        "mentioned": "2026-10",
+        "quiet": false,
+        "self_reply": false,
+        "cut": false,
+        "light": false
+      }
+    },
+    {
+      "index": 1,
+      "model": "claude-fable-5.2",
+      "phase": "think",
+      "text": "Confirm: Oktober 2024 – Python 3.13.0 erschien am 7. Oktober 2024.\nConfirm: Oktober 2025 – Python 3.14.0 erschien am 7. Oktober 2025.\nConfirm: Dezember 2025 – Python 3.14.1 erschien Anfang des Monats. Kurz darauf folgte, soweit ich weiß, noch im Dezember 2025 Python 3.14.2 als Korrektur-Release.\nUnverified: Februar 2026 – Python 3.14.3 ist nach dem üblichen Zwei-Monats-Rhythmus plausibel, ich kann aber weder die Patch-Nummer noch den Monat bestätigen.\nUnverified: Oktober 2026 – Python 3.15.0 war laut Release-Plan für diesen Monat vorgesehen. Ob es tatsächlich erschienen ist, weiß ich nicht.\nNothing newer: nach Februar 2026 – geprüft habe ich weitere 3.14-Wartungs-Releases und die Veröffentlichung von 3.15.0; dazu habe ich kein Wissen.\nNewest I know: Dezember 2025",
+      "decision": "forced",
+      "topic_posterior": {
+        "conflict_security": 0.0286,
+        "international_relations": 0.0286,
+        "government": 0.0286,
+        "elections": 0.0286,
+        "law_crime": 0.0286,
+        "accidents": 0.0286,
+        "natural_disasters_climate": 0.0286,
+        "health_medicine": 0.0286,
+        "business_economy": 0.0286,
+        "ai_ml": 0.0286,
+        "computing_software": 0.6003,
+        "space_astronomy": 0.0286,
+        "science_research": 0.0286,
+        "sports": 0.0286,
+        "arts_entertainment": 0.0286
+      },
+      "scores": {
+        "gemini-4-neon": 25.489,
+        "claude-fable-5.2": 25.301
+      },
+      "started_at": 1795862002.293954,
+      "ended_at": 1795862012.2101858,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795862002-BUX8u9eqIDSUoefmMwaQ",
+        "prompt_tokens": 1005,
+        "completion_tokens": 841,
+        "total_tokens": 1846,
+        "cost": 0.043216,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 768,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.043216,
+          "upstream_inference_prompt_cost": 0.009576,
+          "upstream_inference_completions_cost": 0.03364
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 422,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": null,
+      "rally": {
+        "index": 1,
+        "model": "claude-fable-5.2",
+        "kind": "reply",
+        "labels": {
+          "known": 0,
+          "confirm": 3,
+          "update": 0,
+          "newer": 0,
+          "unverified": 2,
+          "nothing_newer": 1
+        },
+        "newest": "2025-12",
+        "newest_raw": "Dezember 2025",
+        "approx": false,
+        "future": false,
+        "mentioned": "2026-10",
+        "quiet": true,
+        "self_reply": false,
+        "cut": false,
+        "light": false
+      }
+    },
+    {
+      "index": 2,
+      "model": "gemini-4-neon",
+      "phase": "answer",
+      "text": "Die neueste im vorliegenden Wissensstand belegte stabile Python-Version ist **Python 3.14.3**, erschienen im **Februar 2026** (single source). Das neueste gestützte Datum ist **Februar 2026** (unabhängig bestätigt ist der Stand bis **Dezember 2025**).\n\nDa heute der 28. November 2026 ist, ist diese Angabe sehr wahrscheinlich veraltet: **Python 3.15.0** war gemäß dem offiziellen Release-Plan für **Oktober 2026** vorgesehen und dürfte inzwischen als neueste stabile Hauptversion erschienen sein. Zudem sind nach Februar 2026 voraussichtlich weitere Wartungs-Releases der 3.14-Reihe gefolgt.\n\nBestätigt sind die vorangegangenen Releases: **Python 3.13.0** erschien am **7. Oktober 2024**, **Python 3.14.0** am **7. Oktober 2025** und **Python 3.14.1** Anfang **Dezember 2025**. Kurz darauf folgte noch im **Dezember 2025** **Python 3.14.2** als Korrektur-Release (single source).\n\nBasis:\n- Python 3.13.0 erschien am 7. Oktober 2024 (bestätigt).\n- Python 3.14.0 erschien am 7. Oktober 2025 (bestätigt).\n- Python 3.14.1 erschien Anfang Dezember 2025 (bestätigt).\n- Python 3.14.2 erschien kurz darauf im Dezember 2025 als Korrektur-Release (single source).\n- Python 3.14.3 erschien im Februar 2026 als Wartungs-Release (single source; nach dem üblichen Zwei-Monats-Rhythmus plausibel, aber weder Patch-Nummer noch Monat unabhängig bestätigt).\n- Python 3.15.0 war laut offiziellem Release-Plan für Oktober 2026 vorgesehen.\n\nNot resolved:\n- Ob Python 3.15.0 im Oktober 2026 tatsächlich erschienen ist und an welchem genauen Datum (sowie ob bereits ein Bugfix-Release wie 3.15.1 folgte).\n- Das genaue Erscheinungsdatum von Python 3.14.3 sowie ob und welche weiteren Wartungs-Releases der 3.14-Reihe nach Februar 2026 erschienen sind.",
+      "decision": "sample",
+      "topic_posterior": {
+        "conflict_security": 0.0211,
+        "international_relations": 0.0211,
+        "government": 0.0211,
+        "elections": 0.0211,
+        "law_crime": 0.0211,
+        "accidents": 0.0211,
+        "natural_disasters_climate": 0.0211,
+        "health_medicine": 0.0211,
+        "business_economy": 0.0211,
+        "ai_ml": 0.0211,
+        "computing_software": 0.7042,
+        "space_astronomy": 0.0211,
+        "science_research": 0.0211,
+        "sports": 0.0211,
+        "arts_entertainment": 0.0211
+      },
+      "scores": {
+        "gemini-4-neon": 25.359,
+        "claude-fable-5.2": 25.133
+      },
+      "started_at": 1795862012.2149773,
+      "ended_at": 1795862024.9750438,
+      "aborted": false,
+      "usage": {
+        "generation_id": "gen-1795862012-F5ZFQNHNDswgH5tI4KKb",
+        "prompt_tokens": 725,
+        "completion_tokens": 1504,
+        "total_tokens": 2229,
+        "cost": 0.024735,
+        "is_byok": false,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "cost_details": {
+          "upstream_inference_cost": 0.024735,
+          "upstream_inference_prompt_cost": 0.002175,
+          "upstream_inference_completions_cost": 0.02256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 930,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "note": "stop",
+      "explore": null
+    }
+  ],
+  "answer": "Die neueste im vorliegenden Wissensstand belegte stabile Python-Version ist **Python 3.14.3**, erschienen im **Februar 2026** (single source). Das neueste gestützte Datum ist **Februar 2026** (unabhängig bestätigt ist der Stand bis **Dezember 2025**).\n\nDa heute der 28. November 2026 ist, ist diese Angabe sehr wahrscheinlich veraltet: **Python 3.15.0** war gemäß dem offiziellen Release-Plan für **Oktober 2026** vorgesehen und dürfte inzwischen als neueste stabile Hauptversion erschienen sein. Zudem sind nach Februar 2026 voraussichtlich weitere Wartungs-Releases der 3.14-Reihe gefolgt.\n\nBestätigt sind die vorangegangenen Releases: **Python 3.13.0** erschien am **7. Oktober 2024**, **Python 3.14.0** am **7. Oktober 2025** und **Python 3.14.1** Anfang **Dezember 2025**. Kurz darauf folgte noch im **Dezember 2025** **Python 3.14.2** als Korrektur-Release (single source).\n\nBasis:\n- Python 3.13.0 erschien am 7. Oktober 2024 (bestätigt).\n- Python 3.14.0 erschien am 7. Oktober 2025 (bestätigt).\n- Python 3.14.1 erschien Anfang Dezember 2025 (bestätigt).\n- Python 3.14.2 erschien kurz darauf im Dezember 2025 als Korrektur-Release (single source).\n- Python 3.14.3 erschien im Februar 2026 als Wartungs-Release (single source; nach dem üblichen Zwei-Monats-Rhythmus plausibel, aber weder Patch-Nummer noch Monat unabhängig bestätigt).\n- Python 3.15.0 war laut offiziellem Release-Plan für Oktober 2026 vorgesehen.\n\nNot resolved:\n- Ob Python 3.15.0 im Oktober 2026 tatsächlich erschienen ist und an welchem genauen Datum (sowie ob bereits ein Bugfix-Release wie 3.15.1 folgte).\n- Das genaue Erscheinungsdatum von Python 3.14.3 sowie ob und welche weiteren Wartungs-Releases der 3.14-Reihe nach Februar 2026 erschienen sind.",
+  "started_at": 1795861994.282611,
+  "ended_at": 1795862024.975451,
+  "switches": 1,
+  "share_by_model": {
+    "gemini-4-neon": 0.45486600846262343,
+    "claude-fable-5.2": 0.5451339915373766
+  },
+  "rally": {
+    "ring": [
+      "gemini-4-neon",
+      "claude-fable-5.2"
+    ],
+    "preset": "rally",
+    "turns": 2,
+    "stop_reason": "max_turns",
+    "quiet_streak": 1,
+    "min_turns": 2,
+    "max_turns": 2,
+    "quiet_turns": 2,
+    "notes": [
+      {
+        "index": 0,
+        "model": "gemini-4-neon",
+        "kind": "open",
+        "labels": {
+          "known": 5,
+          "confirm": 0,
+          "update": 0,
+          "newer": 0,
+          "unverified": 0,
+          "nothing_newer": 0
+        },
+        "newest": "2026-02",
+        "newest_raw": "Februar 2026",
+        "approx": false,
+        "future": false,
+        "mentioned": "2026-10",
+        "quiet": false,
+        "self_reply": false,
+        "cut": false,
+        "light": false
+      },
+      {
+        "index": 1,
+        "model": "claude-fable-5.2",
+        "kind": "reply",
+        "labels": {
+          "known": 0,
+          "confirm": 3,
+          "update": 0,
+          "newer": 0,
+          "unverified": 2,
+          "nothing_newer": 1
+        },
+        "newest": "2025-12",
+        "newest_raw": "Dezember 2025",
+        "approx": false,
+        "future": false,
+        "mentioned": "2026-10",
+        "quiet": true,
+        "self_reply": false,
+        "cut": false,
+        "light": false
+      }
+    ],
+    "frontier": {
+      "self_reported": true,
+      "by_turn": [
+        "2026-02",
+        "2026-02"
+      ],
+      "by_turn_approx": [
+        false,
+        false
+      ],
+      "first_declared": {
+        "gemini-4-neon": "2026-02",
+        "claude-fable-5.2": "2025-12"
+      },
+      "final": "2026-02",
+      "gain_months": 0,
+      "gain_months_approx": null
+    },
+    "adds_by_model": {
+      "gemini-4-neon": {
+        "confirm": 0,
+        "update": 0,
+        "newer": 0,
+        "unverified": 0,
+        "nothing_newer": 0
+      },
+      "claude-fable-5.2": {
+        "confirm": 3,
+        "update": 0,
+        "newer": 0,
+        "unverified": 2,
+        "nothing_newer": 1
+      }
+    },
+    "unlabelled_replies": 0,
+    "self_replies": 0,
+    "skipped_hand_overs": [],
+    "hand_overs": 1
+  },
+  "usage": {
+    "gemini-4-neon": {
+      "calls": 2,
+      "prompt_tokens": 1131,
+      "completion_tokens": 2443,
+      "total_tokens": 3574,
+      "cost": 0.040038000000000004,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.040038000000000004,
+        "upstream_inference_prompt_cost": 0.0033929999999999997,
+        "upstream_inference_completions_cost": 0.036645
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1662,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "claude-fable-5.2": {
+      "calls": 1,
+      "prompt_tokens": 1005,
+      "completion_tokens": 841,
+      "total_tokens": 1846,
+      "cost": 0.043216,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 768,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.043216,
+        "upstream_inference_prompt_cost": 0.009576,
+        "upstream_inference_completions_cost": 0.03364
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 422,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    }
+  },
+  "latency": {
+    "total_s": 30.6929,
+    "first_delta_s": 6.6114,
+    "segments": [
+      {
+        "index": 0,
+        "model": "gemini-4-neon",
+        "phase": "think",
+        "ttft_s": 6.4123,
+        "duration_s": 8.0074
+      },
+      {
+        "index": 1,
+        "model": "claude-fable-5.2",
+        "phase": "think",
+        "ttft_s": 7.273,
+        "duration_s": 9.9162
+      },
+      {
+        "index": 2,
+        "model": "gemini-4-neon",
+        "phase": "answer",
+        "ttft_s": 8.1597,
+        "duration_s": 12.7601
+      }
+    ],
+    "per_model": {
+      "gemini-4-neon": {
+        "segments": 2,
+        "mean_ttft_s": 7.286,
+        "mean_duration_s": 10.3837
+      },
+      "claude-fable-5.2": {
+        "segments": 1,
+        "mean_ttft_s": 7.273,
+        "mean_duration_s": 9.9162
+      }
+    }
+  },
+  "usage_total": {
+    "calls": 3,
+    "prompt_tokens": 2136,
+    "completion_tokens": 3284,
+    "total_tokens": 5420,
+    "cost": 0.083254,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 768,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "cost_details": {
+      "upstream_inference_cost": 0.083254,
+      "upstream_inference_prompt_cost": 0.012969,
+      "upstream_inference_completions_cost": 0.070285
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 2084,
+      "image_tokens": 0,
+      "audio_tokens": 0
+    }
+  },
+  "usage_complete": true,
+  "usage_missing": [],
+  "run_id": "ee2b173c400849d7",
+  "status": "ok",
+  "dropped": [],
+  "refusals": {},
+  "disabled": []
+}

@@ -502,7 +502,8 @@ _INITIAL = re.compile(r"^[A-Z]\.$")
 _TOKEN_TRIM = "()[]{}\"'“”‘’*_,;:!?"
 _NAME_PARTICLES = frozenset({"van", "von", "de", "der", "den", "da", "di", "du", "la", "le", "del", "bin", "ibn"})
 # stop words that are also surnames: inside a run after a name-like token ("Feng He", "Long May") they are names
-_SURNAME_HOMOGRAPHS = frozenset({"he", "an", "will", "may", "so", "do", "no", "see", "well", "long", "young", "new"})
+_SURNAME_HOMOGRAPHS = frozenset({"he", "she", "an", "will", "may", "so", "do", "no", "see", "well", "long", "young",
+                                 "new"})
 _POSSESSIVE = re.compile(r"['’]s$")
 # Markdown emphasis around an answer ("**Sho Maeoki**", "*Sho Maeoki*", "`Sho Maeoki`", "__Sho Maeoki__"): the
 # markers are not part of the name and must not stick to it ("Maeoki**." is "Maeoki.").

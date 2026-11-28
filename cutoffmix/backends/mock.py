@@ -15,6 +15,18 @@ so tests, ``cutoffmix simulate`` and the ``--mock`` UI demo are reproducible:
   opening cue after a conclusion the moderator set aside, and ``FINAL ANSWER:`` only when the tail says the
   moderator accepts a conclusion (plus one deliberate early attempt per run, so the continuation path is exercised).
   Without ``system_override`` the output is exactly the default one.
+- Under the rally preset (DESIGN_rally.md; the request carries ``metadata["kind"]`` ``"open"`` or ``"reply"``) every
+  simulated model writes labelled rally notes: its "newest I know" month is its true cutoff for the topic. A reply
+  confirms and says ``Nothing newer:`` unless the writer knows a month the record does not have yet (``Update:`` and
+  ``Newer:``); a model that is shown a note with newer items may recall one month more than it first declared, once.
+  The answer phase marks single-source statements and, when asked, ends with ``Basis:`` and ``Not resolved:``.
+- Under the key experiment (DESIGN_keys.md; the probe request carries ``metadata["arm"]``) ``key``, ``full`` and
+  ``wrong_key`` start from the model's ordinary answer to the probe. ``key`` turns a miss into the right answer with
+  probability :data:`KEY_DARK_RECALL` when the event lies at most :data:`KEY_DARK_WINDOW_MONTHS` months after the
+  model's cutoff for the topic (a simulated dark memory: just past the cutoff, where a pointer can still help);
+  ``full`` answers with the name in the note (``metadata["donor_answer"]`` when the donor was wrong, else the right
+  answer) with probability :data:`FULL_COPY`; ``wrong_key`` is the ordinary answer. These numbers are chosen, not
+  measured: the mock exercises the pipeline and says nothing about the real models.
 """
 
 from __future__ import annotations
@@ -30,6 +42,8 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from cutoffmix.backends.base import BackendError
+from cutoffmix.prompts import month_display
+from cutoffmix.rally import month_number, parse_note
 from cutoffmix.timeutil import month_label, parse_fractional_month, today_month
 from cutoffmix.types import ChatRequest, ChatResult, ContinuationRequest, Event, ModelSpec, StreamEvent, TopicClassifier
 
@@ -37,6 +51,11 @@ CHUNK_CHARS = 8
 _WINDOW_SEGMENTS = 3  # notes taken into account when picking the topic of a mock segment
 _MAX_QUESTION_TOPICS = 3  # a question is covered topic by topic for at most this many topics
 _SEGMENTS_PER_TOPIC = 3
+# key experiment (DESIGN_keys.md section 8): chosen constants of the simulated recipient, not measurements
+KEY_DARK_WINDOW_MONTHS = 4.0  # a miss on an event at most this many months after the cutoff can be a dark memory
+KEY_DARK_RECALL = 0.35  # P(a masked key turns such a miss into the right answer)
+FULL_COPY = 0.8  # P(the recipient answers with the name in a full note)
+KEY_ARMS = ("key", "full", "wrong_key")  # the arms that carry a note; "alone" is the plain probe
 
 
 @dataclass
@@ -240,6 +259,25 @@ _ANSWER_BASIS = (
 )
 
 
+# ---- rally preset (DESIGN_rally.md) ----------------------------------------------------------------------------
+_RALLY_ANSWER_MARK = "exchange between analysts"  # only in the rally's answer system prompt (prompts.ANSWER_RALLY_SENTENCE)
+_RALLY_LEADS = ("the dated claims above", "the dates and statements above", "what the notes say so far",
+                "the earlier items", "the record as it stands", "the claims made so far")  # a repeated note would be dropped
+_RALLY_BASIS = (
+    "\n\nBasis: the claims that a second analyst confirmed in the exchange, up to {confirmed}.\n\n"
+    "Not resolved: whether {facts} changed after {newest}."
+)
+
+
+def _ym(number: int) -> str:
+    """``year * 12 + month - 1`` -> ``'YYYY-MM'``."""
+    return f"{number // 12:04d}-{number % 12 + 1:02d}"
+
+
+def _shown(number: int) -> str:
+    return month_display(_ym(number))
+
+
 def _month_gap(tau: float, today: str) -> str:
     months = round(today_month(_dt.date.fromisoformat(today)) - tau)
     if months <= 0:
@@ -309,6 +347,8 @@ class MockBackend:
     def _segment_topics(self, req: ContinuationRequest) -> list[str]:
         """``[topic of this segment]``, or every question topic for the answer and the concluding segment."""
         asked = self.question_topics(req.question)
+        if req.metadata.get("kind") in ("open", "reply"):  # rally: the exchange stays on the question's main topic
+            return asked[:1]
         concluding = req.phase == "answer" or len(req.segments) >= self.segments_to_answer
         if len(asked) > 1:
             return asked if concluding else [asked[(len(req.segments) // _SEGMENTS_PER_TOPIC) % len(asked)]]
@@ -352,6 +392,10 @@ class MockBackend:
         states = ", and of ".join(f"{subject} known as of {asof}" for subject, asof in known)
         dates = known[0][1] if len(known) == 1 else "those dates"
         answer = f"The latest state of {states}; anything after {dates} should be checked against a current source."
+        if req.system_override is not None and _RALLY_ANSWER_MARK in req.system_override and req.phase == "answer":
+            return self._rally_answer(req, fields)
+        if req.system_override is not None and req.metadata.get("kind") in ("open", "reply"):
+            return self._rally_text(model, req, fields)
         if req.system_override is not None:  # explore preset: structured notes under the per-segment directive
             return self._explore_text(model, req, fields, answer)
         if req.phase == "answer":
@@ -362,6 +406,74 @@ class MockBackend:
             return (f"The notes now cover {covered} up to what is known as of {fields['asof']}, and no open "
                     f"point remains. {req.final_marker} {answer}")
         return self._note_text(model, req, fields)
+
+    # ---- rally preset -------------------------------------------------------------------
+
+    def _record(self, req: ContinuationRequest) -> tuple[set[int], dict[str, Any] | None]:
+        """The newest months declared in the notes so far, and the parse of the previous note (None without one)."""
+        today = self._today(req.today)
+        declared: set[int] = set()
+        previous: dict[str, Any] | None = None
+        for segment in req.segments:
+            previous = parse_note(segment, today)
+            number = month_number(previous["newest"])
+            if number is not None:
+                declared.add(number)
+        return declared, previous
+
+    def _rally_text(self, model: ModelSpec, req: ContinuationRequest, fields: dict[str, str]) -> str:
+        """A rally note. The writer's own newest month is ``fields['asof']`` (its cutoff for the topic). The first note
+        lists dated items; a reply confirms and says nothing is newer, unless the writer knows a month the record lacks
+        (Update and Newer), or the previous note carried newer items and the writer recalls one month more than it
+        declared before (that month is then in the record, so each model does it once)."""
+        own = month_number(fields["asof"])
+        assert own is not None
+        subject, facts = fields["subject"], fields["facts"]
+        today = _dt.date.fromisoformat(fields["today"])
+        limit = today.year * 12 + today.month - 1
+        declared, previous = self._record(req)
+        if req.metadata.get("kind") == "open" or previous is None:
+            lines = [f"Known: the latest {facts} for {subject} that I can place date from {_shown(own)}.",
+                     f"Known: an earlier state of {subject} dates from {_shown(own - 2)}.",
+                     f"Known: the background of {subject} reaches back to {_shown(own - 5)}; this is the item I am "
+                     "least sure of.",
+                     f"Newest I know: {_shown(own)}."]
+            return "\n".join(lines)
+        frontier = max(declared) if declared else own - 1
+        lead = _RALLY_LEADS[(len(req.segments) + self._rng("rally_lead", model.key).randrange(len(_RALLY_LEADS)))
+                            % len(_RALLY_LEADS)]
+        cue = bool(previous["labels"]["update"] or previous["labels"]["newer"])
+        if own > frontier:  # this writer knows months the record does not have yet
+            newer = [frontier + 1] if own == frontier + 1 else [frontier + 1, own]
+            lines = [f"Update: the state of {subject} given as of {_shown(frontier)} is outdated; by {_shown(own)} "
+                     f"{facts} had moved on.",
+                     "Newer: " + " ".join(f"{facts.capitalize() if i == 0 else 'Further, ' + facts} changed in "
+                                          f"{_shown(n)}." for i, n in enumerate(newer)),
+                     f"Newest I know: {_shown(own)}."]
+        elif cue and own + 1 not in declared and own + 1 <= limit:  # a cue from the previous note: one more month
+            lines = [f"Confirm: {lead} agree with what I know of {subject} up to {_shown(own)}.",
+                     f"Newer: the previous note reminded me of a further development of {facts} in {_shown(own + 1)}.",
+                     f"Newest I know: {_shown(own + 1)}."]
+        else:
+            lines = [f"Confirm: {lead} agree with what I know of {subject} up to {_shown(own)}.",
+                     f"Nothing newer: as of note {len(req.segments) + 1} I know nothing newer than {_shown(frontier)} "
+                     f"about {facts}.",
+                     f"Newest I know: {_shown(own)}."]
+        return "\n".join(lines)
+
+    def _rally_answer(self, req: ContinuationRequest, fields: dict[str, str]) -> str:
+        """The rally's answer: the latest state the record supports, with the newest month marked as single source."""
+        declared, _ = self._record(req)
+        ordered = sorted(declared)
+        newest = ordered[-1] if ordered else month_number(fields["asof"]) or 0
+        confirmed = ordered[-2] if len(ordered) >= 2 else newest
+        text = (f"Based on the exchange: the latest state of {fields['subject']} is the one recorded up to "
+                f"{_shown(confirmed)}, which a second analyst confirmed. The newest date the record supports is "
+                f"{_shown(newest)} (single source: one analyst declared it). Anything after {_shown(newest)} should be "
+                f"checked against a current source.")
+        if "'Basis:'" in (req.system_override or ""):
+            text += _RALLY_BASIS.format(confirmed=_shown(confirmed), facts=fields["facts"], newest=_shown(newest))
+        return text
 
     # ---- explore preset -----------------------------------------------------------------
 
@@ -516,6 +628,25 @@ class MockBackend:
             return self._stale_text(event), "outdated", p
         return "I don't know; I have no reliable information about that.", "abstain", p
 
+    def _keyed_answer(self, model: ModelSpec, truth: MockModelTruth, event: Event, arm: str, text: str,
+                      outcome: str, donor_answer: Any) -> tuple[str, str, str]:
+        """The answer under a note of the key experiment, from the model's ordinary ``(text, outcome)``; returns
+        ``(text, outcome, how)`` with ``how`` one of ``dark_memory`` / ``copied`` / ``own`` (DESIGN_keys.md
+        section 8). Deterministic per (seed, model, event, arm)."""
+        if arm == "wrong_key":  # a pointer to another paper: the model answers as it would alone
+            return text, outcome, "own"
+        rng = self._rng("arm", arm, model.key, event.id)
+        right = event.expected_current or (event.aliases[0] if event.aliases else event.fact)
+        if arm == "key":
+            t_event, tau = parse_fractional_month(event.date), truth.tau_for(event.topic)
+            if outcome != "correct" and tau < t_event <= tau + KEY_DARK_WINDOW_MONTHS and rng.random() < KEY_DARK_RECALL:
+                return f"{right.rstrip('.')}.", "correct", "dark_memory"
+            return text, outcome, "own"
+        if rng.random() < FULL_COPY:  # full: the value in the note is taken over
+            wrong = str(donor_answer).strip() if isinstance(donor_answer, str) and donor_answer.strip() else ""
+            return f"{(wrong or right).rstrip('.')}.", "incorrect" if wrong else "correct", "copied"
+        return text, outcome, "own"
+
     async def chat(self, model: ModelSpec, req: ChatRequest) -> ChatResult:
         """Answer a probe for a known event (``req.metadata`` has ``event_id`` and ``probe``) according to the
         model's truth; any other request gets a fixed placeholder reply. Deterministic per (seed, model, event,
@@ -527,6 +658,12 @@ class MockBackend:
             text, outcome, p = self._probe_answer(model, truth, event, str(meta["probe"]))
             raw = {"mock": True, "model": model.key, "event_id": event.id, "probe": meta["probe"],
                    "outcome": outcome, "p_correct": p}
+            arm = meta.get("arm")
+            if arm in KEY_ARMS and meta["probe"] != "mcq":
+                base = outcome
+                text, outcome, how = self._keyed_answer(model, truth, event, str(arm), text, outcome,
+                                                        meta.get("donor_answer"))
+                raw |= {"arm": arm, "base_outcome": base, "outcome": outcome, "keyed": how}
         else:
             text = f"Mock reply from {model.label()}: this request has no scripted answer."
             raw = {"mock": True, "model": model.key, "outcome": "unscripted"}

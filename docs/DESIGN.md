@@ -1013,3 +1013,50 @@ per model. Verified live after the change: the first segment and a lens segment 
 Fable wrote the lens note with the `Lens (field):` prefix and an `Inference:` item on its own. Consequence: notes by
 light-schema models usually carry no labels, so the record checklist is satisfied by the other models' notes.
 
+## 8. Rally preset
+
+The rally preset (models hand one record back and forth, each adding what it knows that is newer) has its own contract
+in [`DESIGN_rally.md`](DESIGN_rally.md): config (`RallyConfig`, §2 there), hand-over in ring order (§3), prompts (§4),
+parsing and state (`cutoffmix/rally.py`, §5), metrics (§6). With `rally.enabled` false nothing changes: requests,
+events and the `done` payload are byte-identical to §5, and the preset is mutually exclusive with §7.
+
+Surface (DESIGN_rally.md §7):
+
+- **Mock backend:** requests with `metadata["kind"]` `"open"` or `"reply"` get labelled rally notes. A simulated
+  model's newest month is its true cutoff for the question's main topic (the rally does not rotate topics); a reply
+  says `Update:` / `Newer:` when the writer knows a month the record lacks, recalls one more month once when the
+  previous note carried newer items, else `Confirm:` / `Nothing newer:`; quiet notes vary their wording so the relay's
+  repeat filter does not drop them. The answer marks the newest date as `(single source)` and ends with `Basis:` and
+  `Not resolved:` when asked.
+- **CLI:** `--preset rally`; `--ring KEY,KEY[,KEY]` (run and serve) sets `rally.ring`, implies the preset when none is
+  given and is refused with another preset. Segment headers show `rally: reply (note 2)` and, once committed, the label
+  counts (`reply · +1 update · +2 newer · newest 2026-03`); after the run `rally_summary` prints the turns, the stop
+  reason, the self-reported frontier curve and what each model added.
+- **Server:** the model id `cutoffmix-rally` comes with the packaged preset (also listed in `GET /api/config` `presets`); `POST /api/relay` and `/v1/chat/completions` take `"ring": [keys]` (two or more distinct, known
+  model keys, else 400), which selects the rally preset when none is named and is refused with another preset; the
+  metrics are `done.rally` (SSE `done` event, the final chunk and the non-stream body under `cutoffmix`).
+- **UI:** a note badge (`open · 3 known · newest 2026-08`, quiet notes greyed) next to the decision badge, the routing
+  inspector lists the note record and the ring, and a `Rally` strip below the run stats (only when `done.data.rally`
+  exists) draws the frontier: one dot per note at the newest month its writer declared (coloured by model), the
+  running maximum as a step line, the stop reason, hand-overs and gain, what each model added, and the text
+  "self-reported". Dark mode and the 390 px layout hold (the stream grid is `minmax(0, 1fr)` so a long badge cannot widen it).
+
+## 9. Key experiment
+
+The key-not-value experiment (after Hazy Research's "Plato's Key": does another model's note with the answer masked
+make a model recall what it missed alone, or does it only copy?) has its own contract in
+[`DESIGN_keys.md`](DESIGN_keys.md): data and item sets (§2-3 there), the four arms and their prompts (§4), masking and
+the leak check (§5), plan, run and report (§6), pre-registered predictions (§7), mock (§8) and costs (§9). The
+experiment code is `cutoffmix/bench/keys.py`; nothing in the relay changes.
+
+Surface:
+
+- **CLI:** `cutoffmix bench keys plan` (offline: the planned calls as JSONL, counts per pair, set and arm, cost
+  estimate), `bench keys run` (resumable; `--max-cost USD` is required with the real models, `--mock` runs the simulated
+  ones, `--limit`, `--judges`), `bench keys report` (offline: Markdown on stdout, `--json` / `--md` files).
+- **Mock backend:** a probe request with `metadata["arm"]` `key`, `full` or `wrong_key` starts from the model's ordinary
+  answer; `key` turns a miss into the right answer with probability `KEY_DARK_RECALL` (0.35) when the event lies at
+  most `KEY_DARK_WINDOW_MONTHS` (4) months after the model's cutoff for the topic; `full` answers with the note's name
+  (`metadata["donor_answer"]` for a wrong donor, else the right answer) with probability `FULL_COPY` (0.8);
+  `wrong_key` is the ordinary answer. Chosen constants, deterministic per (seed, model, event, arm); requests without
+  `arm` are unchanged.

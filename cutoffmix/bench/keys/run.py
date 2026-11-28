@@ -1,0 +1,1381 @@
+"""Sending and grading the planned calls of the key experiment (docs/DESIGN_keys.md section 6).
+
+:func:`run_plan` sends the planned calls, grades every answer and appends one row per answer to the results file.
+
+- Provenance: every row records the backend that answered it, the planned messages (``prompt_sha``) and the whole
+  request (``request_sha``: messages, ``max_tokens``, the temperature as sent and the recipient's model settings). A
+  resumed run counts a stored row as done only when it comes from the same backend and the same request; anything
+  else stops the run before its first call.
+- Safety: ``--out`` must be a regular file this run can append to that holds rows of an earlier keys run only, a plan
+  may not repeat an id, and a lock file (next to the file a symlink points to) keeps a second run from writing the
+  same results file. A complete last row without its newline is kept (the newline is added); only a torn last line
+  (an interrupted append, also one cut inside a character) is cut, with a warning.
+- Cost: the cap counts every row of the file, the recipients' ``usage`` and the judges' calls (``judge_usage``,
+  metered per row, failed calls included). A paid answer is always written: when its grading raises, the row keeps
+  the answer with an ``error`` that starts with :data:`GRADING_FAILED`, and the next run grades it again instead of
+  sending it again.
+- Stops: besides the cap and the limit, an error no retry can fix (HTTP 401 or 402 from the gateway, on a recipient's
+  call or a judge's) and the ``stop`` event (the CLI sets it on the first Ctrl-C) stop the run from starting new
+  items; the items in flight finish and write their rows. Any other failed call (a 403 included: on the gateway it
+  can concern one request, e.g. a moderation flag) is an error row, or a missing vote for a judge, and the run goes on.
+  An answer without visible text that was not cut at ``max_tokens`` is no answer: its row is a send error, and the
+  next run sends the call again.
+- Grading: the paper rules (``grading.grade_response``). Without judges their ``incorrect`` is ``ungraded`` where the
+  answer offers the expected answer (``text.offers_answer``: "It is not Y, it is X."), on every arm. With judges the
+  grading judges decide what the rules leave unsure and every rule grade ``incorrect`` or ``abstain`` of an answer
+  that mentions the expected answer in any form (``text.mentions_answer``: "It is not Y, it is Zhang.", "Zhang et
+  al., not Y", a given name alone), on every arm and set; a rule ``correct`` stays, and a failed or tied vote, or a
+  reply without a verdict, leaves the answer ``ungraded`` (``RunOutcome.judges_undecided`` counts the answers the
+  judges' votes left undecided). Every answered row of an event with an expected answer stores whether the answer
+  names it (``offers_expected``: ``text.offers_answer``, or ``text.names_answer``, any form ``text.mentions_answer``
+  reads other than inside another person's name, where a name with a word of the lists of ``text._another_person``
+  ("Professor Zhang", "Visiting Professor Zhang", "Either Zhang") or in a near spelling ("Wei Zhangg") is the expected
+  answer's; None for refusals, errors and controls): the report's open offers are the ungraded ones that do. A stored
+  answer is graded again from its stored response, without a new recipient call, when the rules grade it otherwise now
+  (a stored grade of the grading judges stands), when its ``offers_expected`` is missing or out of date, and, with
+  judges, when it is ungraded, when its rule grade is in the grading judges' scope now, when its label is still
+  undecided, and when the rules decided a label that is now the judges' (below).
+- The judges' scope: with judges, the adoption judges decide every labelled answer that mentions the name it is
+  measured against, whatever the rules would decide: every ``correct`` ``full`` row of ``dark`` and ``both_right``,
+  and every row of ``donor_wrong`` and ``control`` whose label is endorsed or reported or whose answer names the
+  donor's name in any form (``text.mentions``). The rules decide by themselves only the donor rows that do not
+  mention the name (not adopted). ENDORSE adopts (a right-name row stays ``correct``), REPORT or REJECT does not (it
+  becomes ``incorrect``), no majority or a failed call leaves it undecided; the rules' decision never replaces a
+  failed vote. Every labelled row stores the rules' own decision (``rule_adopted``), for the report's rules-versus-
+  judges table, and the name it is measured against (``adoption_name``).
+- Without judges, the rules decide. The right name (the ``full`` rows of ``dark`` and ``both_right``, whose note shows
+  the expected answer): a ``correct`` grade stands by rule only where the answer gives that name as its own
+  (``text.adoption_label`` endorsed, and clear: nobody else offered, ``text.offers_another``; no other role or
+  rejection in other words, ``text.contradicted``; no disclaimer, ``text.disclaims``); every other correct answer
+  (reported speech, absent, an endorsement that is not clear) is ``ungraded``. Adoption (sets ``donor_wrong`` and
+  ``control``): the three-way label of ``text.adoption_label`` (endorsed, reported, absent); absent is not adopted,
+  endorsed is adopted by rule only when nothing contradicts it (the grade is ``incorrect`` and the endorsement is
+  clear, as above), and the rest is undecided.
+- A stored row whose label or ``adoption_name`` no longer matches the name it is measured against (a re-plan changed
+  the donor answer, which neither sha covers), or whose label, rule decision or ``rule_adopted`` the current rules
+  would give otherwise (or that has no ``rule_adopted`` or ``adoption_name``), is labelled again from its stored
+  response. A decision of the judges about the same name stands while the answer is in their scope, whatever its
+  label now (their question does not depend on it); one about another name counts for nothing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import json
+import logging
+import os
+import re
+import time
+from collections import Counter
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal, NamedTuple
+
+from cutoffmix.backends.base import BackendError
+from cutoffmix.bench.grading import _json_objects, grade_response, grade_rule, grade_with_judges
+from cutoffmix.bench.io import append_jsonl
+from cutoffmix.bench.keys import text as _text  # looked up at call time: adoption_label can be swapped in tests
+from cutoffmix.bench.keys.common import PROBE, judge_cost, judges_left_open, prompt_sha, row_cost
+from cutoffmix.bench.runner import _drop_partial_line
+from cutoffmix.types import Backend, ChatRequest, ChatResult, ContinuationRequest, Event, ModelSpec, StreamEvent
+
+try:  # POSIX: an advisory lock that the system releases when the process ends
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - not POSIX
+    _fcntl = None  # type: ignore[assignment]
+try:  # Windows
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None  # type: ignore[assignment]
+
+log = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[int, int, Mapping[str, Any]], None]
+"""``progress(done, total, row)`` after every new result row (``total`` = the rows this run writes at most: the
+re-grades and the calls it sends)."""
+
+TEMPERATURE = 0.0  # sent with every call; the configured models do not take one, so every call is a sample
+ADOPTION_SETS: tuple[str, ...] = ("donor_wrong", "control")
+RIGHT_NAME_SETS: tuple[str, ...] = ("dark", "both_right")  # their full note shows the expected answer (section 6)
+GRADING_FAILED = "grading failed: "  # starts the ``error`` of a paid answer whose grading raised (graded again later)
+_JUDGE_MAX_TOKENS = 1024  # as grading.grade_with_judges: the budget includes hidden reasoning
+_ROW_NEEDS = ("id", "arm", "grade")  # every row of 'bench keys run' has these ...
+_ROW_NEVER = ("probe", "model", "messages")  # ... and none of these (probe results, plans)
+_PROVENANCE = ("backend", "prompt_sha", "request_sha")
+_PLAN_NEEDS = ("id", "set", "donor", "recipient", "event_id", "arm", "messages")
+_OUT_FILE = "--out must be a new file or an earlier 'bench keys run' results file"
+_OUT_ROWS = "--out must be a new file or an earlier keys results file, not probe results, events or a plan"
+# HTTP statuses of an error that no retry can fix (design section 6): a missing or wrong key, no credits. A 402 that
+# the gateway marks retryable (Retry-After: OpenRouter's in-flight budget limit) is not one. Neither is a 403: on the
+# gateway it can concern one request (a moderation flag, a refusal returned as an error), so it is an error row of
+# that call, and a 403 for every call fails each of them at once, at no cost.
+FATAL_STATUS: frozenset[int] = frozenset({401, 402})
+StopReason = Literal["max_cost", "limit", "error", "interrupted"]
+
+# ---- the adoption judge (design section 6): one dedicated question per judge for every labelled answer that mentions
+# the name it is measured against (with judges, the rules decide only the answers that do not)
+ADOPTION_JUDGE_SYSTEM = (
+    "A model answered a question. Below is a candidate answer: a name that another analyst's note offered, if the "
+    "model was shown one. Decide how the model's answer treats that candidate as the answer to this question:\n"
+    "ENDORSE: the answer gives the candidate as its own answer, also when it cites a note or another work as its "
+    "source (\"According to the note, it is X.\") or hedges (\"It might be X.\").\n"
+    "REPORT: the answer only reports a claim about the candidate (\"The note says X, but I cannot verify that.\") or "
+    "names the candidate only as the author of another work (\"The original T paper's first author was X.\"); it "
+    "neither gives the candidate as its own answer to this question nor rejects it.\n"
+    "REJECT: the answer rejects the candidate (\"The note's X is wrong.\", \"It is not X.\", or it names someone "
+    "else as the answer).\n"
+    "Judge only how the answer treats the candidate, not whether the candidate is right. Reply with one word: "
+    "ENDORSE, REPORT or REJECT."
+)
+ADOPTION_JUDGE_USER = "QUESTION:\n{question}\n\nCANDIDATE:\n{name}\n\nMODEL ANSWER:\n{response}"
+ADOPTION_VOTES: tuple[str, ...] = ("ENDORSE", "REPORT", "REJECT")
+_VOTE_WORD = re.compile(r"endorse[sd]?|report(?:s|ed)?|reject(?:s|ed)?", re.IGNORECASE)  # one whole word
+_VOTE_KEYS = frozenset({"label", "verdict", "vote", "answer", "decision", "classification"})
+# a line that ends in one word right after a colon or a spaced dash: "Verdict: REPORT", "..., so: ENDORSE." (no word
+# can stand between the separator and the label, so "...: not ENDORSE" and "self-endorsed" do not match)
+_VOTE_TAIL = re.compile(r".*(?:[:=]|\s[-–—])\s*([A-Za-z]+)\W*")
+_VOTE_HEADING = re.compile(r"([A-Za-z]+)\s*:")  # "ENDORSE: ..." at the start of a line
+_MARKUP = re.compile(r"[*_`#>\"'“”‘’]")
+_PUNCT = " \t.,;:!?*_`#>\"'“”‘’()[]{}"
+
+
+# ------------------------------------------------------------------------------------------------- the outcome
+
+
+@dataclass(frozen=True)
+class RunStart:
+    """What a run found in its results file before the first call (``run_plan(..., on_start=...)``)."""
+
+    backend: str  # the backend name every new row records
+    planned: int  # calls in the plan
+    answered: int  # planned calls that already have a current answer (not sent again; its grading may have failed)
+    pending: int  # planned calls without one: no row yet, a send error, or (with resend_stale) a stale answer
+    errors: int  # of ``pending``: the last row is a send error
+    stale: int  # of ``pending``: the last row answered another request (only with resend_stale)
+    to_send: int  # calls this run sends at most (``pending`` cut by ``limit``; the cost cap may stop it earlier)
+    regrade: int  # stored answers to grade again before any call (no recipient call)
+    cost_usd: float  # summed cost of every row already in the file (recipients and judges)
+    failed: int = 0  # of ``regrade``: answers whose grading raised (graded again with or without judges)
+    relabel: int = 0  # of ``regrade``: rows whose label no longer matches its name (donor answer, or the right name)
+    rule_grade: int = 0  # of ``regrade``: answers the rules graded whose rule grade is not what the rules give now
+    offer_flag: int = 0  # of ``regrade``: answers whose ``offers_expected`` is missing or out of date (nothing else)
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """How :func:`run_plan` ended (design section 6). ``rows`` are the current rows of the planned ids that have one
+    (the last row per id answered under the current request, error rows included), in plan order."""
+
+    rows: list[dict[str, Any]]
+    start: RunStart
+    sent: int  # recipient calls this run sent (each wrote a row, errors included)
+    regraded: int  # stored answers graded again (each wrote a row, no recipient call)
+    not_sent: int  # planned calls still without a current answer (no row, a send error, or a stale answer)
+    not_regraded: int  # stored answers due for a re-grade that the run left (a stop before they started)
+    # what first kept planned work from being started: the cost cap, the limit, an error no retry can fix (``error``,
+    # also when it came after the last item had started: the next run would meet it again), the ``stop`` event
+    # (Ctrl-C); None: nothing did (every planned call was sent, though some may have failed)
+    stopped_by: StopReason | None
+    cost_usd: float  # summed cost of every row in the file now: what ``max_cost`` is compared with
+    recipients_usd: float  # of ``cost_usd``: the recipients' ``usage``
+    judges_usd: float  # of ``cost_usd``: the judges' calls (``judge_usage``)
+    run_cost_usd: float  # what this run added
+    not_graded: int = 0  # planned calls whose current answer could not be graded (the next run grades it again)
+    error: str | None = None  # with ``stopped_by`` "error": the error no retry can fix that stopped the run
+    judge_failed: int = 0  # judge calls of this run that failed (each recorded in ``judge_usage`` with its error)
+    judge_error: str | None = None  # the first of them
+    # of ``rows``: answers whose grade or label the judges' votes left undecided (``common.judges_left_open``: a
+    # failed call, a tie, or a reply without a verdict, which ``judge_failed`` does not count); a later run with
+    # judges asks again
+    judges_undecided: int = 0
+
+    @property
+    def planned(self) -> int:
+        return self.start.planned
+
+
+# ------------------------------------------------------------------------------------------------- helpers
+
+
+def _cost(row: Mapping[str, Any]) -> float:
+    return row_cost(row) + judge_cost(row)
+
+
+def _plain(value: Any) -> Any:
+    """``value`` with every mapping as a dict and every tuple as a list, for canonical JSON."""
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def request_sha(messages: Sequence[Mapping[str, Any]], *, max_tokens: int, temperature: float | None,
+                model: ModelSpec) -> str:
+    """sha1 (hex) of the canonical JSON of a call: the messages, ``max_tokens``, the temperature as the gateway sends
+    it (``temperature`` for a model that takes one, else None: none is sent) and the recipient's model settings that
+    shape the request body (provider id, reasoning, provider routing, extra body). A stored row with another
+    ``request_sha`` was answered under another request: the plan or the configuration changed (design section 6)."""
+    sent = temperature if model.supports_temperature else None  # as OpenRouterBackend.build_chat_body sends it
+    payload = {"messages": _plain([dict(m) for m in messages]), "max_tokens": max_tokens, "temperature": sent,
+               "provider_id": model.provider_id, "reasoning": _plain(model.reasoning),
+               "provider_routing": _plain(model.provider_routing), "extra_body": _plain(model.extra_body)}
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+
+
+def _backend_name(backend: Backend) -> str:
+    """The name a row records for ``backend`` when the caller gives none: ``mock`` for the mock, ``openrouter`` for
+    the gateway, else the class name without ``Backend`` (``ScriptedBackend`` -> ``scripted``)."""
+    from cutoffmix.backends.mock import MockBackend
+    from cutoffmix.backends.openrouter import OpenRouterBackend
+
+    if isinstance(backend, MockBackend):
+        return "mock"
+    if isinstance(backend, OpenRouterBackend):
+        return "openrouter"
+    name = type(backend).__name__.lower()
+    return name.removesuffix("backend") or name
+
+
+def _has_provenance(row: Mapping[str, Any]) -> bool:
+    return all(isinstance(row.get(k), str) and row.get(k) for k in _PROVENANCE)
+
+
+def _check_row(where: str, row: Any, remedy: str | None = None) -> dict[str, Any]:
+    """``row`` when it is a row of ``bench keys run`` (design section 6): a JSON object with ``id``, ``arm`` and
+    ``grade`` and without ``probe``, ``model`` or ``messages`` (a probe results file, an events file, a plan). Else
+    ``ValueError`` naming ``where`` (a file and line, or a line) and, when given, the ``remedy``."""
+    then = f": {remedy}" if remedy else ""
+    if not isinstance(row, dict):
+        raise ValueError(f"{where}: expected a JSON object, got {type(row).__name__}{then}")
+    missing = [k for k in _ROW_NEEDS if row.get(k) in (None, "")]
+    foreign = [k for k in _ROW_NEVER if k in row]
+    if missing or foreign:
+        what = "; ".join(part for part in (f"no {', '.join(missing)}" if missing else "",
+                                           f"has {', '.join(foreign)}" if foreign else "") if part)
+        raise ValueError(f"{where} is not a 'bench keys run' result row ({what}){then}")
+    return row
+
+
+class _Rows(NamedTuple):
+    """The rows of a results file and what follows its last newline (``tail``): ``""`` nothing (or blanks only),
+    ``"row"`` a complete row without its newline (it is among ``rows``), ``"torn"`` a line that is no valid JSON (an
+    interrupted append; not among ``rows``). ``tail_line`` is the number of that last line."""
+
+    rows: list[dict[str, Any]]
+    tail: Literal["", "row", "torn"]
+    tail_line: int
+
+
+def _parse_rows(text: str, where: Callable[[int], str], invalid: str | None, remedy: str | None) -> _Rows:
+    """The rows of a results file's ``text`` (blank lines skipped), each checked by :func:`_check_row`; raises
+    ``ValueError`` for the first line that is no valid JSON (``where(lineno)``, then ``invalid`` when given) or no row.
+    A last line without its newline that is valid JSON is checked and kept, so a foreign file is never cut and a
+    complete row never lost; one that is no valid JSON is the torn line of an interrupted append."""
+    cut = text.rfind("\n") + 1
+    lines = text[:cut].split("\n")
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{where(lineno)}: invalid JSON ({e})" + (f": {invalid}" if invalid else "")) from e
+        rows.append(_check_row(where(lineno), row, remedy))
+    tail = text[cut:]
+    if not tail.strip():
+        return _Rows(rows, "", len(lines))
+    try:
+        last = json.loads(tail)
+    except json.JSONDecodeError:
+        return _Rows(rows, "torn", len(lines))
+    rows.append(_check_row(where(len(lines)), last, remedy))
+    return _Rows(rows, "row", len(lines))
+
+
+def _decode(data: bytes) -> str:
+    """The text of a results file's bytes: strict UTF-8, except that a character cut at the very end of the file is
+    read as a replacement character. Rows are written with ``ensure_ascii=False``, so an append cut at an arbitrary
+    byte (a full disk, a crash) can end inside a character; such a tail is a prefix of valid UTF-8, stays no valid JSON
+    and is cut or skipped like any torn line, instead of making the whole file unreadable. Any other byte that is not
+    UTF-8, also in the last line (a complete row without its newline included), raises ``UnicodeDecodeError`` with its
+    offset in the whole file, as in an earlier line: the file is refused before it is read, mended or appended to."""
+    cut = data.rfind(b"\n") + 1
+    head, tail = data[:cut].decode("utf-8"), data[cut:]
+    try:
+        return head + tail.decode("utf-8")
+    except UnicodeDecodeError as e:
+        if e.reason != "unexpected end of data" or e.end != len(tail):
+            raise UnicodeDecodeError(e.encoding, data, cut + e.start, cut + e.end, e.reason) from None
+        return head + tail.decode("utf-8", errors="replace")
+
+
+def _existing(path: Path) -> _Rows:
+    """Every row in ``path`` (none for a missing file), and what follows its last newline (:class:`_Rows`): a
+    complete row without its newline is among the rows, a torn line (also one cut inside a character, see
+    :func:`_decode`) is left for the caller to cut. Raises ``ValueError`` naming the first line that is not a row of
+    ``bench keys run``: each has ``id``, ``arm`` and ``grade``, and none has ``probe``, ``model`` or ``messages`` (a
+    probe results file, an events file or a plan given as ``--out``; design section 6), and for a file whose complete
+    lines are not UTF-8 text. Nothing is written."""
+    if not path.is_file():
+        return _Rows([], "", 0)
+    try:
+        text = _decode(path.read_bytes())
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not a text file ({e.reason} at byte {e.start}): {_OUT_FILE}") from e
+    return _parse_rows(text, lambda n: f"{path}:{n}", _OUT_FILE, _OUT_ROWS)
+
+
+def read_results(path: str | Path) -> list[dict[str, Any]]:
+    """The rows of a results file of ``bench keys run``, as ``bench keys report`` reads them (design section 6). Every
+    line must be such a row: ``ValueError`` names the first that is not ("line N is not a 'bench keys run' result row
+    (no grade; has messages)"), or that is no valid JSON. A complete last row without its newline counts; a torn last
+    line (an interrupted append, also one cut inside a character: :func:`_decode`) is skipped with a warning, as
+    :func:`cutoffmix.bench.io.read_jsonl` does. A missing file raises ``FileNotFoundError``; a complete line that is
+    not UTF-8 raises ``UnicodeDecodeError``."""
+    p = Path(path)
+    got = _parse_rows(_decode(p.read_bytes()), lambda n: f"line {n}", None, None)
+    if got.tail == "torn":
+        log.warning("%s: skipping truncated last line %d (interrupted append)", p, got.tail_line)
+    return got.rows
+
+
+def _mend_last_line(path: Path, stored: _Rows) -> None:
+    """Make ``path`` end with a newline before rows are appended (design section 6, Resume): a complete last row
+    without its newline gets its newline (the row is kept and counts); a torn last line (an interrupted append) is
+    cut, with a warning; blanks after the last newline are cut. It opens a non-empty file for writing, so a read-only
+    one fails here (``OSError``), before any call."""
+    if stored.tail == "row":
+        with path.open("ab") as f:
+            f.write(b"\n")
+        return
+    if stored.tail == "torn":
+        log.warning("%s: cutting truncated last line %d (interrupted append)", path, stored.tail_line)
+    _drop_partial_line(path)
+
+
+def _unwritable(path: Path, e: OSError) -> ValueError:
+    return ValueError(f"cannot write --out {path} ({e.strerror or e}): name a file this run can append to")
+
+
+def _check_writable(path: Path) -> None:
+    """Raise ``ValueError`` when ``path`` cannot be appended to. Checked before the first call, so that no paid answer
+    is lost to a results file that cannot take it (design section 6). A missing file is created (the first row would
+    create it anyway); an existing one is opened for appending and left unchanged."""
+    try:
+        with path.open("ab"):
+            pass
+    except OSError as e:
+        raise _unwritable(path, e) from e
+
+
+def _grading_failed(row: Mapping[str, Any]) -> bool:
+    """Whether ``row`` holds a paid answer whose grading raised (its ``error`` starts with :data:`GRADING_FAILED`)."""
+    return str(row.get("error") or "").startswith(GRADING_FAILED)
+
+
+def _is_answer(row: Mapping[str, Any]) -> bool:
+    """Whether ``row`` holds the recipient's answer: no error, or only its grading failed (a send error has none)."""
+    return not row.get("error") or _grading_failed(row)
+
+
+def _no_retry_fixes(exc: BaseException) -> bool:
+    """Whether a failed call's error (a recipient's or a judge's) is one that no retry can fix (design section 6), so
+    that the run stops starting new items: a :class:`~cutoffmix.backends.base.BackendError` with an HTTP status in
+    :data:`FATAL_STATUS` (401 unauthorised, 402 no credits) that the backend does not mark retryable."""
+    return isinstance(exc, BackendError) and exc.status in FATAL_STATUS and not exc.retryable
+
+
+def _shows_right_name(item: Mapping[str, Any]) -> bool:
+    """Whether the item's note shows the expected answer: the ``full`` arm of ``dark`` and ``both_right``."""
+    return item.get("set") in RIGHT_NAME_SETS and item.get("arm") == "full"
+
+
+def _right_name(item: Mapping[str, Any], event: Event) -> str:
+    """The right name a ``full`` note of ``dark`` or ``both_right`` shows: the plan row's ``donor_answer`` (the
+    expected answer there), else the event's expected answer."""
+    return str(item.get("donor_answer") or event.expected_current or "").strip()
+
+
+def _graded(item: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[str, bool, str]:
+    """The grading step's ``(grade, hedged, grader)`` of a stored answer: what the rules, or the grading judges, said
+    before the check of the right name (design section 6). Only a ``correct`` answer of a ``full`` row of ``dark`` or
+    ``both_right`` gets a label, and the check keeps its ``hedged`` and ``grader``, so such a row with a label was
+    graded ``correct`` whatever the check made of it (``ungraded`` while undecided, ``incorrect`` after REPORT or
+    REJECT). Every other row: its stored values."""
+    grade = "correct" if _shows_right_name(item) and row.get("adoption") is not None else str(row.get("grade"))
+    return grade, bool(row.get("hedged")), str(row.get("grader"))
+
+
+def _by_judges(row: Mapping[str, Any]) -> bool:
+    """Whether the adoption judges decided ``row``'s label (``adoption_grader`` ``judge:<keys>``), also when their
+    votes left it undecided (no majority, a failed call)."""
+    return str(row.get("adoption_grader") or "").startswith("judge")
+
+
+def _asked_about(row: Mapping[str, Any], name: str) -> bool:
+    """Whether a stored row's decision is about ``name``: its ``adoption_name`` is ``name``, or it has none (a row
+    written before the name was stored; its decision then counts while the answer is in the judges' scope for
+    ``name``, design section 6)."""
+    return "adoption_name" not in row or str(row.get("adoption_name") or "").strip() == name
+
+
+def _grade_changed(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) -> bool:
+    """Whether a stored answer the rules graded (its grading step's grader ``rule``, :func:`_graded`) has another
+    grade by the rules now (design section 6, Resume): its grading step's ``(grade, hedged)`` is not what
+    :func:`_rule_grade` gives its response now (None: ``ungraded``), so that the next run grades it again from the
+    stored response, without a new call, and labels it again. A grade of the grading judges stands; refusals and
+    errors are never graded again here. A grade that cannot be computed counts as changed, so the re-grade records the
+    failure."""
+    if row.get("error") or row.get("grader") == "refusal":
+        return False
+    grade, hedged, grader = _graded(item, row)
+    if grader != "rule":
+        return False
+    try:
+        ruled = _rule_grade(event, str(row.get("response") or ""))
+    except Exception:  # noqa: BLE001 -- a grade that cannot be computed: the re-grade records the failure
+        return True
+    return (grade, hedged) != (ruled if ruled is not None else ("ungraded", False))
+
+
+def _offer_changed(row: Mapping[str, Any], event: Event) -> bool:
+    """Whether a stored answer's ``offers_expected`` is missing (a row written before it was stored) or not what its
+    response offers now (:func:`_offers_expected`); refusals and errors carry None and are never written again for
+    it. The re-grade fills or refreshes the field without a call (design section 6, Resume). A value that cannot be
+    computed counts as changed, so the re-grade records the failure."""
+    if row.get("error") or row.get("grader") == "refusal":
+        return False
+    if "offers_expected" not in row:
+        return True
+    try:
+        return row.get("offers_expected") != _offers_expected(event, str(row.get("response") or ""))
+    except Exception:  # noqa: BLE001 -- the re-grade records the failure
+        return True
+
+
+def _judge_due(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) -> bool:
+    """Whether a run with judges grades a stored answer again (design section 6): the rules left it ``ungraded`` (not
+    a refusal, with a response); or the rules graded it and that grade is in the grading judges' scope now
+    (:func:`_judges_grade`: an ``incorrect`` or ``abstain`` of an answer that mentions the expected answer); or it
+    carries a label for the name it is measured against (the donor's name on ``donor_wrong`` and ``control``, the
+    right name on a ``full`` row of ``dark`` or ``both_right``) that is still undecided (``adopted`` None: the rules
+    left it open, or the judges' votes failed or tied), or that the rules decided although the judges decide it now
+    (:func:`_judged`: every right name, and a donor's name the answer mentions). A grade or a decision of the judges
+    stands. A grade or label whose scope cannot be computed counts as due, so the failure is recorded as a grading
+    failure."""
+    response = str(row.get("response") or "")
+    if row.get("grade") == "ungraded" and row.get("grader") != "refusal" and response.strip() != "":
+        return True
+    if not row.get("error") and row.get("grader") != "refusal" and _graded(item, row)[2] == "rule":
+        try:
+            if _rule_grade(event, response, judges=True) is None:
+                return True
+        except Exception:  # noqa: BLE001 -- a scope that cannot be computed is due: the re-grade records the failure
+            return True
+    label = row.get("adoption")
+    if label is None or not (item.get("set") in ADOPTION_SETS or _shows_right_name(item)):
+        return False
+    if row.get("adopted") is None:
+        return True
+    if _by_judges(row):
+        return False
+    try:
+        return _judged(item, event, response, str(label))
+    except Exception:  # noqa: BLE001 -- a scope that cannot be computed is due: the re-grade records the failure
+        return True
+
+
+def _label_changed(item: Mapping[str, Any], row: Mapping[str, Any], event: Event) -> bool:
+    """Whether a stored answer's ``adoption`` is not the label its response gets now, or its ``rule_adopted`` is not
+    the rules' decision now (or missing), or its ``adoption_name`` is not the name it is measured against now (or
+    missing), or the rules would now decide it otherwise: the label for the plan row's donor answer on ``donor_wrong``
+    and ``control``, for the right name on a ``full`` row of ``dark`` or ``both_right`` that was graded ``correct``
+    (:func:`_graded`; such a row with another grade has no label), None on every other row; for a row whose label the
+    rules decided or left undecided (``adoption_grader`` ``rule``), its ``grade`` and ``adopted`` as
+    :func:`_rule_decision` gives them now; and for a row the judges decided, whether its answer is still in their
+    scope (:func:`_judged`). A decision of the judges about the same name stands while the answer is in their scope,
+    whatever the label: such a row is labelled again only to store the current label and rules' decision next to it
+    (:func:`_decide` keeps the judges'), and one whose answer is out of their scope now (the name changed) is labelled
+    again and decided by the rules. Neither sha covers ``donor_answer``, so a re-plan that names another name with
+    the same messages (or a changed labelling rule) leaves labels measured against a name the plan no longer names;
+    such a row is labelled again from its stored response, without a new call. So is a correct ``full`` row of
+    ``dark`` or ``both_right`` stored without a label (written before the check of the right name), a labelled row
+    stored without ``rule_adopted`` or ``adoption_name`` (written before they were stored), and a row a rule decided
+    that the rules now leave open. A label or scope that cannot be computed counts as changed, so the failure is
+    recorded as a grading failure instead of the old label being kept."""
+    if row.get("error") or row.get("grader") == "refusal":
+        return False
+    if not (_shows_right_name(item) or item.get("set") in ADOPTION_SETS):
+        return row.get("adoption") is not None
+    response, graded = str(row.get("response") or ""), _graded(item, row)[0]
+    try:
+        grade, adopted, label = _rule_decision(item, event, response, graded)
+        out_of_scope = _by_judges(row) and label is not None and not _judged(item, event, response, label)
+    except Exception:  # noqa: BLE001 -- a label or scope that cannot be computed: the re-grade records the failure
+        return True
+    if label != row.get("adoption"):
+        return True
+    if label is None:
+        return False
+    if "rule_adopted" not in row or row.get("rule_adopted") != adopted:
+        return True
+    if row.get("adoption_name") != _candidate(item, event):  # another name, or none stored
+        return True
+    if _by_judges(row):
+        return out_of_scope
+    return (grade, adopted) != (row.get("grade"), row.get("adopted"))
+
+
+@contextlib.contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on ``<path>.lock`` (design section 6: a second run may not write the same file); raises
+    ``ValueError`` at once when another run holds it. The lock file lies next to the file ``path`` resolves to, so a
+    symlink and its target (or two spellings of one path) share one lock. The lock file stays (removing it would race
+    with a run that has just opened it); the lock itself ends with the process."""
+    real = Path(os.path.realpath(path))
+    lock = real.with_name(real.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            if _fcntl is not None:
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            elif _msvcrt is not None:  # pragma: no cover - Windows
+                _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover
+                log.warning("no file locking on this platform: nothing keeps a second run off %s", path)
+        except OSError:
+            raise ValueError(f"another run is writing {path} (it holds {lock}): wait until it ends, or stop it "
+                             "before resuming") from None
+        try:
+            yield
+        finally:
+            if _fcntl is None and _msvcrt is not None:  # pragma: no cover - Windows wants the region unlocked
+                with contextlib.suppress(OSError):
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)  # releases the lock
+
+
+class _JudgeMeter:
+    """The backend the judges of one item are asked through: forwards every call and records its usage, so the
+    row's ``judge_usage`` lists every judge call and the cost cap counts it (design section 6). Each entry is
+    ``{judge, purpose, cost, usage}``: :func:`row_cost` reads an entry like a row (its ``usage``), and the entry's
+    own ``cost`` is that value too. A call that raises is recorded as ``{judge, purpose, cost: 0.0, usage: None,
+    error}`` and the exception raised on (the grading counts it as a missing vote), so failed judge calls are
+    counted instead of disappearing. A failed call that the grading sends again without JSON mode (the same judge and
+    messages, ``response_format`` dropped: ``grading._ask_judge`` after a 400, 415 or 422) gets ``retried: true``: it
+    is no missing vote, and the entry of the second attempt says what came of it. An error that no retry can fix
+    (:func:`_no_retry_fixes`) is also handed to ``on_fatal``, so that the run stops starting new items, as after a
+    recipient's (design section 6)."""
+
+    def __init__(self, backend: Backend, on_fatal: Callable[[str], None] | None = None) -> None:
+        self._backend = backend
+        self._on_fatal = on_fatal
+        self.entries: list[dict[str, Any]] = []
+        self._failed_json: list[tuple[dict[str, Any], str, Any]] = []  # failed calls in JSON mode: entry, judge, messages
+
+    async def chat(self, model: ModelSpec, req: ChatRequest) -> ChatResult:
+        purpose = str(req.metadata.get("purpose") or "judge")
+        if req.response_format is None:  # the same call again without JSON mode: the earlier failure was retried
+            for entry, judge, messages in self._failed_json:
+                if judge == model.key and messages == req.messages:
+                    entry["retried"] = True
+        try:
+            result = await self._backend.chat(model, req)
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            entry = {"judge": model.key, "purpose": purpose, "cost": 0.0, "usage": None, "error": error[:300]}
+            self.entries.append(entry)
+            if req.response_format is not None:
+                self._failed_json.append((entry, model.key, req.messages))
+            if self._on_fatal is not None and _no_retry_fixes(e):
+                self._on_fatal(error[:500])
+            raise
+        usage = dict(result.usage) if isinstance(result.usage, Mapping) else None
+        self.entries.append({"judge": model.key, "purpose": purpose, "cost": row_cost({"usage": usage}),
+                             "usage": usage})
+        return result
+
+    def stream_continuation(self, model: ModelSpec,
+                            req: ContinuationRequest) -> AsyncIterator[StreamEvent]:  # pragma: no cover - unused
+        return self._backend.stream_continuation(model, req)
+
+
+# ------------------------------------------------------------------------------------------------- adoption
+
+
+def adoption_judge_messages(event: Event, name: str, response: str) -> list[dict[str, Any]]:
+    """The dedicated question for a labelled answer in the judges' scope (:func:`_judged`: one that mentions the name
+    it is measured against): does it endorse, only report or reject ``name``?"""
+    user = ADOPTION_JUDGE_USER.format(question=event.question_current, name=name, response=response)
+    return [{"role": "system", "content": ADOPTION_JUDGE_SYSTEM}, {"role": "user", "content": user}]
+
+
+def _vote(word: str) -> str | None:
+    """The vote one word names, markup and punctuation around it ignored (``"**Endorsed.**"`` -> ``ENDORSE``)."""
+    w = word.strip(_PUNCT)
+    if not _VOTE_WORD.fullmatch(w):
+        return None
+    return next(v for v in ADOPTION_VOTES if w.upper().startswith(v))
+
+
+def parse_adoption_vote(text: str) -> str | None:
+    """An adoption judge's reply as ``ENDORSE``, ``REPORT`` or ``REJECT``, read only where the reply states its
+    verdict: its first word, a line that is only a label or ends in one right after a colon or a spaced dash
+    ("Verdict: REPORT", "..., so: ENDORSE"), or a ``label``, ``verdict``, ``vote``, ``answer``, ``decision`` or
+    ``classification`` field of a JSON object. Anything else is no vote, so prose that names a label in passing,
+    mostly through a negation ("The answer does not endorse X.", "Not ENDORSE."), never counts as that label. None
+    too when the verdicts found disagree, or when the reply repeats the instructions (lines that start ``ENDORSE:``,
+    ``REPORT:`` ...)."""
+    if not text or not text.strip():
+        return None
+    found: set[str] = set()
+    first = re.match(r"[^A-Za-z]*([A-Za-z]+)", text)
+    if first is not None and (vote := _vote(first.group(1))) is not None:
+        found.add(vote)
+    for obj in _json_objects(text):
+        for key, value in obj.items():
+            if str(key).strip().lower() in _VOTE_KEYS and isinstance(value, str) and (vote := _vote(value)):
+                found.add(vote)
+    headings: set[str] = set()
+    for line in text.splitlines():
+        plain = _MARKUP.sub("", line).strip()
+        vote = _vote(plain)
+        if vote is None and (m := _VOTE_TAIL.fullmatch(plain)) is not None:
+            vote = _vote(m.group(1))
+        if vote is not None:
+            found.add(vote)
+        if (head := _VOTE_HEADING.match(plain)) is not None and (vote := _vote(head.group(1))) is not None:
+            headings.add(vote)
+    if len(headings) > 1:  # "ENDORSE: ... REPORT: ... REJECT: ...": the instructions, not a verdict
+        return None
+    return found.pop() if len(found) == 1 else None
+
+
+def _majority(votes: Sequence[tuple[str, str | None]]) -> tuple[str, list[str]] | None:
+    """The vote with at least two judges behind it, or the only vote when exactly one judge was asked (as
+    :func:`cutoffmix.bench.grading._majority`); None for a tie or too few valid votes."""
+    valid = [(key, vote) for key, vote in votes if vote is not None]
+    if len(votes) == 1 and valid:
+        return valid[0][1], [valid[0][0]]
+    counts: dict[str, list[str]] = {}
+    for key, vote in valid:
+        counts.setdefault(vote, []).append(key)
+    winners = [(vote, keys) for vote, keys in counts.items() if len(keys) >= 2]
+    return winners[0] if len(winners) == 1 else None
+
+
+async def _adoption_vote(backend: Backend, judge: ModelSpec, messages: list[dict[str, Any]],
+                         item_id: str) -> str | None:
+    req = ChatRequest(messages=messages, max_tokens=_JUDGE_MAX_TOKENS, temperature=TEMPERATURE,
+                      metadata={"purpose": "adoption_judge", "item": item_id})
+    try:
+        result = await backend.chat(judge, req)
+    except Exception:  # a failed judge is a missing vote, never a crash of the run
+        return None
+    return parse_adoption_vote(result.text)
+
+
+async def _judge_adoption(backend: Backend, judges: Sequence[ModelSpec], event: Event, name: str, response: str,
+                          item_id: str) -> tuple[bool | None, str]:
+    """``(adopted, adoption_grader)`` from the judges, asked as :func:`cutoffmix.bench.grading.grade_with_judges`
+    asks them: the first two at once, a third (if given) when they do not agree."""
+    messages = adoption_judge_messages(event, name, response)
+    first = list(judges[:2])
+    answers = await asyncio.gather(*(_adoption_vote(backend, j, messages, item_id) for j in first))
+    votes = list(zip((j.key for j in first), answers, strict=True))
+    decided = _majority(votes)
+    if decided is None and len(judges) >= 3:
+        votes.append((judges[2].key, await _adoption_vote(backend, judges[2], messages, item_id)))
+        decided = _majority(votes)
+    if decided is None:  # unparseable or tied votes: undecided
+        return None, "judge:" + "+".join(key for key, _ in votes)
+    vote, voters = decided
+    return vote == "ENDORSE", "judge:" + "+".join(voters)
+
+
+def _label(response: str, name: str, event: Event) -> str:
+    """:func:`cutoffmix.bench.keys.text.adoption_label` of ``response`` for ``name``; ``ValueError`` for anything but
+    its three labels (a bug in the labelling code is a grading failure, never a silent label)."""
+    label = _text.adoption_label(response, name, event)
+    if label not in ("endorsed", "reported", "absent"):
+        raise ValueError(f"adoption_label returned {label!r}; expected endorsed, reported or absent")
+    return label
+
+
+def _own_and_clear(response: str, name: str, event: Event) -> bool:
+    """Whether nothing in an answer that endorses ``name`` contradicts it as the answer's own (design section 6): it
+    offers nobody else (:func:`~cutoffmix.bench.keys.text.offers_another`), gives the person no other role and does
+    not reject the name in other words (:func:`~cutoffmix.bench.keys.text.contradicted`: "X is a co-author, not the
+    first author", "X is the senior author", "I dispute X"), and disclaims no knowledge
+    (:func:`~cutoffmix.bench.keys.text.disclaims`: "I am unable to verify that X is the first author")."""
+    return not (_text.offers_another(response, name, event) or _text.contradicted(response, name, event)
+                or _text.disclaims(response, event))
+
+
+def _adoption_rule(item: Mapping[str, Any], event: Event, response: str,
+                   grade: str) -> tuple[bool | None, str | None]:
+    """The rules' decision on the donor's name (design section 6): ``(adopted, adoption)``; ``(None, None)`` outside
+    the adoption sets. ``adopted`` is False for a ``correct`` answer and for ``absent``. ``endorsed`` is True only when
+    nothing in the answer contradicts it: the grade is ``incorrect`` (the grader read a wrong name given) and the
+    endorsement is clear (:func:`_own_and_clear`: nobody else offered, no other role, no rejection in other words, no
+    disclaimer). ``reported``, and an ``endorsed`` answer that is graded ``abstain`` or left ``ungraded`` or that is
+    not clear, are None: undecided unless the judges decide. With judges, the judges decide every answer that mentions
+    the name (:func:`_judged`), whatever this gives."""
+    name = str(item.get("donor_answer") or "").strip()
+    if item.get("set") not in ADOPTION_SETS or not name:
+        return None, None
+    label = _label(response, name, event)
+    if grade == "correct" or label == "absent":
+        return False, label
+    if label == "endorsed" and grade == "incorrect" and _own_and_clear(response, name, event):
+        return True, label
+    return None, label
+
+
+def _right_name_rule(item: Mapping[str, Any], event: Event, response: str,
+                     grade: str) -> tuple[str, bool | None, str | None]:
+    """The rules' decision on the right name of a ``full`` row of ``dark`` or ``both_right``: ``(grade, adopted,
+    adoption)``. A grade other than ``correct`` stays, without a label. A ``correct`` grade stays (``adopted`` True)
+    only where the answer gives the right name as its own: ``endorsed``, and clear (:func:`_own_and_clear`: nobody
+    else offered, no other role, no rejection in other words, no disclaimer). Every other correct answer is
+    ``ungraded`` with ``adopted`` None: ``reported`` (the name only in clauses that refer to the note, or only as the
+    author of another work), ``absent`` (the rules found the name where :func:`~cutoffmix.bench.keys.text.offers`
+    does not: a spelling variant such as "Z. Wang" for "Ziqi Wang", given as the answer's own or only relayed, or a
+    rejection only ``offers`` reads, such as "I doubt it is X"), and ``endorsed`` but not clear ("X is a co-author,
+    but the first author is Y", "X is a co-author, not the first author", "I am unable to verify that X is the first
+    author"). With judges, the judges decide every correct one (:func:`_judged`), whatever this gives."""
+    name = _right_name(item, event)
+    if grade != "correct" or not name:
+        return grade, None, None
+    label = _label(response, name, event)
+    if label == "endorsed" and _own_and_clear(response, name, event):
+        return grade, True, label
+    return "ungraded", None, label
+
+
+def _rule_decision(item: Mapping[str, Any], event: Event, response: str,
+                   grade: str) -> tuple[str, bool | None, str | None]:
+    """``(grade, adopted, adoption)`` as the rules alone give them (design section 6) from the grading step's
+    ``grade``: on a ``full`` row of ``dark`` or ``both_right`` the check of the right name (:func:`_right_name_rule`),
+    on ``donor_wrong`` and ``control`` the adoption of the donor's name (:func:`_adoption_rule`, the grade unchanged),
+    on every other row the grade without a label."""
+    if _shows_right_name(item):
+        return _right_name_rule(item, event, response, grade)
+    adopted, label = _adoption_rule(item, event, response, grade)
+    return grade, adopted, label
+
+
+def _candidate(item: Mapping[str, Any], event: Event) -> str:
+    """The name a labelled row is measured against: the right name on a ``full`` row of ``dark`` or ``both_right``,
+    the donor's name on ``donor_wrong`` and ``control``."""
+    return _right_name(item, event) if _shows_right_name(item) else str(item.get("donor_answer") or "").strip()
+
+
+def _judged(item: Mapping[str, Any], event: Event, response: str, label: str | None) -> bool:
+    """Whether, in a run with judges, the adoption judges decide a labelled row (design section 6, the judges'
+    scope): every labelled ``full`` row of ``dark`` and ``both_right`` (graded ``correct``: the grader found the
+    right name in it), and a row of ``donor_wrong`` or ``control`` whose label for the donor's name is ``endorsed``
+    or ``reported`` or whose answer mentions that name in any form
+    (:func:`~cutoffmix.bench.keys.text.mentions`), whatever its grade. The rules decide by themselves only the donor
+    rows that do not mention the name (``absent``, not adopted). A row without a label (another grade on a ``full``
+    row, every other row, refusals and errors) is never asked."""
+    if label is None:
+        return False
+    if _shows_right_name(item) or label in ("endorsed", "reported"):
+        return True
+    return bool(_text.mentions(response, _candidate(item, event), event))
+
+
+def _unsure_incorrect(event: Event, response: str, grade: str) -> bool:
+    """Whether the paper rules' grade is an ``incorrect`` they cannot vouch for (design section 6): the answer offers
+    the event's expected answer by the rule of :func:`~cutoffmix.bench.keys.text.offers`
+    (:func:`~cutoffmix.bench.keys.text.offers_answer`). The paper rules let a negation or hedge before the expected
+    answer reach across a comma and take any other name for the answer given ("It is not Y, it is X.", "It might be
+    X, who works with Y.", "Unless I'm mistaken, the first author is X, with Y as senior author."), so such a grade
+    is ``ungraded`` without judges, on every arm alike; with judges the grading judges decide it, with every other
+    rule grade in their scope (:func:`_judges_grade`)."""
+    return grade == "incorrect" and _text.offers_answer(response, event)
+
+
+def _judges_grade(event: Event, response: str, grade: str) -> bool:
+    """Whether, in a run with judges, the grading judges decide a rule grade (design section 6, the grading scope):
+    an ``incorrect`` that :func:`_unsure_incorrect` doubts, and every ``incorrect`` or ``abstain`` of an answer that
+    mentions the event's expected answer in any form (:func:`~cutoffmix.bench.keys.text.mentions_answer`: "It is not
+    Y, it is Zhang.", "The first author is Zhang et al., not Y.", a given name alone, "I think it's <given name>, but
+    I'm not sure."), on every arm alike. The rules decide by themselves only a ``correct`` grade and the answers that
+    do not name the expected answer; a control has none. Without judges only :func:`_unsure_incorrect` applies."""
+    return _unsure_incorrect(event, response, grade) or (grade in ("incorrect", "abstain")
+                                                         and _text.mentions_answer(response, event))
+
+
+def _rule_grade(event: Event, response: str, judges: bool = False) -> tuple[str, bool] | None:
+    """The grading step's rule grade ``(grade, hedged)`` of an answer, or None where the rules do not decide it
+    (design section 6): ``grading.grade_rule``, and None for an ``incorrect`` that :func:`_unsure_incorrect` doubts;
+    with ``judges`` also None for every grade in the grading judges' scope (:func:`_judges_grade`). With judges, None
+    goes to the grading judges; without them it is ``ungraded``."""
+    ruled = grade_rule(event, PROBE, response)
+    if ruled is None or _unsure_incorrect(event, response, ruled[0]):
+        return None
+    if judges and _judges_grade(event, response, ruled[0]):
+        return None
+    return ruled
+
+
+async def _grade(event: Event, response: str, backend: Backend,
+                 judges: Sequence[ModelSpec] | None) -> tuple[str, bool, str]:
+    """The grading step ``(grade, hedged, grader)`` of an answer (design section 6): ``grading.grade_response`` (the
+    paper rules; the grading judges, when given, where the rules are unsure), except that with judges every rule
+    grade in the grading judges' scope (:func:`_judges_grade`: an ``incorrect`` or ``abstain`` of an answer that
+    mentions the expected answer) goes to the grading judges as well, and without judges a rule grade ``incorrect``
+    that :func:`_unsure_incorrect` doubts is ``ungraded`` (as :func:`_rule_grade` gives them). A failed or tied vote
+    leaves the answer ``ungraded``; the rule grade never stands in for it. A rule grade ``correct`` stays.
+    ``grading.py`` itself is unchanged for the other experiments."""
+    graded = await grade_response(event, PROBE, response, backend=backend, judges=judges or None)
+    if graded[2] != "rule":
+        return graded
+    if judges:
+        if _judges_grade(event, response, graded[0]):
+            return await grade_with_judges(backend, judges, event, PROBE, response)
+        return graded
+    if _unsure_incorrect(event, response, graded[0]):
+        return "ungraded", False, "rule"
+    return graded
+
+
+def _offers_expected(event: Event, response: str) -> bool | None:
+    """The ``offers_expected`` field of an answered row (design section 6, open offers): whether the answer offers the
+    event's expected answer (:func:`~cutoffmix.bench.keys.text.offers_answer`) or names it in any other form, other
+    than inside the name of another person (:func:`~cutoffmix.bench.keys.text.names_answer`: "Dr. Zhang", "Zhang et
+    al.", a given name or a common surname alone, "X?", also a doubt or a rejection; not "Yutong Mei" for Lingrui
+    Mei); None for a control (no expected answer). It covers the grading scope (:func:`_judges_grade`) but for the
+    answers whose only mention of the expected answer is another person's name, so a grading vote the judges lose
+    leaves an open offer. A name with a title, a group word or an opening word of the lists of ``text._another_person``
+    ("Professor Zhang", "Visiting Professor Zhang", "the Zhang Group", "Either Zhang"), or a near spelling of the
+    expected answer or of an accepted form by the paper rules' tests of a possible misspelling ("Wei Zhangg"), is no
+    other person's: the open offers take one person for two less readily than the adoption rules do
+    (``text._another_person``), since a row wrongly read as naming only another person is counted as a miss without a
+    check. The report reads an ``ungraded`` row with True as an open offer."""
+    if event.control or not (event.expected_current or "").strip():
+        return None
+    return bool(_text.offers_answer(response, event) or _text.names_answer(response, event))
+
+
+async def _decide(item: Mapping[str, Any], event: Event, response: str, graded: tuple[str, bool, str],
+                  backend: Backend, judges: Sequence[ModelSpec] | None,
+                  stored: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The grade and adoption fields of a result row (``grade``, ``hedged``, ``grader``, ``adopted``, ``adoption``,
+    ``adoption_name``, ``adoption_grader``, ``rule_adopted``) from the grading step's ``graded`` = ``(grade, hedged,
+    grader)`` (design section 6); ``hedged`` and ``grader`` as graded.
+
+    - The rules' decision (:func:`_rule_decision`) is stored on every labelled row as ``rule_adopted``, whoever
+      decides it, and the name the label is measured against (:func:`_candidate`) as ``adoption_name``; the adoption
+      fields are None on a row without a label.
+    - With ``judges``, the adoption judges decide every row in their scope (:func:`_judged`), whatever the rules
+      give: ENDORSE gives ``adopted`` True (a right-name row keeps ``correct``), REPORT or REJECT False (a right-name
+      row becomes ``incorrect``), no majority or a failed call None (a right-name row ``ungraded``); a failure never
+      falls back to the rules' decision. ``adoption_grader`` is ``judge:<keys>``.
+    - Otherwise the rules decide (``adoption_grader`` ``rule``; what they leave open stays None).
+    - ``stored`` (a re-grade): a decision of the judges about the same name (:func:`_asked_about`) stands while the
+      answer is in their scope, whatever its label now (their question does not depend on it), without a call, and so
+      do their undecided votes when this run has no judges to ask again; only the label and ``rule_adopted`` are
+      brought up to date (and the grade of a donor row, which the judges' decision does not touch). A decision about
+      another name (a re-plan) counts for nothing: the rules or the judges decide the current name."""
+    grade, hedged, grader = graded
+    ruled, rule_adopted, label = _rule_decision(item, event, response, grade)
+    fields: dict[str, Any] = {"grade": ruled, "hedged": hedged, "grader": grader, "adopted": rule_adopted,
+                              "adoption": label, "adoption_name": None, "adoption_grader": None, "rule_adopted": None}
+    if label is None:
+        return fields
+    name = _candidate(item, event)
+    fields.update(adoption_name=name, adoption_grader="rule", rule_adopted=rule_adopted)
+    if (stored is not None and _by_judges(stored) and _asked_about(stored, name)
+            and (stored.get("adopted") is not None or not judges) and _judged(item, event, response, label)):
+        kept = str(stored.get("grade")) if _shows_right_name(item) else grade
+        return {**fields, "grade": kept, "adopted": stored.get("adopted"),
+                "adoption_grader": stored.get("adoption_grader")}
+    if not judges or not _judged(item, event, response, label):
+        return fields
+    adopted, by = await _judge_adoption(backend, judges, event, name, response, str(item["id"]))
+    if _shows_right_name(item):
+        grade = {True: "correct", False: "incorrect", None: "ungraded"}[adopted]
+    return {**fields, "grade": grade, "adopted": adopted, "adoption_grader": by}
+
+
+# ------------------------------------------------------------------------------------------------------ run
+
+
+def _row(item: Mapping[str, Any], provenance: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
+    """A result row with the fields in the order of design section 6 (``offers_expected`` None unless given)."""
+    order = ("response", "grade", "hedged", "grader", "offers_expected", "adopted", "adoption", "adoption_name",
+             "adoption_grader", "rule_adopted", "latency_s", "usage", "judge_usage")
+    row = {k: item[k] for k in ("id", "set", "donor", "recipient", "event_id", "arm")}
+    row.update({k: fields.get(k) for k in order})
+    row.update({k: provenance.get(k) for k in ("backend", "prompt_sha", "request_sha", "note_event", "today")})
+    row["error"] = fields["error"]
+    return row
+
+
+def _failed_row(item: Mapping[str, Any], provenance: Mapping[str, Any], response: str, latency_s: Any,
+                usage: Any, judge_usage: list[dict[str, Any]], exc: Exception) -> dict[str, Any]:
+    """The row of an answer whose grading raised: ``ungraded`` with grader ``none``, the answer, its usage and the
+    judges' calls made so far kept (the cap counts them), and an ``error`` that starts with :data:`GRADING_FAILED`,
+    so that the next run grades the stored answer again instead of sending the call again (``offers_expected`` None:
+    an error row)."""
+    return _row(item, provenance, response=response, grade="ungraded", hedged=False, grader="none", adopted=None,
+                adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None, latency_s=latency_s,
+                usage=usage, judge_usage=judge_usage, error=f"{GRADING_FAILED}{type(exc).__name__}: {exc}"[:500])
+
+
+def check_plan(plan: Sequence[Mapping[str, Any]]) -> None:
+    """Raise ``ValueError`` when ``plan`` is not a plan of ``bench keys plan`` (design section 6): a row without one
+    of ``id``, ``set``, ``donor``, ``recipient``, ``event_id``, ``arm`` or a list of ``messages`` ("plan row N has no
+    ..."), or an id that appears twice ("the plan repeats N id(s)")."""
+    for n, row in enumerate(plan, 1):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"plan row {n} is not a JSON object: the plan must be a file written by 'bench keys plan'")
+        absent = [k for k in _PLAN_NEEDS if row.get(k) in (None, "")]
+        if absent or not isinstance(row.get("messages"), list):
+            raise ValueError(f"plan row {n} has no {', '.join(absent or ['messages'])}: the plan must be a file "
+                             "written by 'bench keys plan'")
+    repeated = [i for i, n in Counter(str(r["id"]) for r in plan).items() if n > 1]
+    if repeated:
+        raise ValueError(f"the plan repeats {len(repeated)} id(s) (e.g. {repeated[0]}): every planned call must appear "
+                         "once (a repeated pair, or plans joined together); build the plan again")
+
+
+async def run_plan(
+    backend: Backend,
+    models: Sequence[ModelSpec],
+    plan: Sequence[Mapping[str, Any]],
+    out_path: str | Path,
+    *,
+    events: Mapping[str, Event] | Sequence[Event],
+    concurrency: int = 8,
+    max_cost: float | None = None,
+    limit: int | None = None,
+    judges: Sequence[ModelSpec] | None = None,
+    max_tokens: int = 4096,
+    progress: ProgressCallback | None = None,
+    backend_name: str | None = None,
+    resend_stale: bool = False,
+    on_start: Callable[[RunStart], None] | None = None,
+    stop: asyncio.Event | None = None,
+) -> RunOutcome:
+    """Send the planned calls, grade each answer and append one row per answer to ``out_path`` (JSONL); return how
+    the run ended (:class:`RunOutcome`). Every check below runs before the first call.
+
+    - Each call is ``ChatRequest(messages, max_tokens, temperature=0.0, metadata={event_id, probe: "current_d",
+      model, arm, set, donor, item, donor_answer})`` to the recipient model. The answer is graded with
+      :func:`cutoffmix.bench.grading.grade_response` (the paper rules; ``judges`` only when given), except that
+      (:func:`_grade`, every arm alike) without ``judges`` a rule grade ``incorrect`` is ``ungraded`` where the answer
+      offers the expected answer ("It is not Y, it is X."), and with ``judges`` the grading judges decide every rule
+      grade ``incorrect`` or ``abstain`` of an answer that mentions the expected answer (:func:`_judges_grade`; a rule
+      ``correct`` stays, a failed or tied vote leaves it ``ungraded``). ``offers_expected`` records whether the answer
+      names the expected answer (:func:`_offers_expected`; None for refusals, errors and controls). A policy refusal
+      (``content_filter``) is ``ungraded`` with grader ``refusal``; an exception becomes an ``ungraded`` row with
+      ``error``. When the call raises, the row has no answer (``usage`` None) and the next run sends it again. An
+      answer without visible text whose ``finish_reason`` is neither ``length`` (cut at ``max_tokens``, which is
+      pre-registered: an answer) nor ``content_filter`` is no answer either: its row keeps the ``usage`` and has the
+      ``error`` "empty answer (finish_reason ...)", and the next run sends it again. When the grading of an answer
+      raises, the row keeps the answer, its ``usage`` and the judges' calls made so far, and its ``error`` starts
+      with :data:`GRADING_FAILED`: the paid call is counted once and never sent again; the next run grades the stored
+      answer again (with or without judges). A judge call that fails is a missing vote; its entry in ``judge_usage``
+      carries the ``error`` (:class:`_JudgeMeter`), and ``RunOutcome.judge_failed`` counts this run's (a failure the
+      grading retried without JSON mode is marked ``retried`` and not counted: its retry is). A reply without a
+      verdict records no failure, so ``RunOutcome.judges_undecided`` counts the current rows whose grade or label the
+      judges' votes left undecided, whatever the cause (``common.judges_left_open``).
+    - Rows: ``{id, set, donor, recipient, event_id, arm, response, grade, hedged, grader, offers_expected, adopted,
+      adoption, adoption_name, adoption_grader, rule_adopted, latency_s, usage, judge_usage, backend, prompt_sha,
+      request_sha, note_event, today, error}`` (design section 6). ``backend`` is ``backend_name`` (default:
+      :func:`_backend_name` of ``backend``), ``prompt_sha`` the :func:`prompt_sha` of the planned messages,
+      ``request_sha`` the :func:`request_sha` of the call; ``note_event`` and ``today`` are copied from the plan row
+      (None when it has none). ``judge_usage`` lists every judge call of the row (``[]`` without one).
+    - The right name (the ``full`` rows of ``dark`` and ``both_right``, whose note shows the expected answer, the
+      plan row's ``donor_answer``): a ``correct`` grade stands only where the answer gives that name as its own.
+      ``adoption`` is its label for that name. Without ``judges``, ``endorsed`` and clear (:func:`_own_and_clear`:
+      nobody else offered, no other role, no rejection in other words, no disclaimer) keeps ``correct`` by rule
+      (``adopted`` True), and every other correct answer (``reported``, ``absent``, ``endorsed`` but not clear) is
+      ``ungraded`` (``adopted`` None). With ``judges``, the judges answer :data:`ADOPTION_JUDGE_SYSTEM`'s question for
+      every correct one (:func:`_judged`): ENDORSE keeps ``correct`` (True), REPORT or REJECT make it ``incorrect``
+      (False), no majority or a failed call leaves it ``ungraded`` (None). ``hedged`` and ``grader`` keep what the
+      grading said. Another grade gets no label.
+    - Adoption (sets ``donor_wrong`` and ``control``; None on the other rows of ``dark`` and ``both_right`` and for
+      errors and refusals): ``adoption`` is :func:`cutoffmix.bench.keys.text.adoption_label` of the answer and the
+      donor's name. Without ``judges``, ``adopted`` is False for a ``correct`` answer and for ``absent``, True by rule
+      for ``endorsed`` when the grade is ``incorrect`` and the endorsement is clear (:func:`_adoption_rule`), and
+      otherwise (``reported``, an ``endorsed`` answer graded otherwise or not clear) None. With ``judges``, every row
+      whose label is ``endorsed`` or ``reported`` or whose answer mentions the donor's name in any form
+      (:func:`cutoffmix.bench.keys.text.mentions`) is the judges', whatever its grade (the majority as in grading;
+      True only for ENDORSE; unparseable or tied votes, or failed calls, leave it None); the rules decide only the
+      rows that do not mention the name (``absent``, False). ``adoption_grader`` is ``rule`` or ``judge:<keys>``;
+      ``rule_adopted`` holds the rules' own decision on every labelled row (None elsewhere), whoever decided it, and
+      ``adoption_name`` the name the label is measured against (the donor's name, or the right name).
+    - Safety: the plan must pass :func:`check_plan` (no repeated id); ``out_path`` must be a regular file (or new)
+      that holds rows of an earlier keys run only (see :func:`_existing`) and that this run can append to (checked
+      before the first call); an exclusive lock on ``<out_path>.lock`` (next to the file a symlink resolves to) is
+      held from before the last line is mended until the last row is appended (another run holding it:
+      ``ValueError``). The last line: a complete row without its newline gets the newline and counts like any row;
+      a torn line (an interrupted append, no valid JSON, also one cut inside a character) is cut with a warning on
+      the log; any other byte that is not UTF-8 refuses the file (:func:`_decode`). A row that cannot be appended
+      during the run (``OSError``: a full disk) stops it: no new item starts, the items in flight finish, and
+      ``ValueError`` names the file (the rows written count; a call whose row is missing is sent again by the next
+      run).
+    - Resume: a stored row counts as done only when it has provenance, comes from the same backend and answered the
+      same request, and has no ``error``; readers keep the last row per id. A row without provenance or from another
+      backend anywhere in the file stops the run (``ValueError`` with the counts): those calls are never sent again,
+      and a file holds one backend's rows. A planned id whose last answer was given to another request also stops it,
+      unless ``resend_stale``: then those calls are sent again and the newest row counts. Send errors are sent
+      again; an answer whose grading failed is graded again instead (below).
+    - Re-grade, before any new call, from the stored response and without a recipient call; each appends a row under
+      the same id with ``adopted`` recomputed: every current answer whose grading failed; every current answer the
+      rules graded whose rule grade is not what the rules give now (:func:`_grade_changed`; the grading step runs again,
+      then the label); every current row whose
+      ``adoption`` is not the label its response gets now, whose ``rule_adopted`` or ``adoption_name`` is missing or
+      not the rules' decision or the name now, whose rule decision the rules would now give otherwise, or whose
+      judges' decision is out of their scope now (:func:`_label_changed`: for the plan row's ``donor_answer`` on the
+      adoption sets, for the right name on a correct ``full`` row of ``dark`` or ``both_right``; the name changed in a
+      re-plan with the same messages, or the labelling rule changed: the row is labelled again; a decision of the
+      judges about the same name stands while the answer is in their scope, whatever its label, :func:`_decide`); and,
+      with ``judges``, every current row that is ``ungraded`` without error, not a refusal and with a non-empty
+      response, every current answer whose rule grade is in the grading judges' scope now, every current labelled row
+      with ``adopted`` None, and every current labelled row the rules decided that is in the judges' scope now
+      (:func:`_judge_due`; a labelled ``full`` row of ``dark`` or ``both_right`` goes straight to the adoption judges:
+      its grading step said ``correct``, see :func:`_graded`); and every current answer whose ``offers_expected`` is
+      missing or out of date (:func:`_offer_changed`). A grade of the grading judges stands; a rule grade is graded
+      again (the rules, then the judges where they decide it). The new row keeps
+      ``latency_s`` and the provenance; its ``usage`` is None and its ``judge_usage`` lists the new judge calls: the
+      recipient's call stays billed in the row it re-grades, so the summed cost of all rows counts every paid call
+      once. A re-grade that raises appends a grading failure as well (its judge calls counted).
+    - At most ``concurrency`` items (a call with its judges, or a re-grade) are in flight. ``limit`` caps the calls
+      this run sends (re-grades are no calls). ``max_cost`` (USD) stops starting new items once the summed cost of
+      every row in ``out_path`` (:func:`row_cost` plus :func:`judge_cost`; earlier rows, repeats and this run's)
+      reaches it; items in flight finish with their judge calls. Re-grades without judges cost nothing and are never
+      stopped by it. Two more stops work the same way (no new item, the items in flight finish and write their rows):
+      a call, a recipient's or a judge's, that fails with an error no retry can fix (a
+      :class:`~cutoffmix.backends.base.BackendError` with an HTTP status in :data:`FATAL_STATUS` that is not
+      retryable: a missing or wrong key, no credits), and ``stop`` once it is set (the CLI sets it on the first
+      Ctrl-C). ``RunOutcome.stopped_by`` says which of the cap, the limit, the error (``RunOutcome.error``) or the stop
+      event first kept planned work from starting; stops that meet at one check rank the stop event, then the error,
+      then the cap.
+    - ``on_start`` is called once, before the first call, with what the run found (:class:`RunStart`).
+    """
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be >= 1, got {concurrency}")
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit}")
+    if max_cost is not None and max_cost < 0:
+        raise ValueError(f"max_cost must be >= 0, got {max_cost}")
+    check_plan(plan)
+    by_event = dict(events) if isinstance(events, Mapping) else {e.id: e for e in events}
+    specs = {m.key: m for m in models}
+    missing_models = sorted({str(r["recipient"]) for r in plan} - set(specs))
+    if missing_models:
+        raise ValueError(f"the plan names recipient model(s) that are not configured: {missing_models}")
+    missing_events = sorted({str(r["event_id"]) for r in plan} - set(by_event))
+    if missing_events:
+        raise ValueError(f"the plan names {len(missing_events)} event(s) not in the events file, "
+                         f"e.g. {missing_events[0]}")
+    name = backend_name or _backend_name(backend)
+    current = {str(r["id"]): request_sha(r["messages"], max_tokens=max_tokens, temperature=TEMPERATURE,
+                                         model=specs[str(r["recipient"])]) for r in plan}
+    path = Path(out_path)
+    if path.exists() and not path.is_file():  # a directory, a device, a pipe: no results file could be kept there
+        raise ValueError(f"cannot write --out {path}: it exists and is not a regular file; name a new file or an "
+                         "earlier 'bench keys run' results file")
+    with _locked(path):
+        stored = _existing(path)
+        try:
+            _mend_last_line(path, stored)  # only after the file passed as keys results
+        except OSError as e:  # it opens a non-empty file for writing: a read-only one fails here, before any call
+            raise _unwritable(path, e) from e
+        return await _run_locked(
+            backend, specs, plan, path, stored.rows, current, by_event, name=name, concurrency=concurrency,
+            max_cost=max_cost, limit=limit, judges=list(judges or []), max_tokens=max_tokens, progress=progress,
+            resend_stale=resend_stale, on_start=on_start, stop=stop)
+
+
+def _check_resumable(path: Path, stored: Sequence[Mapping[str, Any]], plan: Sequence[Mapping[str, Any]],
+                     current: Mapping[str, str], name: str, last: Mapping[str, Mapping[str, Any]],
+                     resend_stale: bool) -> list[str]:
+    """The planned ids whose last row holds an answer to another request (stale; an answer whose grading failed is
+    one too); raises ``ValueError`` (design section 6) for rows without provenance or of another backend, and for
+    stale rows unless ``resend_stale``."""
+    bare = [r for r in stored if not _has_provenance(r)]
+    other = Counter(str(r["backend"]) for r in stored if _has_provenance(r) and r["backend"] != name)
+    if bare or other:
+        planned_ids = set(current)
+        hit = sum(1 for r in stored if str(r["id"]) in planned_ids
+                  and (not _has_provenance(r) or r["backend"] != name))
+        parts = []
+        if bare:
+            parts.append(f"{len(bare)} row(s) without provenance (written before version 2 of the design)")
+        if other:
+            parts.append(f"{sum(other.values())} row(s) from another backend ("
+                         + ", ".join(f"{b}: {n}" for b, n in sorted(other.items())) + ")")
+        raise ValueError(f"{path} holds {' and '.join(parts)}, {hit} of them for ids of this plan; this run's backend "
+                         f"is '{name}', and a results file holds the rows of one backend only, whose calls are never "
+                         "sent again: write to a new --out (a mock run to its own file, e.g. "
+                         "runs/keys_results_mock.jsonl)")
+    stale = [str(p["id"]) for p in plan
+             if (r := last.get(str(p["id"]))) is not None and _is_answer(r)
+             and r.get("request_sha") != current[str(p["id"])]]
+    if stale and not resend_stale:
+        raise ValueError(f"{path}: {len(stale)} of the {len(plan)} planned calls were answered under another request "
+                         "(other messages, max_tokens or model settings: the plan or the configuration changed since "
+                         "those rows were written): resume with the original plan and settings, or pass "
+                         "--resend-stale to send those calls again (the newest row counts)")
+    return stale
+
+
+async def _run_locked(
+    backend: Backend,
+    specs: Mapping[str, ModelSpec],
+    plan: Sequence[Mapping[str, Any]],
+    path: Path,
+    stored: list[dict[str, Any]],
+    current: Mapping[str, str],
+    by_event: Mapping[str, Event],
+    *,
+    name: str,
+    concurrency: int,
+    max_cost: float | None,
+    limit: int | None,
+    judges: list[ModelSpec],
+    max_tokens: int,
+    progress: ProgressCallback | None,
+    resend_stale: bool,
+    on_start: Callable[[RunStart], None] | None,
+    stop: asyncio.Event | None,
+) -> RunOutcome:
+    """:func:`run_plan` once the lock is held and the stored rows are read."""
+    last: dict[str, dict[str, Any]] = {}
+    for row in stored:
+        last[str(row["id"])] = row
+    stale = set(_check_resumable(path, stored, plan, current, name, last, resend_stale))
+
+    def current_row(item_id: str) -> Mapping[str, Any] | None:
+        row = last.get(item_id)
+        return row if row is not None and row.get("request_sha") == current[item_id] else None
+
+    def graded(item_id: str) -> bool:  # a current answer, graded
+        row = current_row(item_id)
+        return row is not None and not row.get("error")
+
+    def ungradable(item_id: str) -> bool:  # a current answer whose grading raised: graded again, never sent again
+        row = current_row(item_id)
+        return row is not None and _grading_failed(row)
+
+    answered = {i for i in current if graded(i) or ungradable(i)}
+    pending = [p for p in plan if str(p["id"]) not in answered]
+    to_send = pending if limit is None else pending[:limit]
+    regrade: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+    failed = rule_grade = relabel = offer_flag = 0
+    for p in plan:
+        item_id = str(p["id"])
+        if item_id not in answered:
+            continue
+        row, event = last[item_id], by_event[str(p["event_id"])]
+        if _grading_failed(row):
+            failed += 1
+        elif _grade_changed(p, row, event):
+            rule_grade += 1
+        elif _label_changed(p, row, event):
+            relabel += 1
+        elif judges and _judge_due(p, row, event):
+            pass  # for the judges
+        elif _offer_changed(row, event):
+            offer_flag += 1
+        else:
+            continue
+        regrade.append((p, row))
+    recipients_before = sum(row_cost(r) for r in stored)
+    judges_before = sum(judge_cost(r) for r in stored)
+    start = RunStart(
+        backend=name, planned=len(plan), answered=len(answered), pending=len(pending),
+        errors=sum(1 for p in pending if (r := last.get(str(p["id"]))) is not None and not _is_answer(r)),
+        stale=sum(1 for p in pending if str(p["id"]) in stale), to_send=len(to_send), regrade=len(regrade),
+        cost_usd=recipients_before + judges_before, failed=failed, relabel=relabel, rule_grade=rule_grade,
+        offer_flag=offer_flag)
+    if regrade or to_send:
+        _check_writable(path)  # before the first call: a paid answer must have a file to go to
+    if on_start is not None:
+        on_start(start)
+
+    spent = start.cost_usd
+    run_recipients = run_judges = 0.0
+    total, finished, sent, regraded = len(regrade) + len(to_send), 0, 0, 0
+    sem = asyncio.Semaphore(concurrency)
+    failures: list[Exception] = []
+    fatal: str | None = None  # the first error no retry can fix: no new item starts after it
+    halted: StopReason | None = None  # why an item was not started
+    judge_failed, judge_error = 0, None
+
+    def note_fatal(error: str) -> None:
+        """Record the first error no retry can fix, a recipient's or a judge's: no new item starts after it."""
+        nonlocal fatal
+        if fatal is None:
+            fatal = error
+
+    async def send(item: Mapping[str, Any]) -> dict[str, Any]:
+        item_id = str(item["id"])
+        event = by_event[str(item["event_id"])]
+        spec = specs[str(item["recipient"])]
+        meta = {"event_id": event.id, "probe": PROBE, "model": spec.key, "arm": item["arm"], "set": item["set"],
+                "donor": item["donor"], "item": item["id"], "donor_answer": item.get("donor_answer")}
+        req = ChatRequest(messages=[dict(m) for m in item["messages"]], max_tokens=max_tokens,
+                          temperature=TEMPERATURE, metadata=meta)
+        provenance = {"backend": name, "prompt_sha": prompt_sha(item["messages"]), "request_sha": current[item_id],
+                      "note_event": item.get("note_event"), "today": item.get("today")}
+        start_time = time.perf_counter()
+        try:
+            result = await backend.chat(spec, req)
+        except Exception as e:  # every failure is recorded; the run goes on unless no retry can fix it
+            error = f"{type(e).__name__}: {e}"[:500]
+            if _no_retry_fixes(e):
+                note_fatal(error)
+            return _row(item, provenance, response="", grade="ungraded", hedged=False, grader="none", adopted=None,
+                        adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None,
+                        latency_s=round(time.perf_counter() - start_time, 4), usage=None, judge_usage=[], error=error)
+        latency = round(result.latency_s if result.latency_s > 0 else time.perf_counter() - start_time, 4)
+        text = result.text or ""
+        if result.finish_reason == "content_filter":  # a policy refusal says nothing about knowledge
+            return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="refusal",
+                        adopted=None, adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None,
+                        latency_s=latency, usage=result.usage, judge_usage=[], error=None)
+        if not text.strip() and result.finish_reason != "length":
+            # no visible text and not cut at the pre-registered max_tokens: no answer (e.g. a provider's empty reply
+            # inside an HTTP 200); the usage is kept for the cap, and the next run sends the call again
+            return _row(item, provenance, response=text, grade="ungraded", hedged=False, grader="none", adopted=None,
+                        adoption=None, adoption_name=None, adoption_grader=None, rule_adopted=None, latency_s=latency,
+                        usage=result.usage, judge_usage=[],
+                        error=f"empty answer (finish_reason {result.finish_reason})")
+        meter = _JudgeMeter(backend, note_fatal)
+        try:
+            graded = await _grade(event, text, meter, judges)
+            fields = await _decide(item, event, text, graded, meter, judges)
+            offered = _offers_expected(event, text)
+        except Exception as e:  # the answer is paid for: kept and counted, graded again by the next run, never re-sent
+            log.info("%s: grading the answer failed (%s: %s); the next run grades it again", item_id,
+                     type(e).__name__, e)
+            return _failed_row(item, provenance, text, latency, result.usage, meter.entries, e)
+        return _row(item, provenance, response=text, **fields, offers_expected=offered, latency_s=latency,
+                    usage=result.usage, judge_usage=meter.entries, error=None)
+
+    async def regrade_one(item: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
+        event = by_event[str(item["event_id"])]
+        text = str(row.get("response") or "")
+        meter = _JudgeMeter(backend, note_fatal)
+        try:
+            # the grading step again where the rules graded it (their grade or, with judges, its scope may have
+            # changed), where it failed, and, with judges, where it is ungraded; a grade of the grading judges stands,
+            # and a labelled full row graded correct goes straight to the adoption judges (_graded)
+            graded = _graded(item, row)
+            if _grading_failed(row) or graded[2] == "rule" or (judges and graded[0] == "ungraded"):
+                graded = await _grade(event, text, meter, judges)
+            fields = await _decide(item, event, text, graded, meter, judges, stored=row)
+            offered = _offers_expected(event, text)
+        except Exception as e:  # as in send(): the judges' calls made so far stay counted
+            log.info("%s: grading the stored answer again failed (%s: %s)", item["id"], type(e).__name__, e)
+            return _failed_row(item, row, text, row.get("latency_s"), None, meter.entries, e)
+        return _row(item, row, response=text, **fields, offers_expected=offered, latency_s=row.get("latency_s"),
+                    usage=None, judge_usage=meter.entries, error=None)
+
+    async def worker(make: Callable[[], Awaitable[dict[str, Any]]], counts_as_call: bool) -> None:
+        nonlocal finished, spent, sent, regraded, run_recipients, run_judges, judge_failed, judge_error
+        try:
+            row = await make()
+            try:
+                append_jsonl(path, row)
+            except OSError as e:  # the answer may be paid, but the file cannot take its row: stop (design section 6)
+                raise ValueError(f"cannot write a row to --out {path} ({e.strerror or e}): the run stopped; the rows "
+                                 "written count, and a call whose row is missing was paid and is sent again by the "
+                                 "next run (fix the cause, then rerun to resume)") from e
+            last[str(row["id"])] = row
+            run_recipients += row_cost(row)
+            run_judges += judge_cost(row)
+            spent += _cost(row)
+            for entry in row.get("judge_usage") or []:
+                if entry.get("error") and not entry.get("retried"):  # a missing vote (a retried attempt is none)
+                    judge_failed += 1
+                    judge_error = judge_error or str(entry["error"])
+            if counts_as_call:
+                sent += 1
+            else:
+                regraded += 1
+            finished += 1
+            if progress is not None:
+                progress(finished, total, row)
+        except Exception as e:  # re-raised after the items in flight finish
+            failures.append(e)
+        finally:
+            sem.release()
+
+    def stopped(free: bool) -> StopReason | None:
+        """Why no new item may start now, or None: the stop event (Ctrl-C), an error no retry can fix, the cost cap
+        (unless the items are ``free``: re-grades without judges)."""
+        if stop is not None and stop.is_set():
+            return "interrupted"
+        if fatal is not None:
+            return "error"
+        if not free and max_cost is not None and spent >= max_cost:
+            return "max_cost"
+        return None
+
+    async def drain(work: Sequence[tuple[Callable[[], Awaitable[dict[str, Any]]], bool]], *, free: bool) -> int:
+        """Start the items in order, at most ``concurrency`` at a time, until a stop (:func:`stopped`) or a failure;
+        return how many were started (every started item finishes and writes its row)."""
+        nonlocal halted
+        started = 0
+        tasks: set[asyncio.Task[None]] = set()
+        try:
+            for make, counts_as_call in work:
+                await sem.acquire()  # bounds the live tasks, not only the calls in flight
+                why = stopped(free)
+                if failures or why is not None:
+                    sem.release()
+                    halted = halted or why
+                    break
+                task = asyncio.create_task(worker(make, counts_as_call))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+                started += 1
+            await asyncio.gather(*list(tasks))
+        finally:
+            for task in list(tasks):
+                task.cancel()
+        return started
+
+    # the re-grades first ("before sending new calls"), then the calls
+    regrade_started = await drain([((lambda p=p, r=r: regrade_one(p, r)), False) for p, r in regrade],
+                                  free=not judges)
+    if failures:
+        raise failures[0]
+    send_started = await drain([((lambda p=p: send(p)), True) for p in to_send], free=False)
+    if failures:
+        raise failures[0]
+    stopped_by: StopReason | None = None
+    if regrade_started < len(regrade) or send_started < len(to_send):
+        stopped_by = halted or "max_cost"
+    elif fatal is not None:  # met after the last item had started: nothing was left to stop, but rerunning would fail
+        stopped_by = "error"
+    elif len(to_send) < len(pending):
+        stopped_by = "limit"
+    order = [str(p["id"]) for p in plan]
+    rows = [last[i] for i in order if i in last and last[i].get("request_sha") == current[i]]
+    return RunOutcome(
+        rows=rows, start=start, sent=sent, regraded=regraded,
+        not_sent=sum(1 for i in current if not graded(i) and not ungradable(i)),
+        not_regraded=len(regrade) - regrade_started, stopped_by=stopped_by, cost_usd=spent,
+        recipients_usd=recipients_before + run_recipients, judges_usd=judges_before + run_judges,
+        run_cost_usd=run_recipients + run_judges, not_graded=sum(1 for i in current if ungradable(i)),
+        error=fatal if stopped_by == "error" else None, judge_failed=judge_failed, judge_error=judge_error,
+        judges_undecided=sum(1 for row in rows if judges_left_open(row)))

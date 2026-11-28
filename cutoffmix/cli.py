@@ -3,8 +3,9 @@
 ::
 
     cutoffmix run "question" [--mock] [--policy P] [--strategy S] [--segments N] [--json OUT] [--config FILE]
-                             [--preset NAME]
+                             [--preset NAME] [--ring KEY,KEY[,KEY]]
     cutoffmix serve [--host H] [--port P] [--mock] [--allow-origin ORIGIN...] [--allow-host HOST...] [--preset NAME]
+                    [--ring KEY,KEY[,KEY]]
     cutoffmix index show [--path FILE] [--probe P] [--config FILE]
     cutoffmix bench import-kc --out DIR
     cutoffmix bench build-wikidata --out FILE
@@ -17,6 +18,11 @@
     cutoffmix bench fit --events FILE... --results FILE... --out FILE [--models KEY...] [--probes P...]
                         [--probe-map FROM=TO...] [--global-origins ORIGIN...]
                         [--priors KEY=MONTH...] [--note TEXT]
+    cutoffmix bench keys plan --events FILE --results FILE --out FILE [--models K,K,K] [--pairs A:B,...]
+                        [--both-right N] [--min-items N] [--seed N] [--today YYYY-MM-DD] [--force]
+    cutoffmix bench keys run --plan FILE --events FILE --out FILE [--mock] [--max-cost USD] [--concurrency N]
+                        [--limit N] [--judges KEY...] [--resend-stale]
+    cutoffmix bench keys report --plan FILE --results FILE [--json OUT] [--md OUT]
     cutoffmix router train [options of cutoffmix.router.train]
     cutoffmix simulate [--out DIR]
 
@@ -26,7 +32,27 @@ are imported only by the subcommands that need them. ``bench grade`` re-grades a
 (never in place; ``usage`` and ``latency_s`` are kept): offline with the rule grader alone, with ``--judges`` for
 the rows the rules cannot decide; it prints the grade counts per model and probe before and after. ``--preset explore`` (``run`` and ``serve``) merges the packaged
 explore preset (DESIGN.md §7) before ``--config``; the segment headers then tag lens, check and continuation notes
-and the summary line adds the exploration metrics of the ``done`` event.
+and the summary line adds the exploration metrics of the ``done`` event. ``--preset rally`` merges the rally preset
+(DESIGN_rally.md): two or three models hand one record to each other in a fixed ring; the segment headers show the kind
+and the label counts of each note, and a summary after the run lists the turns, the stop reason and the (self-reported)
+frontier. ``--ring KEY,KEY[,KEY]`` sets the ring (and switches the rally on when no preset is given).
+``bench keys`` is the key-not-value experiment (DESIGN_keys.md, after Hazy Research's "Plato's Key"): ``plan`` builds
+the calls offline from stored graded results (does a donor's note with the answer masked make a recipient recall what
+it missed alone?) and prints the cost estimate (it does not replace a plan whose calls differ unless ``--force``,
+and never a file that is not a plan);
+``run`` sends them (``--max-cost`` is required for the real models and counts the judges; it stops new calls, and the
+calls in flight finish, so a run can end above it; with ``--judges`` the judges decide every rule grade incorrect or
+abstain of an answer that names the expected answer and every labelled answer that names the candidate, the rules only
+a grade correct and the answers that do not name them, and the answers the judges' votes leave undecided are counted,
+to be asked again by a rerun with ``--judges``). Its exit status is that of the stop that first kept planned calls
+from starting: 3 for the cap, 4 for an error no retry can fix (HTTP 401 or 402, on a recipient's call or a judge's),
+130 for Ctrl-C (the first lets the calls in flight finish); stops met at one check rank Ctrl-C, then the error, then
+the cap, and a later Ctrl-C or error keeps the first stop's status. Without such a stop it is 4 when planned calls
+failed (also at ``--limit``) or an error no retry can fix came after the last call had started, else 0; 2 is a refused
+input before any call, or a results file that cannot take a row during the run. A results file holds one backend's
+rows, so a mock run writes to its own file. ``report`` joins plan and results offline into rates, paired tests and
+adoption rates (it never writes its ``--json`` or ``--md`` over its inputs); no verdict stands that the open offers
+(ungraded answers that name the expected answer) could overturn.
 """
 
 from __future__ import annotations
@@ -39,7 +65,9 @@ import logging
 import math
 import os
 import shutil
+import signal
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
@@ -54,7 +82,8 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "use_color"]
+__all__ = ["CLIError", "TerminalPrinter", "build_parser", "explore_summary", "format_tau", "main", "rally_note_tag",
+           "rally_summary", "use_color"]
 
 PROBE_CHOICES = ("current", "current_d", "recall", "mcq")
 _ANY_ADDRESS = ("0.0.0.0", "::", "")  # --host values that bind every interface (no host name to allow)
@@ -156,8 +185,23 @@ class TerminalPrinter:
             return f"continue: '{cue}'" if cue else "continue"
         return ""
 
-    def _header(self, ev: RelayEvent) -> tuple[str, str]:
-        """``(styled header, visible header)`` for a segment or answer start."""
+    @staticmethod
+    def rally_tag(data: Mapping[str, Any], end: Mapping[str, Any] | None = None) -> str:
+        """The rally tag of a segment: ``rally: reply`` from the ``segment_start`` (``data["rally"]`` with ``kind``,
+        ``turn``, ``ring``), extended with the label counts and the declared newest month once the ``segment_end``
+        data carries the note record (``end["rally"]``, see :func:`rally_note_tag`)."""
+        note = (end or {}).get("rally")
+        if isinstance(note, Mapping):
+            return "rally: " + rally_note_tag(note)
+        nested = data.get("rally")
+        if isinstance(nested, Mapping) and nested.get("kind"):
+            turn = nested.get("turn")
+            return f"rally: {nested['kind']}" + (f" (note {turn})" if turn else "")
+        return ""
+
+    def _header(self, ev: RelayEvent, end: RelayEvent | None = None) -> tuple[str, str]:
+        """``(styled header, visible header)`` for a segment or answer start; ``end`` (the matching ``segment_end``)
+        adds what is only known once the note is written (the rally's label counts)."""
         data = ev.data or {}
         bits = [str(ev.decision or "")]
         if "r" in data:
@@ -168,7 +212,7 @@ class TerminalPrinter:
         if ev.phase == "answer":
             bits.insert(0, "answer")
         meta = " · ".join(b for b in bits if b)
-        tag = self.explore_tag(data)
+        tag = self.explore_tag(data) or self.rally_tag(data, end.data if end is not None else None)
         chip = self._chip(ev.model)
         plain_chip = f" {self.models[ev.model].label()} " if self.color and ev.model in self.models else chip
         styled = f"{chip} {self._sgr(meta, '2')}" + (f" {self._sgr(f'[{tag}]', '1')}" if tag else "")
@@ -204,11 +248,13 @@ class TerminalPrinter:
                 if rows < height:  # erase the block; taller blocks cannot be reached any more
                     self._write("\r" + (f"\033[{rows - 1}A" if rows > 1 else "") + "\033[J")
                     if not dropped:
-                        self._write(self._header(start)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
+                        self._write(self._header(start, ev)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
                 elif not dropped:
                     self._write("\n" + self._sgr("(committed) ", "2") + self._sgr(ev.text, *self._fg(ev.model)))
+            elif not dropped and isinstance(data.get("rally"), Mapping):  # streamed as it is: the counts come last
+                self._write("\n" + self._sgr("  ↳ " + rally_note_tag(data["rally"]), "2"))
         elif not dropped:
-            self._write(self._header(start)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
+            self._write(self._header(start, ev)[0] + "\n" + self._sgr(ev.text, *self._fg(ev.model)))
         if dropped:
             reason = data.get("reason", "failed")
             detail = f": {data['error']}" if data.get("error") else ""
@@ -234,6 +280,9 @@ class TerminalPrinter:
             self.err.flush()
         elif ev.type == "done":
             self._write(self._sgr(self.summary(ev.data or {}), "2") + "\n")
+            rally = (ev.data or {}).get("rally")
+            if isinstance(rally, Mapping):
+                self._write(self._sgr("\n".join(rally_summary(rally, self.models)), "2") + "\n")
 
     def summary(self, data: Mapping[str, Any]) -> str:
         """One-line run statistics from the ``done`` data."""
@@ -314,14 +363,102 @@ def explore_summary(explore: Mapping[str, Any]) -> list[str]:
     return parts
 
 
+def rally_note_tag(note: Mapping[str, Any]) -> str:
+    """``reply · +1 update · +2 newer · 1 confirm · newest 2026-03`` for one rally note record
+    (``segment_end.data["rally"]``, DESIGN_rally.md section 6); every key is optional."""
+    labels = note.get("labels") if isinstance(note.get("labels"), Mapping) else {}
+    parts = [str(note.get("kind") or "note")]
+    if labels.get("known"):
+        parts.append(f"{labels['known']} known")
+    for name in ("update", "newer"):
+        if labels.get(name):
+            parts.append(f"+{labels[name]} {name}")
+    for name, word in (("confirm", "confirm"), ("unverified", "unverified"), ("nothing_newer", "nothing newer")):
+        if labels.get(name):
+            parts.append(word if name == "nothing_newer" else f"{labels[name]} {word}")
+    if note.get("kind") == "reply" and note.get("quiet"):
+        parts.append("quiet")
+    if note.get("self_reply"):
+        parts.append("self-reply")
+    if note.get("cut"):
+        parts.append("cut")
+    newest = note.get("newest")
+    parts.append(f"newest {newest}" if newest else "newest not stated")
+    return " · ".join(parts)
+
+
+def rally_summary(rally: Mapping[str, Any], models: Mapping[str, ModelSpec] | None = None) -> list[str]:
+    """The lines printed after a rally run (DESIGN_rally.md section 6): turns and stop reason, the frontier curve
+    (the newest month each note declared, a running maximum; **self-reported**) and what each model added."""
+    def name(key: str) -> str:
+        spec = (models or {}).get(key)
+        return spec.label() if spec is not None else key
+
+    ring = " → ".join(name(k) for k in rally.get("ring") or [])
+    head = f"rally · {rally.get('turns', 0)} notes · {rally.get('stop_reason') or 'ended'}"
+    head += f" · ring {ring}" if ring else ""
+    frontier = rally.get("frontier") if isinstance(rally.get("frontier"), Mapping) else {}
+    curve = " → ".join(m or "?" for m in frontier.get("by_turn") or [])
+    gain = frontier.get("gain_months")
+    rough = frontier.get("gain_months_approx")
+    lines = [head]
+    if curve:
+        lines.append(f"  frontier (self-reported, newest month declared per note): {curve}"
+                     + (f" · gain {gain:+d} month{'' if abs(gain) == 1 else 's'} beyond the best opening note"
+                        if isinstance(gain, int) and not isinstance(gain, bool) else
+                        f" · gain about {rough:+d} month{'' if abs(rough) == 1 else 's'} (approximate or missing dates)"
+                        if isinstance(rough, int) and not isinstance(rough, bool) else ""))
+    replies = rally.get("self_replies")
+    if isinstance(replies, int) and replies:
+        lines.append(f"  {replies} note{'' if replies == 1 else 's'} written by the model that wrote the note before "
+                     "(its partner could not take the turn); not counted as confirmation")
+    skipped = rally.get("skipped_hand_overs")
+    if isinstance(skipped, list) and skipped:
+        lines.append("  skipped hand-overs: " + ", ".join(
+            f"{name(str(row.get('model')))} ({row.get('reason')})" for row in skipped if isinstance(row, Mapping)))
+    # the opening note's 'Known:' lines are no reply labels, so adds_by_model leaves them out; count them from the notes
+    known: dict[str, int] = {}
+    for note in rally.get("notes") if isinstance(rally.get("notes"), list) else []:
+        labels = note.get("labels") if isinstance(note, Mapping) else None
+        count = labels.get("known") if isinstance(labels, Mapping) else None
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            known[str(note.get("model"))] = known.get(str(note.get("model")), 0) + count
+    adds = rally.get("adds_by_model") if isinstance(rally.get("adds_by_model"), Mapping) else {}
+    for key, row in adds.items():
+        if isinstance(row, Mapping):
+            words = (("update", "update"), ("newer", "newer"), ("confirm", "confirm"), ("unverified", "unverified"),
+                     ("nothing_newer", "nothing newer"))
+            bits = [f"{known[key]} known"] if known.get(key) else []
+            bits += [f"{row[label]} {word}" for label, word in words if row.get(label)]
+            lines.append(f"  {name(key)}: " + (", ".join(bits) or "no labelled lines"))
+    return lines
+
+
 # --------------------------------------------------------------------------------------
 # Shared helpers
 # --------------------------------------------------------------------------------------
 
 
+def _ring_overrides(args: argparse.Namespace, overrides: dict[str, Any]) -> dict[str, Any]:
+    """Apply ``--ring KEY,KEY[,KEY]``: it implies ``--preset rally`` when no preset is given and is refused with any
+    other preset; the models themselves are validated by the configuration (known keys, at least two, no repeats)."""
+    raw = getattr(args, "ring", None)
+    if raw is None:
+        return overrides
+    ring = [part.strip() for part in raw.split(",")]
+    if len(ring) < 2 or not all(ring):
+        raise CLIError(f"--ring expects two or three model keys separated by commas, got {raw!r}")
+    preset = getattr(args, "preset", None)
+    if preset not in (None, "rally"):
+        raise CLIError(f"--ring belongs to the rally preset and cannot be combined with --preset {preset}")
+    args.preset = "rally"
+    return {**overrides, "rally": {**overrides.get("rally", {}), "ring": ring, "enabled": True}}
+
+
 def _load_cfg(args: argparse.Namespace, overrides: dict[str, Any] | None = None) -> AppConfig:
     from cutoffmix.config import load_config
 
+    overrides = _ring_overrides(args, dict(overrides or {}))
     try:
         return load_config(getattr(args, "config", None), overrides or None, preset=getattr(args, "preset", None))
     except (ValueError, OSError) as e:
@@ -778,6 +915,369 @@ def _cmd_bench_fit(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- bench keys (DESIGN_keys.md) --------------------------------------------------------------------------------
+
+
+def _key_list(value: str) -> list[str]:
+    keys = [k.strip() for k in value.split(",") if k.strip()]
+    if not keys:
+        raise argparse.ArgumentTypeError(f"expected KEY,KEY[,KEY], got {value!r}")
+    return keys
+
+
+def _pair_list(value: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in (part.strip() for part in value.split(",")):
+        donor, sep, recipient = item.partition(":")
+        if not item or not sep or not donor.strip() or not recipient.strip() or donor.strip() == recipient.strip():
+            raise argparse.ArgumentTypeError(f"expected DONOR:RECIPIENT[,DONOR:RECIPIENT...] with two different keys, "
+                                             f"got {item!r}")
+        pairs.append((donor.strip(), recipient.strip()))
+    return pairs
+
+
+def _check_keys(cfg: AppConfig, keys: Sequence[str], option: str) -> None:
+    unknown = [k for k in keys if k not in cfg.model_keys()]
+    if unknown:
+        raise CLIError(f"{option}: unknown model(s) {', '.join(unknown)}; configured: {', '.join(cfg.model_keys())}")
+
+
+def _keys_input(load: Callable[[str], Any], path: str, option: str, what: str) -> Any:
+    """``load(path)`` for an input file of ``bench keys``: a missing or unreadable file, or a file of another kind (a
+    row the loader cannot take), becomes a one-line :class:`CLIError` that names the option."""
+    try:
+        return load(path)
+    except FileNotFoundError:
+        raise CLIError(f"{option} {path}: no such file") from None
+    except OSError as e:
+        raise CLIError(f"{option} {path}: cannot read it ({e.strerror or e})") from e
+    except (ValueError, TypeError, KeyError) as e:
+        raise CLIError(f"{option} {path} is not {what} ({type(e).__name__}: {' '.join(str(e).split())})") from e
+
+
+def _plan_conflict(path: Path, rows: Sequence[Mapping[str, Any]] | None, *, force: bool = False,
+                   inputs: Mapping[str, str] | None = None) -> str | None:
+    """Why ``plan`` may not write its plan to ``path`` (DESIGN_keys.md section 6), or None. Refused even with
+    ``force``: ``path`` is one of the ``inputs`` (option -> file: ``--results``, ``--events``), or an existing file
+    that is not a plan (probe results, events, keys results, unreadable JSON, a directory); ``--force`` replaces only
+    an earlier plan. Refused without ``force``: an earlier plan whose shared ids carry other messages or another
+    ``donor_answer`` than the new ``rows`` (results answered under it would no longer match: a changed name is
+    covered by neither sha, so a run could not tell). A plan with the same messages and donor answers for every
+    shared id is replaced. ``rows=None`` checks only what does not depend on the new plan."""
+    from cutoffmix.bench.io import read_jsonl
+    from cutoffmix.bench.keys import prompt_sha
+
+    for option, other in (inputs or {}).items():
+        with contextlib.suppress(OSError):
+            if os.path.samefile(path, other):
+                return f"--out {path} is the {option} file: write the plan to a file of its own"
+    if not path.exists():
+        return None
+    keep = "remove it first or write the plan to another --out (--force replaces only an earlier plan)"
+    if not path.is_file():
+        return f"--out {path} exists and is not a regular file; {keep}"
+    try:
+        old = read_jsonl(path)
+    except (OSError, ValueError) as e:
+        return f"--out {path} exists and is not a readable plan ({' '.join(str(e).split())}); {keep}"
+    for n, row in enumerate(old, 1):
+        if not row.get("id") or not isinstance(row.get("messages"), list):
+            return f"--out {path} exists and is not a plan (row {n} has no id or messages); {keep}"
+    if force or rows is None:
+        return None
+    new = {str(r["id"]): (prompt_sha(r["messages"]), r.get("donor_answer")) for r in rows}
+    changed = [r for r in old
+               if str(r["id"]) in new and (prompt_sha(r["messages"]), r.get("donor_answer")) != new[str(r["id"])]]
+    if changed:
+        named = sum(1 for r in changed if prompt_sha(r["messages"]) == new[str(r["id"])][0])
+        return (f"--out {path} holds a plan whose calls differ: {len(changed)} of its {len(old)} ids carry other "
+                f"messages or another donor answer ({named} only the donor answer; another --today, --seed, template, "
+                "masking or name rule), so results answered under it would no longer match; pass --force to replace "
+                "it, or write the new plan to another --out")
+    return None
+
+
+def _first_sigint_sets(stop: asyncio.Event, notice: Callable[[], None]) -> Callable[[], None]:
+    """Make the first SIGINT (Ctrl-C) set ``stop`` instead of aborting (DESIGN_keys.md section 6: the run starts no new
+    call, and the calls in flight finish and write their rows), and return the function that undoes it. That first
+    SIGINT also puts the previous handler back, so a second one aborts at once, as before, and has the loop call
+    ``notice``. Called inside the running loop. The handler is a Python signal handler, so it runs in the main thread
+    right after the signal arrives, between two bytecodes, not on a later turn of the loop: ``stop`` is set before the
+    run checks it again, also when the signal comes before the first call has started (the run then starts none).
+    Nothing awaits ``stop`` (the run reads it before it starts each item), so setting it there is safe; ``notice``
+    prints, so it runs on the loop instead. POSIX only, in the main thread, with SIGINT handled by Python; elsewhere
+    nothing changes and a SIGINT aborts at once."""
+    loop = asyncio.get_running_loop()
+    previous = signal.getsignal(signal.SIGINT)
+    if os.name != "posix" or not callable(previous):  # not POSIX; or SIGINT ignored or left to the system: keep it so
+        return lambda: None
+    armed = False
+
+    def disarm() -> None:
+        nonlocal armed
+        if armed:
+            armed = False
+            signal.signal(signal.SIGINT, previous)  # from now on a SIGINT aborts as it would have
+
+    def first(_signum: int, _frame: Any) -> None:
+        disarm()
+        stop.set()
+        loop.call_soon_threadsafe(notice)  # wakes the loop; printing inside a signal handler could hit a busy stream
+
+    try:
+        signal.signal(signal.SIGINT, first)
+    except (ValueError, OSError):  # not the main thread
+        return lambda: None
+    armed = True
+    return disarm
+
+
+def _keys_run_start(start: Any, limit: int | None) -> str:
+    """The line ``bench keys run`` prints before its first call: what is answered, what it sends, what it re-grades
+    (``start`` is the run's :class:`cutoffmix.bench.keys.RunStart`)."""
+    line = f"{start.planned} planned calls: {start.answered} already answered, {start.pending} without a current answer"
+    detail = [f"{n} {what}" for n, what in ((start.errors, "after an error"),
+                                            (start.stale, "answered under another request")) if n]
+    line += (f" ({', '.join(detail)})" if detail else "") + f"; sending {start.to_send} now"
+    if start.to_send < start.pending:
+        line += f" (--limit {limit})"
+    if start.regrade:
+        judges = start.regrade - start.failed - start.rule_grade - start.relabel - start.offer_flag
+        why = [f"{n} {what}" for n, what in ((start.failed, "whose grading failed"),
+                                             (start.rule_grade, "whose rule grade is out of date"),
+                                             (start.relabel, "whose label, name or rule decision is out of date"),
+                                             (judges, "for the judges"),
+                                             (start.offer_flag, "whose offers_expected is missing or out of date"))
+               if n]
+        line += f"; grading {start.regrade} stored answers again first, without a new call ({', '.join(why)})"
+    return line + f"; cost so far ${start.cost_usd:.4f} ({start.backend})"
+
+
+def _cmd_bench_keys_plan(args: argparse.Namespace) -> int:
+    import datetime as _dt
+
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import load_events, load_results, write_jsonl
+
+    cfg = _load_cfg(args)
+    if args.models:
+        _check_keys(cfg, args.models, "--models")
+    if args.pairs:
+        _check_keys(cfg, [k for pair in args.pairs for k in pair], "--pairs")
+    if args.both_right < 0 or args.min_items < 1:
+        raise CLIError("--both-right must be >= 0 and --min-items >= 1")
+    today = args.today or cfg.today
+    if today is not None:
+        try:
+            _dt.date.fromisoformat(today)
+        except ValueError:
+            raise CLIError(f"--today must be an ISO date (YYYY-MM-DD), got {today!r}") from None
+    events = _keys_input(load_events, args.events, "--events", "an events file")
+    results = _keys_input(load_results, args.results, "--results", "a probe results file")
+    inputs = {"--results": args.results, "--events": args.events}
+    if conflict := _plan_conflict(Path(args.out), None, inputs=inputs):  # before the work: --force does not help
+        raise CLIError(conflict)
+    try:
+        rows, summary = keys.build_plan(events, results, models=args.models or None, pairs=args.pairs or None,
+                                        both_right=args.both_right, min_items=args.min_items, seed=args.seed,
+                                        today=today)
+    except ValueError as e:
+        raise CLIError(str(e)) from e
+    if conflict := _plan_conflict(Path(args.out), rows, force=args.force, inputs=inputs):
+        raise CLIError(conflict)
+    try:
+        write_jsonl(args.out, rows)
+    except OSError as e:
+        raise CLIError(f"cannot write --out {args.out} ({e.strerror or e})") from e
+    print(json.dumps(to_jsonable(summary), ensure_ascii=False, indent=2))
+    print(json.dumps(to_jsonable({"cost_estimate": keys.estimate_cost(rows, results)}), ensure_ascii=False, indent=2))
+    print(f"{len(rows)} planned calls -> {args.out} (nothing was sent; 'cutoffmix bench keys run' sends them)")
+    return 0
+
+
+def _cmd_bench_keys_run(args: argparse.Namespace) -> int:
+    from cutoffmix.backends import make_backend
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import load_events, read_jsonl
+    from cutoffmix.bench.keys.run import GRADING_FAILED, check_plan
+
+    cfg = _load_cfg(args)
+    if args.max_cost is not None and not args.max_cost > 0:
+        raise CLIError(f"--max-cost must be a positive number of dollars, got {args.max_cost}")
+    if args.limit is not None and args.limit < 0:
+        raise CLIError(f"--limit must be >= 0, got {args.limit}")
+    if args.concurrency < 1:
+        raise CLIError(f"--concurrency must be >= 1, got {args.concurrency}")
+    if not args.mock:
+        _require_key(cfg, "'cutoffmix bench keys run'")
+        if args.max_cost is None:
+            raise CLIError("--max-cost USD is required when the real models are called ('bench keys plan' prints the "
+                           "estimate); add --mock to run the simulated models")
+    plan = _keys_input(read_jsonl, args.plan, "--plan", "a plan")
+    events = _keys_input(load_events, args.events, "--events", "an events file")
+    if not plan:
+        raise CLIError(f"the plan {args.plan} has no calls")
+    try:
+        check_plan(plan)  # before the model keys are read from it: a file of another kind gets this message
+    except ValueError as e:
+        raise CLIError(f"--plan {args.plan}: {' '.join(str(e).split())}") from e
+    recipients = sorted({str(row.get("recipient")) for row in plan})
+    _check_keys(cfg, recipients, "the plan's recipients")
+    models = [cfg.model(k) for k in recipients]
+    judges = [_model_spec(cfg, k) for k in args.judges] or None
+    backend = make_backend(cfg, mock=args.mock, events=events)
+    line_open = False  # the progress line on stderr has no newline yet
+
+    def end_line() -> None:
+        nonlocal line_open
+        if line_open:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+            line_open = False
+
+    def progress(done: int, total: int, _row: Any) -> None:
+        nonlocal line_open
+        sys.stderr.write(f"\r  {done}/{total}")
+        line_open = done != total
+        if not line_open:
+            sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def on_start(start: Any) -> None:
+        print(_keys_run_start(start, args.limit), flush=True)
+
+    def on_interrupt() -> None:
+        end_line()
+        print("interrupted: no new calls are started; the calls in flight finish and are written (Ctrl-C again "
+              "aborts them)", file=sys.stderr, flush=True)
+
+    async def go() -> Any:
+        stop = asyncio.Event()
+        restore = _first_sigint_sets(stop, on_interrupt)
+        try:
+            return await keys.run_plan(backend, models, plan, args.out, events=events, concurrency=args.concurrency,
+                                       max_cost=args.max_cost, limit=args.limit, judges=judges, progress=progress,
+                                       backend_name="mock" if args.mock else "openrouter",
+                                       resend_stale=args.resend_stale, on_start=on_start, stop=stop)
+        finally:
+            restore()
+            await _close(backend)
+
+    try:
+        outcome = asyncio.run(go())
+    except (OSError, ValueError) as e:  # the run's refusals, its argument checks, a file it cannot use: one line
+        raise CLIError(" ".join(str(e).split())) from e
+    finally:
+        end_line()  # stopped before the last planned call: end the progress line
+    def failed(row: Mapping[str, Any]) -> bool:  # a send error: no answer (a failed grading keeps its answer)
+        return bool(row.get("error")) and not str(row["error"]).startswith(GRADING_FAILED)
+    errors = [r for r in outcome.rows if failed(r)]
+    grades = Counter(str(r.get("grade")) for r in outcome.rows if not failed(r))
+    tally = [f"{g} {n}" for g, n in sorted(grades.items())] + ([f"errors {len(errors)}"] if errors else [])
+    print("  " + "  ".join(tally))
+    print(f"{len(outcome.rows)} rows -> {args.out} · sent {outcome.sent} calls, graded {outcome.regraded} stored "
+          f"answers again · cost ${outcome.cost_usd:.4f} (recipients ${outcome.recipients_usd:.4f} + judges "
+          f"${outcome.judges_usd:.4f}; this run ${outcome.run_cost_usd:.4f})"
+          + (" (simulated models)" if args.mock else ""))
+    if outcome.not_graded:
+        first = next((str(r["error"])[len(GRADING_FAILED):] for r in outcome.rows
+                      if str(r.get("error") or "").startswith(GRADING_FAILED)), "")
+        print(f"{outcome.not_graded} answers could not be graded ({first}); they are kept and counted in the cost, "
+              "and the next run grades them again from the stored responses, without a new call", file=sys.stderr)
+    if outcome.judge_failed:
+        print(f"{outcome.judge_failed} judge calls failed (first error: {outcome.judge_error}); an answer they leave "
+              "undecided stays undecided, and the next run with --judges asks again", file=sys.stderr)
+    if outcome.judges_undecided:  # also a tie or a reply without a verdict, which no failed call records
+        print(f"{outcome.judges_undecided} answers are undecided after the judges' votes (a failed call, a tie or a "
+              "reply without a verdict): rerun with --judges before reporting; it asks the judges again, without a "
+              "new recipient call", file=sys.stderr)
+    # the planned calls without a current answer: those whose last row is a send error were sent and failed
+    never = outcome.not_sent - len(errors)
+    left = f"{never} of {outcome.planned} planned calls not sent"
+    if errors:
+        left = f"{len(errors)} of {outcome.planned} planned calls failed and {never} not sent"
+    if outcome.not_regraded:
+        left += f", {outcome.not_regraded} stored answers not graded again"
+    # the exit status of the stop that first kept planned work from starting (DESIGN_keys.md section 6), then 4 for
+    # failed calls (also at --limit), else 0
+    if outcome.stopped_by == "interrupted":
+        print(f"interrupted: {left}; rerun to resume", file=sys.stderr)
+        return 130
+    if outcome.stopped_by == "max_cost":
+        print(f"stopped at --max-cost ${args.max_cost:g}: {left}; rerun with a higher --max-cost to resume",
+              file=sys.stderr)
+        return 3
+    if outcome.stopped_by == "error":
+        print(f"stopped after an error that no retry can fix ({outcome.error}): {left}; fix its cause (the API key "
+              "or the credits) and rerun to resume", file=sys.stderr)
+        return 4
+    if outcome.stopped_by == "limit":
+        print(f"stopped at --limit {args.limit}: {left}; rerun to send the next ones", file=sys.stderr)
+    if errors:
+        print(f"{len(errors)} of {outcome.planned} planned calls failed (first error: {errors[0]['error']}); rerun "
+              "to send them again", file=sys.stderr)
+        return 4
+    return 0
+
+
+def _same_file(a: str, b: str) -> bool:
+    """Whether the paths ``a`` and ``b`` name one file: :func:`os.path.samefile` when both exist (a symlink or a hard
+    link to the file is the file), else their resolved paths."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return Path(a).resolve() == Path(b).resolve()
+
+
+def _report_conflict(args: argparse.Namespace) -> str | None:
+    """Why ``report`` may not write its ``--json`` or ``--md`` (DESIGN_keys.md section 6), or None: one of them is the
+    ``--plan`` or ``--results`` file (the report would replace the plan or the paid results), or both are one file."""
+    outputs = [(option, path) for option, path in (("--json", args.json), ("--md", args.md)) if path]
+    for option, path in outputs:
+        for source, other in (("--plan", args.plan), ("--results", args.results)):
+            if _same_file(path, other):
+                return f"{option} {path} is the {source} file: write the report to a file of its own"
+    if len(outputs) == 2 and _same_file(args.json, args.md):
+        return f"--json {args.json} and --md {args.md} are the same file: give each its own"
+    return None
+
+
+def _cmd_bench_keys_report(args: argparse.Namespace) -> int:
+    from cutoffmix.bench import keys
+    from cutoffmix.bench.io import read_jsonl
+    from cutoffmix.bench.keys.run import check_plan, read_results
+
+    if conflict := _report_conflict(args):  # before anything is read or written
+        raise CLIError(conflict)
+    plan = _keys_input(read_jsonl, args.plan, "--plan", "a plan")
+    if not plan:
+        raise CLIError(f"the plan {args.plan} has no calls")
+    try:
+        check_plan(plan)  # a file of another kind (events, results) gets a one-line error, not a report on it
+    except ValueError as e:
+        raise CLIError(f"--plan {args.plan}: {' '.join(str(e).split())}") from e
+    results = _keys_input(read_results, args.results, "--results", "a results file of 'bench keys run'")
+    report = keys.build_report(plan, results)
+    text = keys.render_report(report)
+    print(text)
+
+    def write_json(target: str) -> None:
+        _write_json(target, report)
+
+    def write_md(target: str) -> None:
+        path = Path(target)
+        if path.parent != Path():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    for option, target, write in (("--json", args.json, write_json), ("--md", args.md, write_md)):
+        if target:
+            try:
+                write(target)
+            except OSError as e:  # e.g. a directory: one line, no traceback
+                raise CLIError(f"cannot write {option} {target} ({e.strerror or e})") from e
+    return 0
+
+
 def _cmd_router_train(args: argparse.Namespace, extra: Sequence[str]) -> int:
     from cutoffmix.router.train import main as train_main
 
@@ -827,7 +1327,10 @@ def _add_config(p: argparse.ArgumentParser) -> None:
 def _add_preset(p: argparse.ArgumentParser) -> None:
     p.add_argument("--preset", metavar="NAME",
                    help="packaged preset merged before --config: 'explore' (structured notes, cross-field lenses, a "
-                        "record gate before the answer; DESIGN.md section 7)")
+                        "record gate before the answer; DESIGN.md section 7) or 'rally' (two or three models hand "
+                        "the record back and forth, each adding what it knows that is newer; DESIGN_rally.md)")
+    p.add_argument("--ring", metavar="KEY,KEY[,KEY]",
+                   help="rally hand-over order, e.g. claude-fable-5.2,gemini-4-neon; implies --preset rally")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -991,6 +1494,81 @@ def build_parser() -> argparse.ArgumentParser:
                          "per-topic table exists; the paper-specific difference lands in the ai_ml topic cell")
     bf.add_argument("--note", help="free text stored as meta.note (what the index is, what it may be used for)")
     bf.set_defaults(func=_cmd_bench_fit)
+
+    bk = bench_sub.add_parser("keys", help="key, not value (DESIGN_keys.md): does another model's note with the answer "
+                                          "masked unlock a model's own memory, or does it only copy?")
+    keys_sub = bk.add_subparsers(dest="keys_command", required=True, metavar="STEP")
+    kp = keys_sub.add_parser("plan", help="build the calls offline from stored graded results and print the counts and "
+                                          "the cost estimate (nothing is sent)")
+    kp.add_argument("--events", required=True, metavar="FILE")
+    kp.add_argument("--results", required=True, metavar="FILE",
+                    help="stored graded results (current_d and mcq) of the donors and recipients")
+    kp.add_argument("--out", required=True, metavar="FILE", help="plan JSONL, one row per call")
+    kp.add_argument("--models", type=_key_list, metavar="K,K,K", help="models to pair (default: all configured)")
+    kp.add_argument("--pairs", type=_pair_list, metavar="A:B,...",
+                    help="directed donor:recipient pairs (default: every pair of --models)")
+    kp.add_argument("--both-right", type=int, default=10, metavar="N",
+                    help="items per pair where donor and recipient were both right (harm check)")
+    kp.add_argument("--min-items", type=int, default=5, metavar="N", help="smallest dark set a pair is planned with")
+    kp.add_argument("--seed", type=int, default=0)
+    kp.add_argument("--today", metavar="YYYY-MM-DD", help="the date in the probe's system prompt (default: config or today)")
+    kp.add_argument("--force", action="store_true",
+                    help="replace an earlier plan even when its ids carry other messages (the results answered "
+                         "under it turn stale) or other donor answers (the next run labels their adoption again); a "
+                         "file that is not a plan, or the --results or --events file, is never replaced")
+    _add_config(kp)
+    kp.set_defaults(func=_cmd_bench_keys_plan)
+    krun = keys_sub.add_parser("run", help="send the planned calls (resumable) and grade the answers",
+                               epilog="exit status: that of the stop that first kept planned calls from starting: 3 "
+                                      "--max-cost, 4 an error no retry can fix (HTTP 401 or 402, a recipient's or a "
+                                      "judge's), 130 Ctrl-C (the first lets the calls in flight finish, a second "
+                                      "aborts at once); stops met at one check rank Ctrl-C, then the error, then the "
+                                      "cap, and a later Ctrl-C or error keeps the first stop's status. Without such a "
+                                      "stop: 4 planned calls failed (also at --limit) or an error no retry can fix "
+                                      "came after the last call had started, else 0 (done, or stopped by --limit). 2: "
+                                      "refused before any call, or --out could not take a row during the run (the "
+                                      "rows written count; a paid call whose row is missing is sent again by the next "
+                                      "run)")
+    krun.add_argument("--plan", required=True, metavar="FILE")
+    krun.add_argument("--events", required=True, metavar="FILE")
+    krun.add_argument("--out", required=True, metavar="FILE",
+                      help="results JSONL (resumed if it exists; one backend per file: a mock run writes to its own)")
+    krun.add_argument("--mock", action="store_true", help="the simulated models (no key, no cost)")
+    krun.add_argument("--max-cost", type=float, metavar="USD",
+                      help="stop sending once the summed cost of every row in --out, recipients and judges, reaches "
+                           "this (required with the real models; the pilot asks for 3.5); the calls in flight finish "
+                           "with their judge calls, so a run can end above it: by up to --concurrency items, at "
+                           "max_tokens and the default of 8 up to about 1.64 USD (eight Fable items: the items in "
+                           "flight can belong to a later block of the plan), 0.65 if the cap is reached before the "
+                           "first Neon call has started and 0.81 before the first Fable call has "
+                           "(docs/DESIGN_keys.md section 9); a run it stops exits with status 3")
+    krun.add_argument("--limit", type=int, metavar="N", help="send at most N calls")
+    krun.add_argument("--concurrency", type=int, default=8)
+    krun.add_argument("--judges", nargs="*", default=[], metavar="KEY",
+                      help="judge models for answers the rules cannot grade, for every rule grade incorrect or "
+                           "abstain of an answer that names the expected answer in any form (every arm and set), and "
+                           "for every labelled answer that names the candidate in any form, whatever the rules would "
+                           "decide: the right name of a correct full answer (dark, both_right) and the donor's name on "
+                           "donor_wrong and control (alone and full, whatever the grade); the rules decide alone only "
+                           "a grade correct and the answers that do not name the expected answer, and for adoption "
+                           "the answers that do not name the donor's name. A failed or tied vote, or a reply without "
+                           "a verdict, leaves the answer undecided, never to the rules (the run prints how many are), "
+                           "and a later run with --judges asks again; stored rows that are undecided, or that the "
+                           "rules graded or decided and the judges decide now, are graded again first, without a new "
+                           "call (default: none: the rules decide, what they leave open stays undecided, and the "
+                           "report gives no verdict that the open offers, ungraded answers that name the expected "
+                           "answer, could overturn)")
+    krun.add_argument("--resend-stale", action="store_true",
+                      help="send again the calls whose stored rows answered another request (the plan or the model "
+                           "settings changed); the newest row counts (default: stop)")
+    _add_config(krun)
+    krun.set_defaults(func=_cmd_bench_keys_run)
+    krep = keys_sub.add_parser("report", help="rates, paired tests and adoption rates from plan and results (offline)")
+    krep.add_argument("--plan", required=True, metavar="FILE")
+    krep.add_argument("--results", required=True, metavar="FILE")
+    krep.add_argument("--json", metavar="OUT", help="also write the report as JSON")
+    krep.add_argument("--md", metavar="OUT", help="also write the Markdown report to a file")
+    krep.set_defaults(func=_cmd_bench_keys_report)
 
     router = sub.add_parser("router", help="train the router's classifiers")
     router_sub = router.add_subparsers(dest="router_command", required=True, metavar="ACTION")

@@ -6,13 +6,16 @@ Endpoints of :func:`create_app`:
 - ``GET /api/config`` -- models with colours, topic names, defaults, the selectable strategies/policies and the
   packaged presets (name plus the segment settings they imply).
 - ``GET /api/index[?probe=]`` -- the cutoff index as table rows (topic, model, tau, tau_label, sd, n, hazard, p_best).
-- ``POST /api/relay`` -- ``{"question", "policy"?, "strategy"?, "segment_tokens"?, "preset"?}``; answers with
-  server-sent events ``data: RelayEvent.to_dict()``.
+- ``POST /api/relay`` -- ``{"question", "policy"?, "strategy"?, "segment_tokens"?, "preset"?, "ring"?}``; answers with
+  server-sent events ``data: RelayEvent.to_dict()``. ``"ring"`` (two or three model keys) sets the rally's hand-over
+  order and selects the rally preset when no preset is named (any other preset: HTTP 400).
 - ``GET /v1/models`` and ``POST /v1/chat/completions`` -- OpenAI-compatible, streaming and non-streaming. Model ids
-  ``cutoffmix``, ``cutoffmix-speculative``, ``cutoffmix-<preset>`` (``cutoffmix-explore``) and
+  ``cutoffmix``, ``cutoffmix-speculative``, ``cutoffmix-<preset>`` (``cutoffmix-explore``, ``cutoffmix-rally``)
+  and
   ``cutoffmix-fixed-<model key>``. The conversation is flattened into the PROBLEM text; the shared notes go to
   ``delta.reasoning`` (plus ``delta.cutoffmix`` metadata), the answer to ``delta.content``; the final chunk carries
-  the whole ``done`` trace under ``cutoffmix`` (with the explore metrics when the preset ran).
+  the whole ``done`` trace under ``cutoffmix`` (with the explore metrics, or the rally metrics under
+  ``cutoffmix.rally``, when the preset ran).
 
 A per-request ``"preset": "explore"`` (or the model id) runs the relay with the configuration ``cutoffmix serve
 --preset explore`` would have loaded: the packaged default, the preset, then the server's ``--config`` file
@@ -36,6 +39,7 @@ signatures defined inside :func:`create_app`; names imported only for type check
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import math
@@ -58,8 +62,8 @@ if TYPE_CHECKING:
     from cutoffmix.config import AppConfig
     from cutoffmix.router.index import CutoffIndex
 
-__all__ = ["EXPLORE_MODEL_ID", "LOOPBACK_HOSTS", "MODEL_ID", "SSE_HEADERS", "create_app", "flatten_messages",
-           "index_payload", "model_ids"]
+__all__ = ["EXPLORE_MODEL_ID", "LOOPBACK_HOSTS", "MODEL_ID", "RALLY_MODEL_ID", "SSE_HEADERS", "create_app",
+           "flatten_messages", "index_payload", "model_ids"]
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +72,9 @@ SPECULATIVE_MODEL_ID = "cutoffmix-speculative"
 FIXED_MODEL_PREFIX = "cutoffmix-fixed-"
 PRESET_MODEL_PREFIX = "cutoffmix-"  # + preset name: cutoffmix-explore
 EXPLORE_MODEL_ID = PRESET_MODEL_PREFIX + "explore"
+RALLY_MODEL_ID = PRESET_MODEL_PREFIX + "rally"
+RALLY_PRESET = "rally"
+MAX_RING = 8  # a ring of more models than any configuration has is refused early
 STRATEGIES: tuple[str, ...] = ("sequential", "speculative")
 POLICIES: tuple[str, ...] = ("softmax", "thompson", "argmax", "round_robin", "random")
 SSE_HEADERS: dict[str, str] = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -125,9 +132,12 @@ def _model_overrides(model_id: str, model_keys: Sequence[str], presets: Sequence
     raise LookupError(f"model {model_id!r} does not exist; available: {', '.join(model_ids(model_keys, names))}")
 
 
-def _run_overrides(body: Mapping[str, Any], presets: Sequence[str] | None = None) -> dict[str, Any]:
-    """The per-request overrides ``policy``, ``strategy``, ``segment_tokens`` and ``preset`` (type-checked; a preset
-    must be one of the packaged ones, ``"explore"``)."""
+def _run_overrides(body: Mapping[str, Any], presets: Sequence[str] | None = None,
+                   model_keys: Sequence[str] | None = None) -> dict[str, Any]:
+    """The per-request overrides ``policy``, ``strategy``, ``segment_tokens``, ``preset`` and ``ring`` (type-checked; a
+    preset must be one of the packaged ones, ``"explore"`` or ``"rally"``; a ring is two or more distinct model keys,
+    known ones when ``model_keys`` is given, and belongs to the rally preset, which it selects when no preset is
+    named)."""
     out: dict[str, Any] = {}
     for key in ("policy", "strategy"):
         value = body.get(key)
@@ -142,6 +152,22 @@ def _run_overrides(body: Mapping[str, Any], presets: Sequence[str] | None = None
             raise RequestError("preset must be " + (" or ".join(repr(n) for n in names) if names else "absent")
                                + " (or absent)")
         out["preset"] = preset.strip()
+    ring = body.get("ring")
+    if ring is not None:
+        if (not isinstance(ring, list) or not 2 <= len(ring) <= MAX_RING
+                or not all(isinstance(k, str) and k.strip() for k in ring)):
+            raise RequestError("ring must be a list of two or more model keys")
+        keys = [k.strip() for k in ring]
+        if len(set(keys)) != len(keys):
+            raise RequestError("ring must not repeat a model")
+        unknown = [k for k in keys if model_keys is not None and k not in model_keys]
+        if unknown:
+            raise RequestError(f"ring names unknown model(s) {', '.join(unknown)}; "
+                               f"known: {', '.join(model_keys or [])}")
+        if out.get("preset", RALLY_PRESET) != RALLY_PRESET:
+            raise RequestError(f"ring belongs to the {RALLY_PRESET!r} preset and cannot be combined with preset "
+                               f"{out['preset']!r}")
+        out["ring"] = keys
     tokens = body.get("segment_tokens")
     if tokens is not None:
         if (isinstance(tokens, bool) or not isinstance(tokens, (int, float))
@@ -497,11 +523,19 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
         return body
 
     def run_config(overrides: Mapping[str, Any]) -> "tuple[RelayRuntime, AppConfig]":
-        """The runtime a request runs on (the preset's, if it names one) and its validated per-run config."""
-        rest = {k: v for k, v in overrides.items() if k != "preset"}
+        """The runtime a request runs on (the preset's, if it names one) and its validated per-run config. A ring
+        without a preset runs the rally: on the server's own runtime when that already is a rally, else on the
+        packaged rally preset."""
+        rest = {k: v for k, v in overrides.items() if k not in ("preset", "ring")}
+        ring = overrides.get("ring")
         try:
-            rt = preset_runtime(overrides["preset"]) if overrides.get("preset") else runtime
-            return rt, rt.configure(**rest)
+            name = overrides.get("preset") or (None if ring is None or config.rally.enabled else RALLY_PRESET)
+            rt = preset_runtime(name) if name else runtime
+            run_cfg = rt.configure(**rest)
+            if ring is not None:  # validated again by the configuration: known models, no repeats, no explore
+                run_cfg = dataclasses.replace(run_cfg, rally=dataclasses.replace(run_cfg.rally, ring=tuple(ring),
+                                                                                 enabled=True))
+            return rt, run_cfg
         except (ValueError, TypeError) as e:
             raise RequestError(str(e)) from e
 
@@ -527,7 +561,8 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                          "speculative_gate": rc.speculative_gate,
                          # the server's own config already runs a preset (serve --preset explore), or a config
                          # file of its own that enables the explore protocol
-                         "preset": config.preset or ("explore" if config.explore.enabled else None)},
+                         "preset": config.preset or ("explore" if config.explore.enabled else
+                                                     "rally" if config.rally.enabled else None)},
             "strategies": list(STRATEGIES),
             "policies": [*POLICIES, *(f"fixed:{k}" for k in config.model_keys())],
             "presets": preset_payload(),
@@ -554,7 +589,7 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                 raise RequestError("question must be a non-empty string")
             if len(question) > MAX_QUESTION_CHARS:
                 raise RequestError(f"question is longer than {MAX_QUESTION_CHARS} characters")
-            rt, run_cfg = run_config(_run_overrides(body, presets))
+            rt, run_cfg = run_config(_run_overrides(body, presets, config.model_keys()))
         except RequestError as e:
             return bad_request(str(e), e.status)
         events = rt.relay(run_cfg).run(question, run_id=uuid.uuid4().hex[:16])
@@ -577,7 +612,7 @@ def create_app(cfg: "AppConfig | None" = None, *, backend: Backend | None = None
                 overrides = _model_overrides(model_id, config.model_keys(), presets)
             except LookupError as e:
                 return openai_error(404, str(e), "invalid_request_error", "model_not_found")
-            overrides |= _run_overrides(body, presets)
+            overrides |= _run_overrides(body, presets, config.model_keys())
             question = flatten_messages(body.get("messages"))
             if len(question) > MAX_QUESTION_CHARS:
                 raise RequestError(f"the conversation is longer than {MAX_QUESTION_CHARS} characters once "

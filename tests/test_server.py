@@ -382,7 +382,8 @@ async def test_api_config_lists_the_presets_and_the_active_one():
     app, _ = make_app()
     async with client(app) as c:
         cfg = (await c.get("/api/config")).json()
-    assert cfg["presets"] == [{"name": "explore", "segment_tokens": 192, "max_segments": 16}]
+    assert cfg["presets"] == [{"name": "explore", "segment_tokens": 192, "max_segments": 16},
+                              {"name": "rally", "segment_tokens": 160, "max_segments": 12}]
     assert cfg["defaults"]["preset"] is None
     assert "cutoffmix-explore" in cfg["model_ids"]
     from cutoffmix.config import load_config
@@ -432,7 +433,7 @@ async def test_v1_models():
         data = (await c.get("/v1/models")).json()
     assert data["object"] == "list"
     assert [m["id"] for m in data["data"]] == ["cutoffmix", "cutoffmix-speculative", "cutoffmix-explore",
-                                               "cutoffmix-fixed-a", "cutoffmix-fixed-b"]
+                                               "cutoffmix-rally", "cutoffmix-fixed-a", "cutoffmix-fixed-b"]
 
 
 # --------------------------------------------------------------------------------------
@@ -508,7 +509,8 @@ async def test_api_relay_preset_is_layered_under_the_servers_config_file(tmp_pat
     assert cfg.relay.segment_tokens == 150 and cfg.app_title == "mine"  # the file still wins over the preset
     async with client(app) as c:
         presets = (await c.get("/api/config")).json()["presets"]
-    assert presets == [{"name": "explore", "segment_tokens": 150, "max_segments": 16}]
+    assert presets == [{"name": "explore", "segment_tokens": 150, "max_segments": 16},
+                       {"name": "rally", "segment_tokens": 150, "max_segments": 12}]
 
 
 @pytest.mark.parametrize("payload, needle", [
